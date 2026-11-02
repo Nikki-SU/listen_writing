@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / 前端
+node_modules/
+dist/
+
+# 系统 / IDE
+.DS_Store
+*.log
+
+# 敏感数据（绝不能入库）
+.env
+*.pem
+*.key
