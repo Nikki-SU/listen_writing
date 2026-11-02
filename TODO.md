@@ -5,4 +5,5 @@
 
 ## 待办 / 坑
 
-- [ ] （示例项，待补充）
+- [ ] 前端 `src/App.tsx` 硬编码 `BACKEND = http://127.0.0.1:7850`；Pages 是 https，浏览器会拦 mixed content。需落实「引导部署」：首次打开 Pages → 引导选本地路径 → File System Access API 写入本地后端/模型/启动器 → 再连本地后端。
+- [ ] 除 `health` / `version` 外，业务接口（录音导入 / 转写 / 校对 / 润色 / 脱敏 / 协作 / 审查）一律未实现（骨架空壳）。
