@@ -1,2 +1,9 @@
-# 骨架阶段：零第三方依赖（仅 Python 标准库），保证干净环境一键可跑。
-# 后续引入 ASR / LLM 推理库时，在此登记并在 DEPENDENCIES.md 同步记录。
+# ASR 转写（阶段 0 初始转写）
+faster-whisper==1.2.1
+
+# 关键传递依赖（由 faster-whisper 一并安装，此处登记备查，见 DEPENDENCIES.md）
+# ctranslate2==4.8.1   # CPU 推理引擎（whisper 的 CTranslate2 移植）
+# av==17.1.0           # 音频解码 + 时长探测
+# tokenizers==0.22.1   # 字节对编码分词
+# huggingface-hub      # 模型下载（支持 HF_ENDPOINT 镜像）
+# onnxruntime          # VAD 可选依赖

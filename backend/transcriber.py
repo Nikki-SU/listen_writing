@@ -1,0 +1,89 @@
+"""转写引擎：可插拔 ASR 抽象 + faster-whisper 实现。
+
+设计目标（见《工程纪律.md》「世界观先于方法论」）：
+- 转写引擎可替换：上层只依赖 Transcriber 抽象，换引擎不牵动 storage / main。
+- 模型可替换：用户本地路径优先，其次 size 名（small 等）自动下载。
+- 下载源对用户零配置：默认官方 HuggingFace，失败自动降级国内镜像 hf-mirror.com。
+
+配置（环境变量，引导部署的启动器可设）：
+- LISTEN_WRITING_MODEL：本地 ctranslate2 模型目录路径（优先级最高）。
+- LISTEN_WRITING_MODEL_SIZE：size 名（tiny/base/small/medium/large-v3），默认 small。
+"""
+
+import logging
+import os
+from typing import Callable
+
+from faster_whisper import WhisperModel
+
+logger = logging.getLogger(__name__)
+
+HF_MIRROR = "https://hf-mirror.com"
+
+
+class Transcriber:
+    """转写抽象：返回句子列表，每句含 start_ms / end_ms / text / speaker。"""
+
+    def transcribe(self, audio_path: str, on_progress: Callable[[int], None] | None = None) -> list[dict]:
+        raise NotImplementedError
+
+
+class FasterWhisperTranscriber(Transcriber):
+    def __init__(self, device: str = "cpu", compute_type: str = "int8"):
+        self.model_ref = (
+            os.environ.get("LISTEN_WRITING_MODEL")
+            or os.environ.get("LISTEN_WRITING_MODEL_SIZE")
+            or "small"
+        )
+        self.device = device
+        self.compute_type = compute_type
+        self._model: WhisperModel | None = None
+
+    def _needs_download(self) -> bool:
+        """size 名（非本地路径）需要联网下载模型。"""
+        return not os.path.isdir(os.path.expanduser(self.model_ref))
+
+    def _fallback_to_mirror(self) -> None:
+        """把 HuggingFace 下载源切到国内镜像（用户零配置，仅作可用性兜底）。"""
+        os.environ["HF_ENDPOINT"] = HF_MIRROR
+        try:
+            import huggingface_hub.constants as hc
+            hc.ENDPOINT = HF_MIRROR
+        except Exception:  # pragma: no cover - 版本差异保护，不影响主流程
+            logger.warning("无法切换 huggingface_hub 镜像常量，依赖 HF_ENDPOINT 环境变量", exc_info=True)
+
+    def _load_model(self) -> WhisperModel:
+        if self._model is not None:
+            return self._model
+        try:
+            self._model = WhisperModel(self.model_ref, device=self.device, compute_type=self.compute_type)
+        except Exception:
+            if os.environ.get("HF_ENDPOINT") is None and self._needs_download():
+                logger.info("官方源下载失败，自动切换 hf-mirror.com 重试")
+                self._fallback_to_mirror()
+                self._model = WhisperModel(self.model_ref, device=self.device, compute_type=self.compute_type)
+            else:
+                raise
+        return self._model
+
+    def transcribe(self, audio_path: str, on_progress: Callable[[int], None] | None = None) -> list[dict]:
+        model = self._load_model()
+        segments, info = model.transcribe(audio_path, beam_size=5)
+        duration = float(info.duration or 1.0)
+        sentences: list[dict] = []
+        for seg in segments:
+            sentences.append({
+                "start_ms": int(round(seg.start * 1000)),
+                "end_ms": int(round(seg.end * 1000)),
+                "text": seg.text.strip(),
+                "speaker": "",
+            })
+            if on_progress:
+                on_progress(min(100, int(seg.end / duration * 100)))
+        if on_progress:
+            on_progress(100)
+        return sentences
+
+
+def default_transcriber() -> Transcriber:
+    return FasterWhisperTranscriber()
