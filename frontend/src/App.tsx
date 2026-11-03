@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api'
+import BootstrapGuide from './BootstrapGuide'
 import type { Project, Recording, RecordingDetail, Version } from './types'
 
 function fmtMs(ms: number): string {
@@ -36,26 +37,32 @@ export default function App() {
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // 启动：检查后端 + 版本 + 项目列表
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      const ok = await api.fetchHealth()
-      if (cancelled) return
-      setHealth(ok ? 'ok' : 'down')
-      if (ok) {
-        try {
-          setVersion(await api.fetchVersion())
-          setProjects(await api.listProjects())
-        } catch (e) {
-          setError(String(e))
-        }
-      }
-    })()
-    return () => {
-      cancelled = true
+  // 启动：检查后端 + 版本 + 项目列表；后端离线时进入引导部署
+  const boot = useCallback(async () => {
+    const ok = await api.fetchHealth()
+    setHealth(ok ? 'ok' : 'down')
+    if (!ok) return
+    try {
+      setVersion(await api.fetchVersion())
+      setProjects(await api.listProjects())
+      setError('')
+    } catch (e) {
+      setError(String(e))
     }
   }, [])
+
+  useEffect(() => {
+    void boot()
+  }, [boot])
+
+  // 后端离线期间每 2 秒探测一次：用户跑完启动器后页面自动连上，无需手动刷新
+  useEffect(() => {
+    if (health !== 'down') return
+    const timer = setInterval(async () => {
+      if (await api.fetchHealth()) void boot()
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [health, boot])
 
   const refreshRecordings = useCallback(async (pid: string) => {
     try {
@@ -127,6 +134,17 @@ export default function App() {
     }
   }
 
+  if (health === 'down') {
+    return <BootstrapGuide onRetry={() => void boot()} />
+  }
+  if (health === 'checking') {
+    return (
+      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 14 }}>
+        正在连接本地后端…
+      </div>
+    )
+  }
+
   return (
     <main style={{ display: 'flex', height: '100vh', gap: 24, padding: 24, boxSizing: 'border-box' }}>
       {/* 左栏：项目 + 录音 */}
@@ -134,7 +152,7 @@ export default function App() {
         <header>
           <h1 style={{ margin: 0, fontSize: 20 }}>listen_writing</h1>
           <p style={{ margin: '4px 0 0', fontSize: 12, color: '#888' }}>
-            后端：{health === 'checking' ? '连接中' : health === 'ok' ? '在线' : '离线'}
+            后端在线
             {version && ` · fr ${version.frontend} be ${version.backend} mo ${version.model} da ${version.data}`}
           </p>
         </header>
@@ -148,7 +166,7 @@ export default function App() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".wav,.mp3,.m4a,.wma,audio/wav,audio/mpeg,audio/mp4,audio/x-m4a"
+              accept=".wav,.mp3,.m4a,.wma,.flac,.ogg,.opus,.aac,.aiff,audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/flac,audio/ogg,audio/aac"
               onChange={(e) => {
                 const f = e.target.files?.[0]
                 if (f) onUpload(f)
@@ -305,6 +323,11 @@ function TranscriptPanel({ detail }: { detail: RecordingDetail }) {
             style={{ width: `${transcribe.progress}%`, height: 8, background: '#4285f4', borderRadius: 4 }}
           />
         </div>
+        {transcribe.progress < 5 && (
+          <p style={{ fontSize: 12, color: '#999', marginTop: 12 }}>
+            进度长时间停在 0% 通常是在下载语音模型（首次约 500MB），请保持启动窗口开启。
+          </p>
+        )}
       </div>
     )
   }

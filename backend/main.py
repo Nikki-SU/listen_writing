@@ -20,6 +20,10 @@ from transcriber import default_transcriber
 PORT = 7850
 HOST = "127.0.0.1"
 
+# 上传格式白名单：由 PyAV（faster-whisper 内部解码层）原生解码，用户无需自己转格式。
+# 改这里必须同步：前端 api.formatOf、App.tsx 的 input accept、API_CONTRACT.md R-1。
+AUDIO_FORMATS = ("wav", "mp3", "m4a", "wma", "flac", "ogg", "opus", "aac", "aiff")
+
 _transcriber = default_transcriber()
 
 # 转写是长任务，用后台线程执行；同一录音不会并发转写两次（上传即单次触发）。
@@ -109,6 +113,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format")
+        # Chrome 私有网络访问（PNA）：https 的 Pages 页面请求 http://127.0.0.1 时，
+        # 预检要求后端显式允许；本地回环地址本身可信，放开不影响安全边界。
+        self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -122,6 +129,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
 
     def do_GET(self):
@@ -194,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         filename = self.headers.get("X-Filename") or "recording"
         fmt = (self.headers.get("X-Format") or "").strip().lower()
-        if fmt not in ("wav", "mp3", "m4a", "wma"):
+        if fmt not in AUDIO_FORMATS:
             fmt = _format_from_filename(filename)
         if fmt is None:
             self._send_json({"error": "unsupported audio format"}, status=400)
@@ -219,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def _format_from_filename(filename: str) -> str | None:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    return ext if ext in ("wav", "mp3", "m4a", "wma") else None
+    return ext if ext in AUDIO_FORMATS else None
 
 
 def _match(path: str, pattern: str):

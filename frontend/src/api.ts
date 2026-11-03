@@ -1,4 +1,5 @@
-// 后端 fetch 封装。地址硬编码为本地回环（引导部署后由启动器负责本项配置，见 TODO.md）。
+// 后端 fetch 封装。地址固定本地回环：Pages 首屏检测到后端离线会进入引导部署（BootstrapGuide），
+// 用户在本机跑起启动器后自动连上；录音数据全程不出本机。
 
 import type { Project, Recording, RecordingDetail, Version } from './types'
 
@@ -47,14 +48,17 @@ export async function createProject(name: string, description: string): Promise<
   return data.project
 }
 
+// 上传格式白名单，与后端 main.AUDIO_FORMATS 同步（解码由后端 PyAV 内置完成）
+const AUDIO_FORMATS = ['wav', 'mp3', 'm4a', 'wma', 'flac', 'ogg', 'opus', 'aac', 'aiff']
+
 function formatOf(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase() || ''
-  return ['wav', 'mp3', 'm4a', 'wma'].includes(ext) ? ext : ''
+  return AUDIO_FORMATS.includes(ext) ? ext : ''
 }
 
 export async function uploadRecording(projectId: string, file: File): Promise<Recording> {
   const fmt = formatOf(file.name)
-  if (!fmt) throw new Error('不支持的音频格式（仅 wav / mp3 / m4a / wma）')
+  if (!fmt) throw new Error(`不支持的音频格式（支持：${AUDIO_FORMATS.join(' / ')}）`)
   const data = await json<{ recording: Recording }>(
     await fetch(`${BACKEND}/api/projects/${projectId}/recordings`, {
       method: 'POST',

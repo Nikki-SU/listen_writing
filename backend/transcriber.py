@@ -39,9 +39,21 @@ class FasterWhisperTranscriber(Transcriber):
         self.compute_type = compute_type
         self._model: WhisperModel | None = None
 
-    def _needs_download(self) -> bool:
+    def needs_download(self) -> bool:
         """size 名（非本地路径）需要联网下载模型。"""
         return not os.path.isdir(os.path.expanduser(self.model_ref))
+
+    def ensure_model(self) -> bool:
+        """确保模型可用（必要时联网下载，失败自动切镜像）。返回是否就绪。
+
+        供启动器 preload.py 预下载用；失败不抛出，返回 False 即可（首次转写会再试）。
+        """
+        try:
+            self._load_model()
+            return True
+        except Exception:
+            logger.warning("模型准备失败", exc_info=True)
+            return False
 
     def _fallback_to_mirror(self) -> None:
         """把 HuggingFace 下载源切到国内镜像（用户零配置，仅作可用性兜底）。"""
@@ -58,7 +70,7 @@ class FasterWhisperTranscriber(Transcriber):
         try:
             self._model = WhisperModel(self.model_ref, device=self.device, compute_type=self.compute_type)
         except Exception:
-            if os.environ.get("HF_ENDPOINT") is None and self._needs_download():
+            if os.environ.get("HF_ENDPOINT") is None and self.needs_download():
                 logger.info("官方源下载失败，自动切换 hf-mirror.com 重试")
                 self._fallback_to_mirror()
                 self._model = WhisperModel(self.model_ref, device=self.device, compute_type=self.compute_type)

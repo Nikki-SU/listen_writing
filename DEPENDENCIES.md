@@ -45,6 +45,20 @@
 | `Transcriber.transcribe`（抽象） | `transcriber.py` | (audio_path, on_progress) → `[{start_ms,end_ms,text,speaker}]` | 返回元素四字段 | `main._run_transcribe` |
 | `FasterWhisperTranscriber` | `transcriber.py` | 具体引擎实现 | 环境变量 `LISTEN_WRITING_MODEL` / `LISTEN_WRITING_MODEL_SIZE` | `transcriber.default_transcriber` |
 | `default_transcriber` | `transcriber.py` | 无 → Transcriber 实例 | — | `main` 模块级 `_transcriber` |
+| `needs_download` / `ensure_model` | `transcriber.py` | 无 → bool（模型是否就绪） | 环境变量 `LISTEN_WRITING_MODEL` / `LISTEN_WRITING_MODEL_SIZE` | `preload.py` 预下载；`_load_model` 内部判断 |
+| `preload.main` | `preload.py` | 无 → int（0 就绪 / 1 失败不阻塞） | 调 `default_transcriber`；启动器在**用户文件夹根目录**执行 `python backend/preload.py`，内部按包路径 import `transcriber` | `bootstrap/start-*.sh`、`start-windows.bat` |
 | `_probe_duration_sec` | `main.py` | audio_path → float 秒 | 依赖 `av` | `main._run_transcribe` 回填 `duration_sec` |
 | `_run_transcribe` | `main.py` | (pid, rid) → 后台线程编排 | 编排 `storage.*` + `transcriber.transcribe` | `main._upload_recording` 启动线程 |
 | `_sentences_to_markdown` | `main.py` | list[sentence] → str | 用 `start_ms / speaker / text` | `main._run_transcribe` |
+
+### 格式白名单联动（改一处必须同步其余三处）
+
+`main.AUDIO_FORMATS`（权威）↔ `api.ts AUDIO_FORMATS` ↔ `App.tsx` input `accept` ↔ `API_CONTRACT.md` R-1。
+当前值：`wav / mp3 / m4a / wma / flac / ogg / opus / aac / aiff`；解码由 PyAV 内置，见 `main._format_from_filename`。
+
+### 引导部署文件联动（改一处必须同步）
+
+- `backend/*.py` 或 `bootstrap/*` 改动 → 重新 `npm run build`（prebuild 自动重生成 `src/bootstrapFiles.ts`）→ 重新部署，用户写入的启动文件才是新版。
+- `frontend/scripts/embed-backend.mjs`：清单来源 = `backend/{main,models,storage,transcriber,preload}.py` + `backend/requirements.txt`（映射为用户根目录 `requirements.txt`）+ `bootstrap/*`。加新后端文件必须把它加进 embed 清单。
+- 启动器（`bootstrap/start-*`）假设目录结构：根目录有 `backend/`、`requirements.txt`、启动器自身；改嵌入布局必须同步启动器里的相对路径。
+- `BootstrapGuide.tsx` 消费 `BOOTSTRAP_FILES`（写入 + 下载兜底）；`App.tsx` 在 `health === 'down'` 时渲染它并每 2 秒探测重连。

@@ -7,7 +7,7 @@
 - **协议**：HTTP（本地回环），后端是纯标准库 `http.server`，无第三方框架。
 - **地址**：`http://127.0.0.1:7850`（本机）。前端经浏览器 fetch；未来局域网协作用户 IP 替代。
 - **数据格式**：请求 / 响应体一律 `application/json; charset=utf-8`，字段用 `snake_case`。
-- **CORS**：后端返回 `Access-Control-Allow-Origin: *`（本地单机 + 文件/Pages 源），骨架阶段放开收窄后续再说。
+- **CORS**：后端返回 `Access-Control-Allow-Origin: *`、`Access-Control-Allow-Private-Network: true`（后者是 https 的 Pages 页面请求 http://127.0.0.1 时 Chrome 私有网络访问预检的要求；`OPTIONS` 预检返回 204 + 同样的头）。
 - **错误约定**：非 JSON 或未知路径一律 `404`，返回 `{"error": "<可读原因>"}`；字段名字典化，不静默给空值 / 0（对应《工程纪律》「先约束，再容错」）。
 
 ## 接口清单
@@ -22,7 +22,13 @@
 | R-3 | 后端 | `GET /api/projects/{project_id}/recordings` | 无 | `{"recordings":[{...}]}` | 列出项目下录音（仅元数据，按创建倒序） |
 | R-2 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}` | 无 | `{"recording":{...},"transcribe":{...},"sentences":[...]}` | 录音详情 + 转写状态 + 分句列表 |
 
-> R-1 是唯一的非 JSON 请求：请求体是音频原始字节，`X-Filename` 带扩展名（如 `访谈1.mp3`）、`X-Format` 取值 `wav / mp3 / m4a / wma`。前端用 `fetch` 把 `File` 的 `ArrayBuffer` 直接作为 body。
+> R-1 是唯一的非 JSON 请求：请求体是音频原始字节，`X-Filename` 带扩展名（如 `访谈1.mp3`）、`X-Format` 取值见下方格式白名单。前端用 `fetch` 把 `File` 直接作为 body。
+
+**音频格式白名单**（`X-Format` / 扩展名，改任何一处必须同步其余三处）：
+`wav / mp3 / m4a / wma / flac / ogg / opus / aac / aiff`
+- 定义处：后端 `main.AUDIO_FORMATS`（唯一权威来源）
+- 同步处：前端 `api.ts` 的 `AUDIO_FORMATS`、`App.tsx` 上传 `input` 的 `accept`、本文件 R-1
+- 解码：全部由后端 PyAV（faster-whisper 内部解码层）原生解码，用户不需要自己转格式
 
 ## 数据目录结构（人可读文本）
 
@@ -49,3 +55,18 @@ data/
 - **命名**：一律 `snake_case`；`id` 为各实体主键（字符串，如录音 id）。前后端同名字段绝不改名，否则对不上。
 - **软件版本号**：四段整数 `frontend / backend / model / data`，各自独立递增；提交时只 bump 对应段（定义见 `backend/models.py` 的 `APP_VERSION`）。
 - **项目版本号**（与软件版本号是两码事）：每条录音一条版本线，版本 = `stage.seq`（阶段.阶段内序号），见 `backend/models.py` 的 `VersionRef`。
+
+## 引导部署（bootstrap）
+
+后端不在时，前端首屏渲染引导页（`BootstrapGuide.tsx`），三步把本地后端跑起来：
+
+1. **写入启动文件**：用户点按钮选一个空文件夹，页面把嵌入的文件一键写进去（File System Access API；不支持的浏览器逐个下载兜底）。写入清单 = `frontend/src/bootstrapFiles.ts`，由 `frontend/scripts/embed-backend.mjs` 在 build 时从仓库生成：
+   - `backend/{main,models,storage,transcriber,preload}.py`
+   - `requirements.txt`（写到用户文件夹根目录，启动器在根目录执行 `pip install -r requirements.txt`）
+   - `start-windows.bat` / `start-mac.command` / `start.sh` / `README.md`（来源：仓库 `bootstrap/`）
+2. **运行启动器**：Windows 双击 bat；macOS 终端 `bash` + 拖入 `.command`；Linux `bash start.sh`。启动器负责建 venv → 装依赖（失败换清华 pip 镜像重试）→ `python backend/preload.py` 预下载模型（失败不阻塞）→ 启动 `backend/main.py`。
+3. **自动重连**：后端离线期间前端每 2 秒探测 `/api/health`，通了自动进入主界面。
+
+约束：
+- 启动器假设目录结构为「用户文件夹根目录下有 `backend/` 与 `requirements.txt`」，改嵌入文件布局必须同步改启动器与 embed 脚本。
+- 后端 / bootstrap 源码改动后重新 `npm run build` 即重新嵌入，无手工同步步骤。
