@@ -123,7 +123,7 @@ export default function BootstrapGuide({ onRetry }: { onRetry: () => void }) {
         <h2 style={{ fontSize: 15, margin: '0 0 8px' }}>第 2 步 · 运行启动器</h2>
         {isWindows() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音模型（共约 800MB），请保持黑窗口开启。
+            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音模型（共约 800MB），请保持黑窗口开启。如果弹出「是否允许此应用更改设备」的窗口（安装微软运行库），点「是」。
           </p>
         ) : isMac() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>

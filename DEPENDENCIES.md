@@ -20,6 +20,7 @@
 |---|---|---|
 | 便携 CPython 3.12.16 | GitHub `astral-sh/python-build-standalone` release `20261026`，install_only 包：Windows x64 47MB / macOS 25MB / Linux x64 68MB | 解压到用户文件夹 `.runtime/`；依赖直接装进这份运行时（不建 venv） |
 | 语音模型 | HuggingFace `Systran/faster-whisper-small` ≈ 500MB（官方 → hf-mirror.com 兜底） | 也可离线：放入 `data/models/whisper-small/` 即优先使用 |
+| Microsoft VC++ 运行库（`MSVCP140.dll`） | 仅 Windows；官方 `https://aka.ms/vs/17/release/vc_redist.x64.exe` | `ctranslate2.dll` 依赖它，便携 Python 只带 vcruntime140 不带 msvcp140；启动器自检 `import av, ctranslate2` 失败时自动下载安装（需一次 UAC 确认），失败则给出手动安装链接 |
 
 - Windows 解压依赖系统自带 `tar.exe`（Win10 1803+ / Win11）；下载优先 `curl.exe`，缺失则回退 PowerShell。
 - macOS / Linux 解压用系统 `tar`，下载用 `curl`（缺失回退 `wget`）。

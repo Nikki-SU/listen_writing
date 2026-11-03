@@ -53,6 +53,32 @@ echo        Retrying with a faster domestic mirror ...
 if errorlevel 1 goto pip_failed
 
 :pip_ready
+rem ctranslate2 / av 的 dll 依赖 MSVCP140.dll，便携 Python 不自带；
+rem 干净的 Windows 上缺它会导致 "DLL load failed"，这里检测并自动补上微软官方运行库。
+"%PY%" -c "import av, ctranslate2" >nul 2>nul
+if not errorlevel 1 goto preload
+
+echo.
+echo [3.5/4] Missing Microsoft runtime library (MSVCP140.dll).
+echo         Installing it now. A Windows permission window will pop up,
+echo         please click "Yes" to allow the installation.
+set "VCREDIST=%TEMP%\vc_redist.x64.exe"
+if exist "%VCREDIST%" del /q "%VCREDIST%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $env:VCREDIST -UseBasicParsing } catch { exit 1 }"
+if errorlevel 1 goto vc_manual
+start /wait "" "%VCREDIST%" /install /quiet /norestart
+"%PY%" -c "import av, ctranslate2" >nul 2>nul
+if not errorlevel 1 goto preload
+
+:vc_manual
+echo.
+echo [ERROR] The Microsoft runtime library is still missing.
+echo         Install it manually, then double-click this file again:
+echo         https://aka.ms/vs/17/release/vc_redist.x64.exe
+pause
+exit /b 1
+
+:preload
 echo [4/4] Preparing the speech model (first run downloads about 500 MB)
 "%PY%" backend\preload.py
 

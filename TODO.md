@@ -9,6 +9,7 @@
 - [x] **模型首次下载**（2026-11-03）：启动器内 `backend/preload.py` 预下载模型（失败不阻塞启动，首次转写自动重试）；转写进度 <5% 时页面显示「可能在下载模型」提示。
 - [x] **录音格式白名单**（2026-11-03）：扩展为 `wav/mp3/m4a/wma/flac/ogg/opus/aac/aiff`，解码全部由后端 PyAV 内置完成（不再让用户自己转格式）；flac 已端到端实测转写跑通。
 - [x] **不再假设用户装了 Python**（2026-11-03）：启动器首次自动下载便携 CPython 到 `.runtime/`（GitHub python-build-standalone，Win 47MB / mac 25MB / Linux 68MB），依赖装进这份运行时，不建 venv、不碰系统环境。用户电脑即使完全没有 Python 也能用。
+- [x] **Windows 缺 MSVCP140.dll**（2026-11-03）：核查发现 `ctranslate2.dll` 依赖 `MSVCP140.dll`（便携 Python 只带 vcruntime140，不带 msvcp140），干净 Windows 会 `DLL load failed`。启动器在装依赖后 `import av, ctranslate2` 自检，失败则自动下载并静默安装微软官方 VC++ 运行库，需用户点一次 UAC「是」；装不上时给出官方链接让用户手动装。
 
 ## 待办 / 坑
 
