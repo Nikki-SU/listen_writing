@@ -87,7 +87,7 @@ export default function BootstrapGuide({ onRetry }: { onRetry: () => void }) {
       <header style={{ textAlign: 'center' }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>listen_writing</h1>
         <p style={{ margin: '8px 0 0', fontSize: 14, color: '#555' }}>
-          转写由你电脑上的本地后端完成，录音不出本机。第一次使用，按下面三步准备（约 5 分钟，之后双击即用）。
+          转写由你电脑上的本地后端完成，录音不出本机。第一次使用，按下面三步准备（首次需下载约 800MB，之后双击即用）。
         </p>
       </header>
 
@@ -123,15 +123,15 @@ export default function BootstrapGuide({ onRetry }: { onRetry: () => void }) {
         <h2 style={{ fontSize: 15, margin: '0 0 8px' }}>第 2 步 · 运行启动器</h2>
         {isWindows() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动装依赖、下载语音模型（约 500MB），请保持黑窗口开启。
+            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音模型（共约 800MB），请保持黑窗口开启。
           </p>
         ) : isMac() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            打开「终端」，输入 <code>bash&nbsp;</code>（bash 加一个空格），把文件夹里的 <strong>start-mac.command</strong> 拖进终端窗口，按回车。首次会自动装依赖、下载语音模型（约 500MB），请保持窗口开启。
+            打开「终端」，输入 <code>bash&nbsp;</code>（bash 加一个空格），把文件夹里的 <strong>start-mac.command</strong> 拖进终端窗口，按回车。首次会自动准备运行环境、下载语音模型（共约 800MB），请保持窗口开启。
           </p>
         ) : (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            在文件夹里打开终端，运行 <code>bash start.sh</code>。首次会自动装依赖、下载语音模型（约 500MB），请保持窗口开启。
+            在文件夹里打开终端，运行 <code>bash start.sh</code>。首次会自动准备运行环境、下载语音模型（共约 800MB），请保持窗口开启。
           </p>
         )}
         <details style={{ marginTop: 8, fontSize: 12, color: '#888' }}>
@@ -140,14 +140,14 @@ export default function BootstrapGuide({ onRetry }: { onRetry: () => void }) {
           <p style={{ margin: '4px 0 0' }}>macOS：终端里 bash + 拖入 start-mac.command</p>
           <p style={{ margin: '4px 0 0' }}>Linux：bash start.sh</p>
         </details>
-        <p style={{ fontSize: 12, color: '#999', margin: '8px 0 0' }}>没有装 Python？先到 python.org 装 3.10+，再运行启动器（主指令：{primaryCmd}）。</p>
+        <p style={{ fontSize: 12, color: '#999', margin: '8px 0 0' }}>不需要自己安装 Python：启动器会自动准备好所需的全部运行组件（主指令：{primaryCmd}）。</p>
       </section>
 
       {/* 第 3 步 */}
       <section style={cardStyle}>
-        <h2 style={{ fontSize: 15, margin: '0 0 8px' }}>第 3 步 · 等窗口显示 listening，然后回到这里</h2>
+        <h2 style={{ fontSize: 15, margin: '0 0 8px' }}>第 3 步 · 等窗口显示监听地址，然后回到这里</h2>
         <p style={{ fontSize: 13, color: '#666', margin: '0 0 10px' }}>
-          启动窗口出现 <code>backend listening on http://127.0.0.1:7850</code> 后，本页会在几秒内自动连上；也可以立刻点下面按钮。
+          启动窗口出现 <code>http://127.0.0.1:7850</code> 后，本页会在几秒内自动连上；也可以立刻点下面按钮。
         </p>
         <button onClick={onRetry} style={{ fontSize: 14, padding: '8px 16px' }}>
           重新连接

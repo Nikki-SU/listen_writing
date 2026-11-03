@@ -34,6 +34,8 @@
 
 ```
 data/
+  models/
+    whisper-{size}/                     # 可选：离线模型目录（存在则优先使用，不联网下载）
   projects/
     {project_id}/
       project.json                      # 嵌套 → JSON
@@ -47,6 +49,7 @@ data/
             {stage}.{seq}.json          # 嵌套 → JSON（版本引用）
 ```
 
+- 模型查找顺序：`LISTEN_WRITING_MODEL` 环境变量 → `data/models/whisper-{size}/` 本地目录 → 联网下载（官方 HuggingFace，失败降级 hf-mirror.com）。
 - 项目版本号 `stage.seq`（阶段.阶段内序号）：阶段 0 初始转写落 `versions/0.1.json`。
 - 转写状态对象 `transcribe`：`{"status":"pending|transcribing|done|error","progress":0~100,"error":""}`，随 `recording.json` 持久化；`transcribing` 期间进度实时更新。
 
@@ -64,7 +67,7 @@ data/
    - `backend/{main,models,storage,transcriber,preload}.py`
    - `requirements.txt`（写到用户文件夹根目录，启动器在根目录执行 `pip install -r requirements.txt`）
    - `start-windows.bat` / `start-mac.command` / `start.sh` / `README.md`（来源：仓库 `bootstrap/`）
-2. **运行启动器**：Windows 双击 bat；macOS 终端 `bash` + 拖入 `.command`；Linux `bash start.sh`。启动器负责建 venv → 装依赖（失败换清华 pip 镜像重试）→ `python backend/preload.py` 预下载模型（失败不阻塞）→ 启动 `backend/main.py`。
+2. **运行启动器**：Windows 双击 bat；macOS 终端 `bash` + 拖入 `.command`；Linux `bash start.sh`。启动器**不要求系统已装 Python**：首次自动下载便携 CPython 到用户文件夹 `.runtime/` → 依赖装进这份运行时 → `python backend/preload.py` 预下载模型（失败不阻塞）→ 启动 `backend/main.py`。
 3. **自动重连**：后端离线期间前端每 2 秒探测 `/api/health`，通了自动进入主界面。
 
 约束：
