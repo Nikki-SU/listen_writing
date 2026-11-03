@@ -76,6 +76,7 @@
 - `frontend/scripts/embed-backend.mjs`：清单来源 = `backend/{main,models,storage,transcriber,preload}.py` + `backend/requirements.txt`（映射为用户根目录 `requirements.txt`）+ `bootstrap/*`。加新后端文件必须把它加进 embed 清单。
 - 启动器（`bootstrap/start-*`）假设目录结构：根目录有 `backend/`、`requirements.txt`、启动器自身；改嵌入布局必须同步启动器里的相对路径。
 - `start-mac.command` 只是转交 `start.sh`，不要把启动逻辑写回去（否则两份会漂移）。
+- `start-windows.bat` **必须纯 ASCII + CRLF**：cmd 按字节读批处理，UTF-8 中文会让文件偏移错位、从行中间开始执行。`embed-backend.mjs` 会自动转 CRLF 并在发现非 ASCII 时**让 build 失败**；shell 脚本强制 LF（CRLF 会让 bash 报 `\r` 错误）。
 - 携带 Python 运行时的版本/下载地址写在 `start-windows.bat` 的 `PYTAG`/`PYVER` 与 `start.sh` 同名变量里，两处必须同步改。
 - 便携运行时落在用户文件夹 `.runtime/`（不建 venv）；改安装方式要同步 `start-*` 与 `README.md` 里的说明。
 - `BootstrapGuide.tsx` 消费 `BOOTSTRAP_FILES`（写入 + 下载兜底）；`App.tsx` 在 `health === 'down'` 时渲染它并每 2 秒探测重连。

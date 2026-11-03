@@ -1,12 +1,15 @@
 @echo off
 rem listen_writing one-click launcher for Windows.
-rem ASCII-only on purpose: cmd parses batch files in the OEM codepage.
-rem The page itself explains every step in Chinese, so users are not left guessing.
+rem
+rem IMPORTANT: this file must stay pure ASCII with CRLF line endings.
+rem cmd.exe reads batch files byte by byte; any non-ASCII character makes its
+rem file offset drift and the file starts executing from the middle of lines
+rem (seen in the wild: "untime", "ownloads", "026\" errors).
+rem The web page explains every step in Chinese, so users are not left guessing.
 rem
 rem No system Python is required: on first run this downloads a private portable
 rem CPython into .runtime\ and installs dependencies into it.
 
-chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
@@ -47,26 +50,27 @@ if not exist "%PY%" goto runtime_missing
 
 echo [3/4] Installing components (first run only, about 300 MB, needs internet)
 "%PY%" -m pip install --disable-pip-version-check -r requirements.txt
-if not errorlevel 1 goto pip_ready
+if not errorlevel 1 goto check_native
 echo        Retrying with a faster domestic mirror ...
 "%PY%" -m pip install --disable-pip-version-check -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if errorlevel 1 goto pip_failed
 
-:pip_ready
-rem ctranslate2 / av 的 dll 依赖 MSVCP140.dll，便携 Python 不自带；
-rem 干净的 Windows 上缺它会导致 "DLL load failed"，这里检测并自动补上微软官方运行库。
+:check_native
+rem ctranslate2 / av dlls need MSVCP140.dll, which the portable Python does not ship.
+rem A clean Windows would fail with "DLL load failed", so check and install the
+rem official Microsoft runtime library when missing.
 "%PY%" -c "import av, ctranslate2" >nul 2>nul
 if not errorlevel 1 goto preload
 
 echo.
 echo [3.5/4] Missing Microsoft runtime library (MSVCP140.dll).
-echo         Installing it now. A Windows permission window will pop up,
-echo         please click "Yes" to allow the installation.
+echo          Installing it now. A Windows permission window will pop up,
+echo          please click "Yes" to allow the installation.
 set "VCREDIST=%TEMP%\vc_redist.x64.exe"
 if exist "%VCREDIST%" del /q "%VCREDIST%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $env:VCREDIST -UseBasicParsing } catch { exit 1 }"
 if errorlevel 1 goto vc_manual
-start /wait "" "%VCREDIST%" /install /quiet /norestart
+start "" /wait "%VCREDIST%" /install /quiet /norestart
 "%PY%" -c "import av, ctranslate2" >nul 2>nul
 if not errorlevel 1 goto preload
 

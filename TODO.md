@@ -10,6 +10,7 @@
 - [x] **录音格式白名单**（2026-11-03）：扩展为 `wav/mp3/m4a/wma/flac/ogg/opus/aac/aiff`，解码全部由后端 PyAV 内置完成（不再让用户自己转格式）；flac 已端到端实测转写跑通。
 - [x] **不再假设用户装了 Python**（2026-11-03）：启动器首次自动下载便携 CPython 到 `.runtime/`（GitHub python-build-standalone，Win 47MB / mac 25MB / Linux 68MB），依赖装进这份运行时，不建 venv、不碰系统环境。用户电脑即使完全没有 Python 也能用。
 - [x] **Windows 缺 MSVCP140.dll**（2026-11-03）：核查发现 `ctranslate2.dll` 依赖 `MSVCP140.dll`（便携 Python 只带 vcruntime140，不带 msvcp140），干净 Windows 会 `DLL load failed`。启动器在装依赖后 `import av, ctranslate2` 自检，失败则自动下载并静默安装微软官方 VC++ 运行库，需用户点一次 UAC「是」；装不上时给出官方链接让用户手动装。
+- [x] **Windows 批处理中文导致 cmd 错位执行**（2026-11-03，用户真机实测暴露）：`.bat` 里写了中文注释，cmd 按字节读文件，UTF-8 中文被按 GBK 拆成不同字符数，文件偏移错位 → 从行中间开始执行（报 `untime` / `ownloads` / `026"`，还误触发 `time` 命令）。已改：`.bat` 纯 ASCII，`embed-backend.mjs` 自动转 CRLF 且检测到非 ASCII 直接让 build 失败；shell 脚本强制 LF。
 
 ## 待办 / 坑
 
