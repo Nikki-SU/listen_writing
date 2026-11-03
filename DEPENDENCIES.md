@@ -11,7 +11,7 @@
 | ctranslate2 | 4.8.1 | whisper 的 CTranslate2 CPU 推理引擎 | faster-whisper 直接依赖；3.12 用 cp312 wheel |
 | av | 17.1.0 | 音频解码 + 时长探测 | faster-whisper 传递依赖；`main._probe_duration_sec` 直接 import 使用；**它内置 FFmpeg，因此用户机器无需安装 FFmpeg** |
 | tokenizers | 0.22.1 | 字节对编码分词 | faster-whisper 传递依赖 |
-| huggingface-hub | — | 模型下载，支持 `HF_ENDPOINT` 镜像 | 下载源默认官方、失败降级 hf-mirror.com（见 `transcriber.py`） |
+| huggingface-hub | `>=0.21,<2` | 模型下载，支持 `HF_ENDPOINT` 镜像 | 下载源默认官方、失败降级 hf-mirror.com（见 `transcriber.py`）；2.0 起接口可能变，故封顶 |
 | onnxruntime | — | VAD 可选依赖 | faster-whisper 传递依赖 |
 
 ### 运行组件（首次自动下载，用户零安装）
@@ -26,6 +26,30 @@
 - macOS / Linux 解压用系统 `tar`，下载用 `curl`（缺失回退 `wget`）。
 - 选 3.12 而非更高版本：ctranslate2 / onnxruntime / av 的 wheel 覆盖最稳；并且 `av` 是 cp311-abi3，3.12 可用。
 - 实测：Linux x64 全流程（下载运行时 → 装依赖 → 转写）跑通；Windows/macOS 脚本逻辑同构，未在真机执行（见 TODO.md）。
+
+### 网络与下载纪律（改启动器前必读）
+
+国内网络下 github.com release 经常不可达，因此两个启动器都不是单源下载：
+
+| 环节 | 顺序 | 校验 |
+|---|---|---|
+| 便携 Python 包 | `github.com` → `https://gh-proxy.com/` → `https://ghproxy.net/` | 每次下载后用官方 `SHA256SUMS` 里的 hash 校验；不符即删文件换下一个源 |
+| pip 依赖 | 清华 `https://pypi.tuna.tsinghua.edu.cn/simple` → 官方 PyPI | `--timeout 20 --retries 2`，失败自动换源 |
+| whisper 模型 | 官方 HuggingFace → `hf-mirror.com` | `HF_HUB_ETAG_TIMEOUT=5` / `HF_HUB_DOWNLOAD_TIMEOUT=20`；切镜像时置 `HF_HUB_DISABLE_XET=1` |
+
+- **SHA256 是硬编码在脚本里的**，不是下载时从网络取（否则源被劫持就失去意义）。当前 5 条：
+  - Windows x64 `590dfcbe3a34c07301e6332e13e2188b98655cd072b08afa45a7998dc4c22bc5`（在 `start-windows.bat` 的 `SHA`）
+  - mac arm64 `fbf4afe…f14e`、mac x64 `a962e47…69f3`、linux x64 `6a79e92…b89de`、linux arm64 `a945427…032b`（在 `start.sh` 的 `case` 分支）
+  - 升级 `PYTAG`/`PYVER` 时必须按官方 `SHA256SUMS` 同步这 5 条，漏一条 → 该平台永远校验失败。
+- `curl` 参数 `--connect-timeout 10 --speed-limit 1024 --speed-time 20 --retry 2`：连接 10s 超时、低于 1KB/s 持续 20s 放弃，避免国内墙下长时间卡死。
+- 第三方代理只作**传输通道**，最终文件必须过官方 hash；不要新增「只下不校验」的源。
+
+### 依赖锁版本纪律
+
+`requirements.txt` 里凡是 faster-whisper 的传递依赖，都要显式锁死版本，不能交给 pip 挑最新：
+
+- 实测教训：只锁 `faster-whisper==1.2.1` 时 pip 装了 `av 19`，而 av 19 移除了 `open(metadata_errors=...)`，转写全部报 `open() got an unexpected keyword argument 'metadata_errors'`。
+- 升级任何一条前，必须重新跑一遍**真实转写**（上传音频 → 拿到分句），不能只看 `pip install` 成功。
 
 > 沙箱屏蔽 huggingface.co 与 hf-mirror.com，模型自动下载链路无法在此实测；已用 GitHub release 模型验证加载/转写链路，最终用户经 hf-mirror.com 兜底。
 

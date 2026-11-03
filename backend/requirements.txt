@@ -1,9 +1,14 @@
 # ASR 转写（阶段 0 初始转写）
 faster-whisper==1.2.1
 
-# 关键传递依赖（由 faster-whisper 一并安装，此处登记备查，见 DEPENDENCIES.md）
-# ctranslate2==4.8.1   # CPU 推理引擎（whisper 的 CTranslate2 移植）
-# av==17.1.0           # 音频解码 + 时长探测
-# tokenizers==0.22.1   # 字节对编码分词
-# huggingface-hub      # 模型下载（支持 HF_ENDPOINT 镜像）
+# 关键传递依赖必须锁死版本（不能交给 pip 自动挑最新）：
+# 实测 av 19 移除了 open(metadata_errors=...) 参数，faster-whisper 1.2.1 直接报
+# "open() got an unexpected keyword argument 'metadata_errors'"，转写全挂。
+# 升级任何一条前，必须重新跑一遍真实转写（见 DEPENDENCIES.md「升级纪律」）。
+ctranslate2==4.8.1
+av==17.1.0
+tokenizers==0.22.1
+huggingface-hub>=0.21,<2
+
+# 其余由 faster-whisper 自动带入（此处仅登记备查）
 # onnxruntime          # VAD 可选依赖

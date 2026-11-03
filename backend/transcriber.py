@@ -19,6 +19,12 @@ import logging
 import os
 from typing import Callable
 
+# 网络环境兜底（必须在导入 huggingface_hub 之前设置）：
+# - 官方 HuggingFace 在国内常被屏蔽，把探测超时压短，失败能快速切换镜像；
+# - hf-mirror 多为普通 HTTP 镜像，不支持 xet 传输，关掉 xet 避免多绕一层。
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "5")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "20")
+
 from faster_whisper import WhisperModel
 
 from storage import DATA_ROOT
@@ -80,6 +86,7 @@ class FasterWhisperTranscriber(Transcriber):
     def _fallback_to_mirror(self) -> None:
         """把 HuggingFace 下载源切到国内镜像（用户零配置，仅作可用性兜底）。"""
         os.environ["HF_ENDPOINT"] = HF_MIRROR
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
         try:
             import huggingface_hub.constants as hc
             hc.ENDPOINT = HF_MIRROR

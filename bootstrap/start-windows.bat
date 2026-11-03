@@ -3,19 +3,25 @@ rem listen_writing one-click launcher for Windows.
 rem
 rem IMPORTANT: this file must stay pure ASCII with CRLF line endings.
 rem cmd.exe reads batch files byte by byte; any non-ASCII character makes its
-rem file offset drift and the file starts executing from the middle of lines
-rem (seen in the wild: "untime", "ownloads", "026\" errors).
+rem file offset drift and the file starts executing from the middle of lines.
 rem The web page explains every step in Chinese, so users are not left guessing.
 rem
 rem No system Python is required: on first run this downloads a private portable
 rem CPython into .runtime\ and installs dependencies into it.
+rem
+rem Downloads go through several sources (GitHub official first, then domestic
+rem proxies) because github.com release downloads are often slow or unreachable
+rem in mainland China. Every attempt is verified against the official SHA256,
+rem so a broken or tampered mirror is rejected instead of executed.
 
 setlocal
 cd /d "%~dp0"
 
 set "PYTAG=20261026"
 set "PYVER=3.12.16"
-set "PYURL=https://github.com/astral-sh/python-build-standalone/releases/download/%PYTAG%/cpython-%PYVER%+%PYTAG%-x86_64-pc-windows-msvc-install_only.tar.gz"
+set "GHBASE=https://github.com/astral-sh/python-build-standalone/releases/download/%PYTAG%"
+set "PKG=cpython-%PYVER%+%PYTAG%-x86_64-pc-windows-msvc-install_only.tar.gz"
+set "SHA=590dfcbe3a34c07301e6332e13e2188b98655cd072b08afa45a7998dc4c22bc5"
 set "PY=.runtime\python.exe"
 
 if exist "%PY%" goto have_runtime
@@ -24,18 +30,14 @@ echo.
 echo [1/4] Preparing a private Python runtime (one time, about 50 MB)
 echo        You do NOT need to install Python on this computer.
 if not exist ".runtime" mkdir ".runtime"
-if exist "python-runtime.tar.gz" del /q "python-runtime.tar.gz"
 
-where curl >nul 2>nul
-if errorlevel 1 goto download_powershell
-echo        Downloading runtime package ...
-curl -L --fail --retry 3 --retry-delay 2 -o "python-runtime.tar.gz" "%PYURL%"
+call :try_download "%GHBASE%/%PKG%"
 if not errorlevel 1 goto unpack
-
-:download_powershell
-echo        Downloading runtime package (PowerShell fallback) ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri $env:PYURL -OutFile 'python-runtime.tar.gz' -UseBasicParsing } catch { exit 1 }"
-if errorlevel 1 goto download_failed
+call :try_download "https://gh-proxy.com/%GHBASE%/%PKG%"
+if not errorlevel 1 goto unpack
+call :try_download "https://ghproxy.net/%GHBASE%/%PKG%"
+if not errorlevel 1 goto unpack
+goto download_failed
 
 :unpack
 echo [2/4] Unpacking runtime ...
@@ -49,10 +51,10 @@ del /q "python-runtime.tar.gz"
 if not exist "%PY%" goto runtime_missing
 
 echo [3/4] Installing components (first run only, about 300 MB, needs internet)
-"%PY%" -m pip install --disable-pip-version-check -r requirements.txt
+"%PY%" -m pip install --disable-pip-version-check --timeout 20 --retries 2 -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if not errorlevel 1 goto check_native
-echo        Retrying with a faster domestic mirror ...
-"%PY%" -m pip install --disable-pip-version-check -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+echo        Mirror failed, retrying with the official index ...
+"%PY%" -m pip install --disable-pip-version-check --timeout 20 --retries 2 -r requirements.txt
 if errorlevel 1 goto pip_failed
 
 :check_native
@@ -100,10 +102,41 @@ echo Backend stopped. Press any key to close this window.
 pause >nul
 exit /b 0
 
+rem ---------------------------------------------------------------
+rem Download one source into python-runtime.tar.gz and verify it.
+rem Returns 0 only when the file downloaded AND matched the official hash.
+rem ---------------------------------------------------------------
+:try_download
+if exist "python-runtime.tar.gz" del /q "python-runtime.tar.gz"
+echo        Downloading runtime from: %~1
+where curl >nul 2>nul
+if errorlevel 1 goto try_download_ps
+curl -L --fail --connect-timeout 10 --speed-limit 1024 --speed-time 20 --retry 2 --retry-delay 2 -o "python-runtime.tar.gz" "%~1"
+if errorlevel 1 exit /b 1
+goto verify_download
+
+:try_download_ps
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri '%~1' -OutFile 'python-runtime.tar.gz' -UseBasicParsing } catch { exit 1 }"
+if errorlevel 1 exit /b 1
+
+:verify_download
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$h=(Get-FileHash -Algorithm SHA256 -Path 'python-runtime.tar.gz').Hash.ToLower(); if ($h -ne '%SHA%') { exit 1 }"
+if errorlevel 1 goto checksum_bad
+if not exist "python-runtime.tar.gz" exit /b 1
+exit /b 0
+
+:checksum_bad
+echo        Checksum mismatch, discarding this download and trying next source.
+del /q "python-runtime.tar.gz"
+exit /b 1
+
 :download_failed
 echo.
-echo [ERROR] Could not download the runtime package.
-echo         Check your internet connection, then double-click this file again.
+echo [ERROR] Could not download the runtime package from any source.
+echo         Your network may block github.com. Options:
+echo         1. Connect to another network (for example a phone hotspot) and run this file again.
+echo         2. Download this file on another computer, put it next to this file:
+echo            %PKG%
 pause
 exit /b 1
 
