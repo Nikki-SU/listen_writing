@@ -193,7 +193,13 @@ export default function App() {
       setUpd('restarting')
       setUpdText(`已更新 ${res.changed} 个文件，正在重启后端…${launcherNote}`)
       setRestarting(true)
-      const ok = await waitForBackend(30000)
+      // 首次更新可能触发模型下载（约 500MB），启动会明显变慢；
+      // 一分钟还没起来就先解释原因，避免用户以为卡死而关掉窗口。
+      const slowTimer = setTimeout(() => {
+        setUpdText(`正在重启本地后端…如果这是首次下载语音模型（约 500MB），需要几分钟，请保持启动窗口开启。${launcherNote}`)
+      }, 60000)
+      const ok = await waitForBackend(8 * 60 * 1000)
+      clearTimeout(slowTimer)
       setRestarting(false)
       if (ok) {
         setUpd('idle')
@@ -201,7 +207,7 @@ export default function App() {
         void boot()
       } else {
         setUpd('manual')
-        setUpdText('后端没有自动起来：请关闭启动窗口后重新双击启动器。')
+        setUpdText('后端没有自动起来。请看启动窗口里的提示：如果它正在下载模型，请等下载完成后再刷新本页面；如果是报错，把窗口内容发给我们。')
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {

@@ -3,12 +3,14 @@
 设计目标（见《工程纪律.md》「世界观先于方法论」）：
 - 转写引擎可替换：上层只依赖 Transcriber 抽象，换引擎不牵动 storage / main。
 - 模型可替换：用户本地路径优先，其次 size 名（small 等）自动下载。
-- 下载源对用户零配置：默认官方 HuggingFace，失败自动降级国内镜像 hf-mirror.com。
+- 下载源对用户零配置：导入时探测官方 HuggingFace 端点，不通自动改用国内镜像 hf-mirror.com。
 
 模型查找顺序（用户零配置，离线也能用）：
 1. 环境变量 LISTEN_WRITING_MODEL 指向的本地 ctranslate2 模型目录（若有）。
 2. `data/models/whisper-<size>/` 下的离线模型（用户自行放入即可离线使用）。
-3. 交给 faster-whisper 按 size 名自动下载（官方 HuggingFace → 失败降级 hf-mirror.com）。
+3. 交给 faster-whisper 按 size 名自动下载，缓存也放在项目文件夹内
+   （`data/models/hf-cache/`；官方 HuggingFace 探测不通时改用 hf-mirror.com）。
+   这样换电脑 / 换盘时把整个文件夹拷走即可，模型不用重下。
 
 配置（环境变量，引导部署的启动器可设）：
 - LISTEN_WRITING_MODEL：本地 ctranslate2 模型目录路径（优先级最高）。
@@ -17,7 +19,20 @@
 
 import logging
 import os
+import urllib.request
+from pathlib import Path
 from typing import Callable
+
+from storage import DATA_ROOT
+
+HF_MIRROR = "https://hf-mirror.com"
+DEFAULT_MODEL_SIZE = "small"
+
+# 模型缓存跟随项目文件夹，而不是默认的 C:\Users\<用户>\.cache\huggingface：
+# - 用户把文件夹拷到另一台电脑，模型跟着走，不用重新下载 500MB；
+# - 不会在系统盘悄悄占空间，用户看得见它有多大。
+# 用户自己设了 HF_HOME 时尊重用户设置（setdefault 不覆盖）。
+os.environ.setdefault("HF_HOME", str(DATA_ROOT / "models" / "hf-cache"))
 
 # 网络环境兜底（必须在导入 huggingface_hub 之前设置）：
 # - 官方 HuggingFace 在国内常被屏蔽，把探测超时压短，失败能快速切换镜像；
@@ -28,14 +43,28 @@ os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "20")
 # 用户会误以为是报错；缓存本身照样可用，直接关掉这条警告。
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
+
+def _hf_official_reachable(timeout: float = 3.0) -> bool:
+    """官方端点是否可用（HEAD 一个模型元数据接口，不做实际下载）。"""
+    url = "https://huggingface.co/api/models/Systran/faster-whisper-tiny"
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+# 国内网络下官方端点常不可达。端点必须在导入 huggingface_hub 之前定下来：
+# 实测 huggingface_hub 1.x 在进程运行中改 ENDPOINT 常量不生效（仍走旧地址），
+# 所以这里先探测一次，不通就直接改用国内镜像，而不是等下载失败后再切。
+if "HF_ENDPOINT" not in os.environ and not _hf_official_reachable():
+    os.environ["HF_ENDPOINT"] = HF_MIRROR
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 from faster_whisper import WhisperModel
 
-from storage import DATA_ROOT
-
 logger = logging.getLogger(__name__)
-
-HF_MIRROR = "https://hf-mirror.com"
-DEFAULT_MODEL_SIZE = "small"
 
 
 def offline_model_dir(size: str) -> str:
@@ -71,11 +100,28 @@ class FasterWhisperTranscriber(Transcriber):
         return self.size
 
     def needs_download(self) -> bool:
-        """非本地目录（即 size 名）需要联网下载模型。"""
-        return not os.path.isdir(os.path.expanduser(self.model_ref))
+        """模型是否还没准备好。
+
+        model_ref 是本地目录时直接判目录存在；是 size 名时，除了看目录，
+        还要看 HuggingFace 缓存里是否已有下载完的 model.bin——否则每次启动
+        都会打印「开始下载」，用户会以为每次都在重下 500MB。
+        """
+        ref = os.path.expanduser(self.model_ref)
+        if os.path.isdir(ref):
+            return False
+        # 与 huggingface_hub 的优先级一致：HF_HUB_CACHE > HF_HOME/hub
+        cache_dir = os.environ.get("HF_HUB_CACHE") or os.path.join(
+            os.environ.get("HF_HOME", str(DATA_ROOT / "models" / "hf-cache")), "hub"
+        )
+        cache_root = Path(cache_dir) / f"models--Systran--faster-whisper-{self.size}" / "snapshots"
+        if cache_root.is_dir():
+            for snapshot in cache_root.iterdir():
+                if (snapshot / "model.bin").is_file():
+                    return False
+        return True
 
     def ensure_model(self) -> bool:
-        """确保模型可用（必要时联网下载，失败自动切镜像）。返回是否就绪。
+        """确保模型可用（必要时联网下载，下载源已在模块导入时决定）。返回是否就绪。
 
         供启动器 preload.py 预下载用；失败不抛出，返回 False 即可（首次转写会再试）。
         """
@@ -86,28 +132,10 @@ class FasterWhisperTranscriber(Transcriber):
             logger.warning("模型准备失败", exc_info=True)
             return False
 
-    def _fallback_to_mirror(self) -> None:
-        """把 HuggingFace 下载源切到国内镜像（用户零配置，仅作可用性兜底）。"""
-        os.environ["HF_ENDPOINT"] = HF_MIRROR
-        os.environ["HF_HUB_DISABLE_XET"] = "1"
-        try:
-            import huggingface_hub.constants as hc
-            hc.ENDPOINT = HF_MIRROR
-        except Exception:  # pragma: no cover - 版本差异保护，不影响主流程
-            logger.warning("无法切换 huggingface_hub 镜像常量，依赖 HF_ENDPOINT 环境变量", exc_info=True)
-
     def _load_model(self) -> WhisperModel:
         if self._model is not None:
             return self._model
-        try:
-            self._model = WhisperModel(self.model_ref, device=self.device, compute_type=self.compute_type)
-        except Exception:
-            if os.environ.get("HF_ENDPOINT") is None and self.needs_download():
-                logger.info("官方源下载失败，自动切换 hf-mirror.com 重试")
-                self._fallback_to_mirror()
-                self._model = WhisperModel(self.model_ref, device=self.device, compute_type=self.compute_type)
-            else:
-                raise
+        self._model = WhisperModel(self.model_ref, device=self.device, compute_type=self.compute_type)
         return self._model
 
     def transcribe(self, audio_path: str, on_progress: Callable[[int], None] | None = None) -> list[dict]:

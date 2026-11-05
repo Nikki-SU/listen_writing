@@ -37,6 +37,7 @@
 data/
   models/
     whisper-{size}/                     # 可选：离线模型目录（存在则优先使用，不联网下载）
+    hf-cache/                           # 联网下载的模型缓存（HF_HOME 指向这里，换机拷走文件夹即带走）
   projects/
     {project_id}/
       project.json                      # 嵌套 → JSON
@@ -50,7 +51,7 @@ data/
             {stage}.{seq}.json          # 嵌套 → JSON（版本引用）
 ```
 
-- 模型查找顺序：`LISTEN_WRITING_MODEL` 环境变量 → `data/models/whisper-{size}/` 本地目录 → 联网下载（官方 HuggingFace，失败降级 hf-mirror.com）。
+- 模型查找顺序：`LISTEN_WRITING_MODEL` 环境变量 → `data/models/whisper-{size}/` 本地目录 → 联网下载（官方 HuggingFace，失败降级 hf-mirror.com），缓存落在项目文件夹 `data/models/hf-cache/`（不写系统盘的用户目录）。
 - 项目版本号 `stage.seq`（阶段.阶段内序号）：阶段 0 初始转写落 `versions/0.1.json`。
 - 转写状态对象 `transcribe`：`{"status":"pending|transcribing|done|error","progress":0~100,"error":""}`，随 `recording.json` 持久化；`transcribing` 期间进度实时更新。
 

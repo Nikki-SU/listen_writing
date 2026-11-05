@@ -19,13 +19,13 @@
 | 组件 | 来源 / 大小 | 说明 |
 |---|---|---|
 | 便携 CPython 3.12.16 | GitHub `astral-sh/python-build-standalone` release `20261026`，install_only 包：Windows x64 47MB / macOS 25MB / Linux x64 68MB | 解压到用户文件夹 `.runtime/`；依赖直接装进这份运行时（不建 venv） |
-| 语音模型 | HuggingFace `Systran/faster-whisper-small` ≈ 500MB（官方 → hf-mirror.com 兜底） | 也可离线：放入 `data/models/whisper-small/` 即优先使用 |
+| 语音模型 | HuggingFace `Systran/faster-whisper-small` ≈ 500MB | 缓存位置由 `HF_HOME` 指向 `data/models/hf-cache/`（随项目文件夹走，不写系统盘用户目录）；也可离线：放入 `data/models/whisper-small/` 即优先使用 |
 | Microsoft VC++ 运行库（`MSVCP140.dll`） | 仅 Windows；官方 `https://aka.ms/vs/17/release/vc_redist.x64.exe` | `ctranslate2.dll` 依赖它，便携 Python 只带 vcruntime140 不带 msvcp140；启动器自检 `import av, ctranslate2` 失败时自动下载安装（需一次 UAC 确认），失败则给出手动安装链接 |
 
 - Windows 解压依赖系统自带 `tar.exe`（Win10 1803+ / Win11）；下载优先 `curl.exe`，缺失则回退 PowerShell。
 - macOS / Linux 解压用系统 `tar`，下载用 `curl`（缺失回退 `wget`）。
 - 选 3.12 而非更高版本：ctranslate2 / onnxruntime / av 的 wheel 覆盖最稳；并且 `av` 是 cp311-abi3，3.12 可用。
-- 实测：Linux x64 全流程（下载运行时 → 装依赖 → 转写）跑通；Windows/macOS 脚本逻辑同构，未在真机执行（见 TODO.md）。
+- 实测：Windows x64 已于 2026-11-05 真机跑通（下载运行时 → 装依赖 → 下模型 → 起服务 → 页面连上）；Linux x64 全流程跑通；macOS 脚本逻辑同构，未在真机执行（见 TODO.md）。
 
 ### 网络与下载纪律（改启动器前必读）
 
@@ -35,7 +35,7 @@
 |---|---|---|
 | 便携 Python 包 | `github.com` → `https://gh-proxy.com/` → `https://ghproxy.net/` | 每次下载后用官方 `SHA256SUMS` 里的 hash 校验；不符即删文件换下一个源 |
 | pip 依赖 | 清华 `https://pypi.tuna.tsinghua.edu.cn/simple` → 官方 PyPI | `--timeout 20 --retries 2`，失败自动换源 |
-| whisper 模型 | 官方 HuggingFace → `hf-mirror.com` | `HF_HUB_ETAG_TIMEOUT=5` / `HF_HUB_DOWNLOAD_TIMEOUT=20`；切镜像时置 `HF_HUB_DISABLE_XET=1` |
+| whisper 模型 | 导入时探测官方 `huggingface.co`（HEAD 模型接口，3s 超时）；不通则整个进程改用 `hf-mirror.com` | `HF_HUB_ETAG_TIMEOUT=5` / `HF_HUB_DOWNLOAD_TIMEOUT=20`；`HF_HUB_DISABLE_SYMLINKS_WARNING=1`；端点不通时置 `HF_HUB_DISABLE_XET=1`。**端点必须在 import 前定下**：huggingface_hub 1.x 运行中改 `constants.ENDPOINT` 不生效（已实测） |
 
 - **SHA256 是硬编码在脚本里的**，不是下载时从网络取（否则源被劫持就失去意义）。当前 5 条：
   - Windows x64 `590dfcbe3a34c07301e6332e13e2188b98655cd072b08afa45a7998dc4c22bc5`（在 `start-windows.bat` 的 `SHA`）
@@ -59,7 +59,7 @@
 - 实测教训：只锁 `faster-whisper==1.2.1` 时 pip 装了 `av 19`，而 av 19 移除了 `open(metadata_errors=...)`，转写全部报 `open() got an unexpected keyword argument 'metadata_errors'`。
 - 升级任何一条前，必须重新跑一遍**真实转写**（上传音频 → 拿到分句），不能只看 `pip install` 成功。
 
-> 沙箱屏蔽 huggingface.co 与 hf-mirror.com，模型自动下载链路无法在此实测；已用 GitHub release 模型验证加载/转写链路，最终用户经 hf-mirror.com 兜底。
+> 2026-11-05 实测修正：沙箱里官方 `huggingface.co` 不可达、`hf-mirror.com` 可用。已实测「导入时探测官方 → 自动改用镜像 → tiny 模型 75MB 下载成功 → 缓存落在 `data/models/hf-cache/`」整条链路，以及缓存命中后 `preload.py` 跳过下载、模型可加载并转写。
 
 ## B. 自定义函数依赖
 
@@ -88,10 +88,11 @@
 | `save_transcript_md` | `storage.py` | 正文稿 Markdown | （无字段依赖） | `main._run_transcribe` |
 | `save_version` | `storage.py` | (pid, rid, stage, seq, dict) → JSON | `recording_id / stage / seq / parent / author_nick / timestamp / sentence_ids` | `main._run_transcribe` 落 `versions/0.1.json` |
 | `Transcriber.transcribe`（抽象） | `transcriber.py` | (audio_path, on_progress) → `[{start_ms,end_ms,text,speaker}]` | 返回元素四字段 | `main._run_transcribe` |
-| `FasterWhisperTranscriber` | `transcriber.py` | 具体引擎实现 | `model_ref` 属性（本地目录优先）；环境变量 `LISTEN_WRITING_MODEL` / `LISTEN_WRITING_MODEL_SIZE` | `transcriber.default_transcriber` |
+| `FasterWhisperTranscriber` | `transcriber.py` | 具体引擎实现 | `model_ref` 属性（本地目录优先）；环境变量 `LISTEN_WRITING_MODEL` / `LISTEN_WRITING_MODEL_SIZE`；模型缓存 `HF_HOME=data/models/hf-cache` | `transcriber.default_transcriber` |
 | `offline_model_dir` | `transcriber.py` | size → `data/models/whisper-<size>` 路径 | 依赖 `storage.DATA_ROOT` | `FasterWhisperTranscriber.model_ref`、`needs_download` |
 | `default_transcriber` | `transcriber.py` | 无 → Transcriber 实例 | — | `main` 模块级 `_transcriber` |
-| `needs_download` / `ensure_model` | `transcriber.py` | 无 → bool（模型是否就绪） | 同 `model_ref` 解析顺序 | `preload.py` 预下载；`_load_model` 内部判断 |
+| `needs_download` / `ensure_model` | `transcriber.py` | 无 → bool（模型是否就绪） | 检查 `model_ref` 目录；size 名再查 HF 缓存 `snapshots/*/model.bin` | `preload.py` 预下载（命中缓存时跳过下载提示） |
+| `_hf_official_reachable` | `transcriber.py` | 无 → bool | HEAD `huggingface.co/api/models/Systran/faster-whisper-tiny`，3s 超时 | 模块导入时决定是否设 `HF_ENDPOINT=hf-mirror.com` |
 | `preload.main` | `preload.py` | 无 → int（0 就绪 / 1 失败不阻塞） | 调 `default_transcriber`；启动器在**用户文件夹根目录**执行 `python backend/preload.py`，内部按包路径 import `transcriber` | `bootstrap/start-*.sh`、`start-windows.bat` |
 | `_probe_duration_sec` | `main.py` | audio_path → float 秒 | 依赖 `av` | `main._run_transcribe` 回填 `duration_sec` |
 | `_run_transcribe` | `main.py` | (pid, rid) → 后台线程编排 | 编排 `storage.*` + `transcriber.transcribe` | `main._upload_recording` 启动线程 |
