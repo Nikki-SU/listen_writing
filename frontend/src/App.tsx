@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
+import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
+import { BOOTSTRAP_FILES } from './bootstrapFiles'
 import type { Project, Recording, RecordingDetail } from './types'
 import {
   applyUpdate,
@@ -11,7 +13,7 @@ import {
   saveDirHandle,
 } from './updater'
 
-type UpdateState = 'idle' | 'available' | 'updating' | 'restarting' | 'manual' | 'error'
+type UpdateState = 'idle' | UpdatePhase
 
 // 卡片化容器：用户看到的应该是界面，不是开发信息。
 const cardStyle = {
@@ -63,6 +65,9 @@ export default function App() {
   const [error, setError] = useState('')
   const [upd, setUpd] = useState<UpdateState>('idle')
   const [updText, setUpdText] = useState('')
+  const [updProgress, setUpdProgress] = useState<{ done: number; total: number }>()
+  const [updDismissed, setUpdDismissed] = useState(false)
+  const [guideOpen, setGuideOpen] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -188,6 +193,7 @@ export default function App() {
   async function onUpdate() {
     setUpd('updating')
     setUpdText('正在写入本地文件…')
+    setUpdProgress({ done: 0, total: BOOTSTRAP_FILES.filter((f) => !f.launcher).length })
     try {
       let dir = await loadDirHandle()
       if (!dir || !(await ensureWritePermission(dir))) {
@@ -196,7 +202,9 @@ export default function App() {
         await saveDirHandle(dir)
       }
 
-      const res = await applyUpdate(dir)
+      const res = await applyUpdate(dir, (done) =>
+        setUpdProgress({ done, total: BOOTSTRAP_FILES.filter((f) => !f.launcher).length }),
+      )
       const launcherNote = res.launcherStale.length
         ? `启动器脚本有更新（${res.launcherStale.join('、')}），请回到引导页重新点一次「写入启动文件」覆盖它们。`
         : ''
@@ -253,6 +261,17 @@ export default function App() {
   if (health === 'down' && !restarting) {
     return <BootstrapGuide onRetry={() => void boot()} />
   }
+  if (guideOpen) {
+    return (
+      <BootstrapGuide
+        onRetry={() => {
+          setGuideOpen(false)
+          void boot()
+        }}
+        onClose={() => setGuideOpen(false)}
+      />
+    )
+  }
   if (health === 'checking') {
     return (
       <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#8a8f98', fontSize: 14, background: '#f6f7f9' }}>
@@ -261,37 +280,56 @@ export default function App() {
     )
   }
 
+  const blockingUpdate =
+    upd === 'updating' ||
+    upd === 'restarting' ||
+    ((upd === 'available' || upd === 'manual' || upd === 'error') && !updDismissed)
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#f6f7f9' }}>
-      {upd !== 'idle' && (
+      {blockingUpdate && (
+        <UpdateScreen
+          phase={upd as UpdatePhase}
+          text={updText}
+          progress={updProgress}
+          onUpdate={onUpdate}
+          onLater={() => setUpdDismissed(true)}
+          onOpenGuide={() => {
+            setUpdDismissed(true)
+            setGuideOpen(true)
+          }}
+        />
+      )}
+
+      {/* 用户选择「稍后」后，收起成一行的提示，不挡操作 */}
+      {upd !== 'idle' && updDismissed && (upd === 'available' || upd === 'manual' || upd === 'error') && (
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             gap: 12,
-            padding: '10px 24px',
+            padding: '8px 24px',
             fontSize: 13,
             borderBottom: '1px solid #eee',
-            background:
-              upd === 'error' ? '#fdecea' : upd === 'available' ? '#fff8e1' : upd === 'manual' ? '#fff4e5' : '#e8f0fe',
+            background: upd === 'error' ? '#fdecea' : '#fff8e1',
           }}
         >
           <span style={{ flex: 1, lineHeight: 1.6 }}>
-            {upd === 'available'
-              ? '页面已经更新，但你电脑上正在运行的是旧版本，更新后再用。'
-              : updText}
-            {(upd === 'available' || upd === 'updating' || upd === 'restarting') &&
-              ' 只更新程序文件，不会动你的录音数据。'}
+            有新版本可用：页面已更新，本地程序还是旧版。只更新程序文件，不会动你的录音。
           </span>
-          {(upd === 'available' || upd === 'error') && (
-            <button onClick={onUpdate} style={{ fontSize: 13, padding: '4px 12px', flexShrink: 0 }}>
-              更新本地文件
-            </button>
-          )}
+          <button onClick={onUpdate} style={{ fontSize: 13, padding: '4px 12px', flexShrink: 0 }}>
+            更新本地文件
+          </button>
         </div>
       )}
 
-      <header style={{ flexShrink: 0, textAlign: 'center', padding: '24px 24px 18px' }}>
+      <header style={{ flexShrink: 0, textAlign: 'center', padding: '24px 24px 18px', position: 'relative' }}>
+        <button
+          onClick={() => setGuideOpen(true)}
+          style={{ position: 'absolute', right: 24, top: 20, fontSize: 12, padding: '4px 10px', color: '#666' }}
+        >
+          启动设置
+        </button>
         <h1 style={{ margin: 0, fontSize: 22, letterSpacing: '0.02em' }}>listen_writing</h1>
         <p
           style={{

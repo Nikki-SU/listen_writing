@@ -20,3 +20,20 @@ body {
 .scroll-hidden::-webkit-scrollbar {
   display: none; /* Chrome / Safari / Edge */
 }
+
+/* 更新中的不确定进度条：没有真实百分比时，用来回移动的条表示「还在跑」 */
+.update-indeterminate {
+  animation: update-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes update-slide {
+  0% {
+    margin-left: 0;
+  }
+  50% {
+    margin-left: 65%;
+  }
+  100% {
+    margin-left: 0;
+  }
+}

@@ -39,7 +39,7 @@ const cardStyle = {
   textAlign: 'left' as const,
 }
 
-export default function BootstrapGuide({ onRetry }: { onRetry: () => void }) {
+export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => void; onClose?: () => void }) {
   const [pick, setPick] = useState<PickState>('idle')
   const [written, setWritten] = useState(0)
   const [pickError, setPickError] = useState('')
@@ -82,6 +82,11 @@ export default function BootstrapGuide({ onRetry }: { onRetry: () => void }) {
         overflowY: 'auto',
       }}
     >
+      {onClose && (
+        <button onClick={onClose} style={{ alignSelf: 'flex-start', fontSize: 13, padding: '4px 10px' }}>
+          ← 返回应用
+        </button>
+      )}
       <header style={{ textAlign: 'center' }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>listen_writing</h1>
         <p style={{ margin: '8px 0 0', fontSize: 14, color: '#555' }}>
