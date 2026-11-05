@@ -9,6 +9,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
   color: #202124;
+  background: #f6f7f9;
 }
 
 /* 滚动条隐形：内容可滚，但不露出滚动条（工程纪律：没必要滚就不滚，滚动条要隐形） */

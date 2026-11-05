@@ -69,7 +69,19 @@ export default function BootstrapGuide({ onRetry }: { onRetry: () => void }) {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 48, gap: 16, padding: 24 }}>
+    <div
+      className="scroll-hidden"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 16,
+        padding: '48px 24px 32px',
+        minHeight: '100vh',
+        boxSizing: 'border-box',
+        overflowY: 'auto',
+      }}
+    >
       <header style={{ textAlign: 'center' }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>listen_writing</h1>
         <p style={{ margin: '8px 0 0', fontSize: 14, color: '#555' }}>

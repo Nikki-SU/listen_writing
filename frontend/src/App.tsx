@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
-import type { Project, Recording, RecordingDetail, Version } from './types'
+import type { Project, Recording, RecordingDetail } from './types'
 import {
   applyUpdate,
   ensureWritePermission,
@@ -12,6 +12,15 @@ import {
 } from './updater'
 
 type UpdateState = 'idle' | 'available' | 'updating' | 'restarting' | 'manual' | 'error'
+
+// 卡片化容器：用户看到的应该是界面，不是开发信息。
+const cardStyle = {
+  background: '#fff',
+  border: '1px solid #eceef1',
+  borderRadius: 12,
+  padding: 20,
+  boxShadow: '0 1px 3px rgba(16, 24, 40, 0.04)',
+}
 
 async function waitForBackend(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
@@ -46,14 +55,12 @@ function statusLabel(status: string): string {
 
 export default function App() {
   const [health, setHealth] = useState<'checking' | 'ok' | 'down'>('checking')
-  const [version, setVersion] = useState<Version | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [projectId, setProjectId] = useState<string | null>(null)
   const [recordings, setRecordings] = useState<Recording[]>([])
   const [recordingId, setRecordingId] = useState<string | null>(null)
   const [detail, setDetail] = useState<RecordingDetail | null>(null)
   const [error, setError] = useState('')
-  const [uploading, setUploading] = useState(false)
   const [upd, setUpd] = useState<UpdateState>('idle')
   const [updText, setUpdText] = useState('')
   const [restarting, setRestarting] = useState(false)
@@ -66,7 +73,6 @@ export default function App() {
     if (!ok) return
     try {
       const v = await api.fetchVersion()
-      setVersion(v)
       setProjects(await api.listProjects())
       setError('')
       // 页面内置版本比本地后端新 → 提示可更新。自动检查只做提示，
@@ -133,29 +139,48 @@ export default function App() {
     }
   }, [projectId, recordingId])
 
+  // 写操作一律乐观更新 + 回滚（工程纪律三.3）：先立刻显示结果，失败再撤掉。
+  // 不切到临时 id，否则会触发对不存在对象的 GET（404）而闪错误。
   async function onCreateProject(name: string) {
-    if (!name.trim()) return
+    const trimmed = name.trim()
+    if (!trimmed) return
+    const tempId = `tmp-${Date.now()}`
+    const optimistic: Project = { id: tempId, name: trimmed, description: '', created_at: new Date().toISOString() }
+    setProjects((prev) => [optimistic, ...prev])
     try {
-      const p = await api.createProject(name.trim(), '')
-      setProjects((prev) => [p, ...prev])
+      const p = await api.createProject(trimmed, '')
+      setProjects((prev) => prev.map((x) => (x.id === tempId ? p : x)))
       setProjectId(p.id)
     } catch (e) {
-      setError(String(e))
+      setProjects((prev) => prev.filter((x) => x.id !== tempId))
+      setError(`新建项目失败：${String(e)}`)
     }
   }
 
   async function onUpload(file: File) {
     if (!projectId) return
-    setUploading(true)
+    const tempId = `tmp-${Date.now()}`
+    const optimistic: Recording = {
+      id: tempId,
+      project_id: projectId,
+      name: file.name,
+      audio_path: '',
+      format: file.name.split('.').pop()?.toLowerCase() ?? '',
+      duration_sec: 0,
+      created_at: new Date().toISOString(),
+      transcribe: { status: 'pending', progress: 0, error: '' },
+    }
+    setRecordings((prev) => [optimistic, ...prev])
     setError('')
     try {
       const rec = await api.uploadRecording(projectId, file)
-      await refreshRecordings(projectId)
+      setRecordings((prev) => prev.map((x) => (x.id === tempId ? rec : x)))
       setRecordingId(rec.id)
+      await refreshRecordings(projectId)
     } catch (e) {
-      setError(String(e))
+      setRecordings((prev) => prev.filter((x) => x.id !== tempId))
+      setError(`上传失败：${String(e)}`)
     } finally {
-      setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
@@ -230,14 +255,14 @@ export default function App() {
   }
   if (health === 'checking') {
     return (
-      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#999', fontSize: 14 }}>
+      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#8a8f98', fontSize: 14, background: '#f6f7f9' }}>
         正在连接本地后端…
       </div>
     )
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#f6f7f9' }}>
       {upd !== 'idle' && (
         <div
           style={{
@@ -253,7 +278,7 @@ export default function App() {
         >
           <span style={{ flex: 1, lineHeight: 1.6 }}>
             {upd === 'available'
-              ? `页面已经更新，但你电脑上的本地后端还是旧版本（fr ${version?.frontend ?? '?'}）。`
+              ? '页面已经更新，但你电脑上正在运行的是旧版本，更新后再用。'
               : updText}
             {(upd === 'available' || upd === 'updating' || upd === 'restarting') &&
               ' 只更新程序文件，不会动你的录音数据。'}
@@ -266,42 +291,90 @@ export default function App() {
         </div>
       )}
 
-      <main style={{ display: 'flex', flex: 1, minHeight: 0, gap: 24, padding: 24, boxSizing: 'border-box' }}>
-      {/* 左栏：项目 + 录音 */}
-      <aside style={{ width: 280, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <header>
-          <h1 style={{ margin: 0, fontSize: 20 }}>listen_writing</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 12, color: '#888' }}>
-            后端在线
-            {version && ` · fr ${version.frontend} be ${version.backend} mo ${version.model} da ${version.data}`}
-          </p>
-        </header>
+      <header style={{ flexShrink: 0, textAlign: 'center', padding: '24px 24px 18px' }}>
+        <h1 style={{ margin: 0, fontSize: 22, letterSpacing: '0.02em' }}>listen_writing</h1>
+        <p
+          style={{
+            margin: '8px 0 0',
+            fontSize: 12,
+            color: '#8a8f98',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+          }}
+        >
+          <span style={{ width: 6, height: 6, borderRadius: 3, background: '#34a853', flexShrink: 0 }} />
+          本地后端已连接 · 录音不出本机
+        </p>
+      </header>
 
+      <main
+        style={{
+          display: 'flex',
+          flex: 1,
+          minHeight: 0,
+          gap: 20,
+          width: '100%',
+          maxWidth: 1120,
+          margin: '0 auto',
+          padding: '0 24px 24px',
+          boxSizing: 'border-box',
+        }}
+      >
+      {/* 左栏：项目 + 录音 */}
+      <aside
+        style={{
+          ...cardStyle,
+          width: 300,
+          flexShrink: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+          minHeight: 0,
+        }}
+      >
         <ProjectCreator onCreate={onCreateProject} />
 
         <ProjectList projects={projects} activeId={projectId} onSelect={setProjectId} />
 
         {projectId && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".wav,.mp3,.m4a,.wma,.flac,.ogg,.opus,.aac,.aiff,audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/flac,audio/ogg,audio/aac"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) onUpload(f)
-              }}
-              disabled={uploading}
-              style={{ fontSize: 13 }}
-            />
-            {uploading && <span style={{ fontSize: 12, color: '#888' }}>上传中…</span>}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, color: '#6b7280' }}>录音</span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                hidden
+                accept=".wav,.mp3,.m4a,.wma,.flac,.ogg,.opus,.aac,.aiff,audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/flac,audio/ogg,audio/aac"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) onUpload(f)
+                }}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}
+              >
+                上传录音
+              </button>
+            </div>
             <RecordingList recordings={recordings} activeId={recordingId} onSelect={setRecordingId} />
           </div>
         )}
       </aside>
 
       {/* 右栏：转写详情 */}
-      <section style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      <section
+        style={{
+          ...cardStyle,
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          minWidth: 0,
+          minHeight: 0,
+        }}
+      >
         {error && (
           <div style={{ color: '#b00020', fontSize: 13, marginBottom: 12 }}>{error}</div>
         )}
