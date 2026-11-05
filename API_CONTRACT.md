@@ -19,11 +19,13 @@
 | U-1 | 后端 | `POST /api/restart` | 无 | `{"status":"restarting"}` | 更新本地文件后重启后端：回包后进程以**退出码 86** 结束，启动器据此重装依赖并重启；不是 86 时启动器正常退出 |
 | P-1 | 后端 | `POST /api/projects` | `{"name":"项目名","description":"说明"}` | `{"project":{...}}` | 创建项目（description 可空） |
 | P-2 | 后端 | `GET /api/projects` | 无 | `{"projects":[{...}]}` | 列出全部项目（按创建倒序） |
-| R-1 | 后端 | `POST /api/projects/{project_id}/recordings` | **raw 音频字节**（非 JSON）+ 头 `X-Filename`、`X-Format` | `{"recording":{...}}` | 上传录音，落 `audio.{ext}` 后**异步启动转写** |
+| R-1 | 后端 | `POST /api/projects/{project_id}/recordings?name=...&format=...` | **raw 音频字节**（非 JSON）+ **query 参数** `name`（原文件名，UTF-8 百分号编码）、`format`（取值见下方白名单） | `{"recording":{...}}` | 上传录音，落 `audio.{ext}` 后**异步启动转写** |
 | R-3 | 后端 | `GET /api/projects/{project_id}/recordings` | 无 | `{"recordings":[{...}]}` | 列出项目下录音（仅元数据，按创建倒序） |
 | R-2 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}` | 无 | `{"recording":{...},"transcribe":{...},"sentences":[...]}` | 录音详情 + 转写状态 + 分句列表 |
 
-> R-1 是唯一的非 JSON 请求：请求体是音频原始字节，`X-Filename` 带扩展名（如 `访谈1.mp3`）、`X-Format` 取值见下方格式白名单。前端用 `fetch` 把 `File` 直接作为 body。
+> R-1 是唯一的非 JSON 请求：请求体是音频原始字节，`name` 带原文件名（如 `访谈1.mp3`）、`format` 取值见下方格式白名单。前端用 `fetch` 把 `File` 直接作为 body，参数走 `URLSearchParams`（自动 UTF-8 编码）。
+>
+> **文件名禁止放 HTTP 头**：头字段只能是 ISO-8859-1，中文文件名会让浏览器 `fetch` 直接抛 `TypeError: Failed to read the 'headers' property ... non ISO-8859-1 code point`（用户实测踩过）。后端仍兼容读取旧的 `X-Filename` / `X-Format` 头，仅为过渡，新代码不要再发。
 
 **音频格式白名单**（`X-Format` / 扩展名，改任何一处必须同步其余三处）：
 `wav / mp3 / m4a / wma / flac / ogg / opus / aac / aiff`

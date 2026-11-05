@@ -72,10 +72,13 @@ function formatOf(filename: string): string {
 export async function uploadRecording(projectId: string, file: File): Promise<Recording> {
   const fmt = formatOf(file.name)
   if (!fmt) throw new Error(`不支持的音频格式（支持：${AUDIO_FORMATS.join(' / ')}）`)
+  // 文件名不能放 HTTP 头：头字段只能是 ISO-8859-1，中文名（如「访谈1.mp3」）会让
+  // fetch 直接抛 TypeError（Failed to read the 'headers' property ...）。改放 query，
+  // URLSearchParams 会按 UTF-8 百分号编码，后端解码后拿回原名。
+  const qs = new URLSearchParams({ name: file.name, format: fmt })
   const data = await json<{ recording: Recording }>(
-    await fetch(`${BACKEND}/api/projects/${projectId}/recordings`, {
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings?${qs}`, {
       method: 'POST',
-      headers: { 'X-Filename': file.name, 'X-Format': fmt },
       body: file,
     }),
   )

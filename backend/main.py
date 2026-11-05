@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import threading
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import av
 
@@ -208,8 +208,11 @@ class Handler(BaseHTTPRequestHandler):
         if storage.get_project(project_id) is None:
             self._send_json({"error": "project not found"}, status=404)
             return
-        filename = self.headers.get("X-Filename") or "recording"
-        fmt = (self.headers.get("X-Format") or "").strip().lower()
+        # 文件名/格式从 query 读（前端用 URLSearchParams 编码，支持中文名）；
+        # 仍兼容旧的 X-Filename / X-Format 头，便于旧页面直接对上新后端。
+        q = parse_qs(urlparse(self.path).query)
+        filename = (q.get("name") or [self.headers.get("X-Filename") or "recording"])[0]
+        fmt = (q.get("format") or [self.headers.get("X-Format") or ""])[0].strip().lower()
         if fmt not in AUDIO_FORMATS:
             fmt = _format_from_filename(filename)
         if fmt is None:
