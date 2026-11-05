@@ -52,10 +52,10 @@ if not exist "%PY%" goto runtime_missing
 
 :install_deps
 echo [3/4] Installing components (first run only, about 300 MB, needs internet)
-"%PY%" -m pip install --disable-pip-version-check --timeout 20 --retries 2 -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if not errorlevel 1 goto check_native
 echo        Mirror failed, retrying with the official index ...
-"%PY%" -m pip install --disable-pip-version-check --timeout 20 --retries 2 -r requirements.txt
+"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 -r requirements.txt
 if errorlevel 1 goto pip_failed
 
 :check_native

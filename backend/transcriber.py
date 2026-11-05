@@ -24,6 +24,9 @@ from typing import Callable
 # - hf-mirror 多为普通 HTTP 镜像，不支持 xet 传输，关掉 xet 避免多绕一层。
 os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "5")
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "20")
+# Windows 非管理员/未开开发者模式时 HuggingFace 无法建符号链接，会刷一大段英文警告，
+# 用户会误以为是报错；缓存本身照样可用，直接关掉这条警告。
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 from faster_whisper import WhisperModel
 

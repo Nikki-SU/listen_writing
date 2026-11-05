@@ -118,10 +118,10 @@ fi
 
 while :; do
 echo "[3/4] 首次安装组件（约 300MB，需要联网）……"
-"$PY" -m pip install --disable-pip-version-check --timeout 20 --retries 2 \
+"$PY" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 \
   -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple || {
   echo "      国内镜像失败，改用官方源重试……"
-  "$PY" -m pip install --disable-pip-version-check --timeout 20 --retries 2 -r requirements.txt || {
+  "$PY" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 -r requirements.txt || {
     echo "[错误] 组件安装失败，请检查网络后重新运行。"
     read -r -p "按回车关闭..." _
     exit 1
