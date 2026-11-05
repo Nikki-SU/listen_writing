@@ -2,6 +2,25 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
 import type { Project, Recording, RecordingDetail, Version } from './types'
+import {
+  applyUpdate,
+  ensureWritePermission,
+  isOutdated,
+  loadDirHandle,
+  pickDirectory,
+  saveDirHandle,
+} from './updater'
+
+type UpdateState = 'idle' | 'available' | 'updating' | 'restarting' | 'manual' | 'error'
+
+async function waitForBackend(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1000))
+    if (await api.fetchHealth()) return true
+  }
+  return false
+}
 
 function fmtMs(ms: number): string {
   const total = Math.floor(ms / 1000)
@@ -35,6 +54,9 @@ export default function App() {
   const [detail, setDetail] = useState<RecordingDetail | null>(null)
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [upd, setUpd] = useState<UpdateState>('idle')
+  const [updText, setUpdText] = useState('')
+  const [restarting, setRestarting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // 启动：检查后端 + 版本 + 项目列表；后端离线时进入引导部署
@@ -43,9 +65,13 @@ export default function App() {
     setHealth(ok ? 'ok' : 'down')
     if (!ok) return
     try {
-      setVersion(await api.fetchVersion())
+      const v = await api.fetchVersion()
+      setVersion(v)
       setProjects(await api.listProjects())
       setError('')
+      // 页面内置版本比本地后端新 → 提示可更新。自动检查只做提示，
+      // 真正写文件要用户点按钮（浏览器要求写权限必须由点击触发）。
+      setUpd((prev) => (isOutdated(v) ? (prev === 'idle' ? 'available' : prev) : 'idle'))
     } catch (e) {
       setError(String(e))
     }
@@ -134,7 +160,66 @@ export default function App() {
     }
   }
 
-  if (health === 'down') {
+  async function onUpdate() {
+    setUpd('updating')
+    setUpdText('正在写入本地文件…')
+    try {
+      let dir = await loadDirHandle()
+      if (!dir || !(await ensureWritePermission(dir))) {
+        // 没有记住文件夹，或用户这次没给写入权限：让用户重新选一次（仍是点击触发）
+        dir = await pickDirectory()
+        await saveDirHandle(dir)
+      }
+
+      const res = await applyUpdate(dir)
+      const launcherNote = res.launcherStale.length
+        ? `启动器脚本有更新（${res.launcherStale.join('、')}），请回到引导页重新点一次「写入启动文件」覆盖它们。`
+        : ''
+
+      if (res.changed === 0 && !res.launcherStale.length) {
+        setUpd('manual')
+        setUpdText('本地文件已是最新，但正在运行的后端仍是旧代码：请关闭黑色启动窗口，再双击启动器。')
+        return
+      }
+
+      const restarted = await api.restartBackend()
+      if (!restarted) {
+        // 旧版后端还没有 /api/restart：这次只能手动重启，之后就能自动重启
+        setUpd('manual')
+        setUpdText(`已更新 ${res.changed} 个文件。${launcherNote} 请关闭黑色启动窗口，再双击启动器（本次需手动重启，之后会自动重启）。`)
+        return
+      }
+
+      setUpd('restarting')
+      setUpdText(`已更新 ${res.changed} 个文件，正在重启后端…${launcherNote}`)
+      setRestarting(true)
+      const ok = await waitForBackend(30000)
+      setRestarting(false)
+      if (ok) {
+        setUpd('idle')
+        setUpdText('')
+        void boot()
+      } else {
+        setUpd('manual')
+        setUpdText('后端没有自动起来：请关闭启动窗口后重新双击启动器。')
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setUpd('available') // 用户取消选文件夹
+        setUpdText('')
+        return
+      }
+      if (e instanceof Error && e.message === 'unsupported') {
+        setUpd('manual')
+        setUpdText('当前浏览器不支持一键写入。请在引导页逐个下载文件覆盖，或换用 Chrome / Edge。')
+        return
+      }
+      setUpd('error')
+      setUpdText(String(e))
+    }
+  }
+
+  if (health === 'down' && !restarting) {
     return <BootstrapGuide onRetry={() => void boot()} />
   }
   if (health === 'checking') {
@@ -146,7 +231,36 @@ export default function App() {
   }
 
   return (
-    <main style={{ display: 'flex', height: '100vh', gap: 24, padding: 24, boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+      {upd !== 'idle' && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '10px 24px',
+            fontSize: 13,
+            borderBottom: '1px solid #eee',
+            background:
+              upd === 'error' ? '#fdecea' : upd === 'available' ? '#fff8e1' : upd === 'manual' ? '#fff4e5' : '#e8f0fe',
+          }}
+        >
+          <span style={{ flex: 1, lineHeight: 1.6 }}>
+            {upd === 'available'
+              ? `页面已经更新，但你电脑上的本地后端还是旧版本（fr ${version?.frontend ?? '?'}）。`
+              : updText}
+            {(upd === 'available' || upd === 'updating' || upd === 'restarting') &&
+              ' 只更新程序文件，不会动你的录音数据。'}
+          </span>
+          {(upd === 'available' || upd === 'error') && (
+            <button onClick={onUpdate} style={{ fontSize: 13, padding: '4px 12px', flexShrink: 0 }}>
+              更新本地文件
+            </button>
+          )}
+        </div>
+      )}
+
+      <main style={{ display: 'flex', flex: 1, minHeight: 0, gap: 24, padding: 24, boxSizing: 'border-box' }}>
       {/* 左栏：项目 + 录音 */}
       <aside style={{ width: 280, display: 'flex', flexDirection: 'column', gap: 16 }}>
         <header>
@@ -193,7 +307,8 @@ export default function App() {
           </div>
         )}
       </section>
-    </main>
+      </main>
+    </div>
   )
 }
 

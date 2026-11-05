@@ -44,6 +44,14 @@
 - `curl` 参数 `--connect-timeout 10 --speed-limit 1024 --speed-time 20 --retry 2`：连接 10s 超时、低于 1KB/s 持续 20s 放弃，避免国内墙下长时间卡死。
 - 第三方代理只作**传输通道**，最终文件必须过官方 hash；不要新增「只下不校验」的源。
 
+### 自动更新与重启约定（改启动器 / updater 前必读）
+
+- **重启信号 = 退出码 86**：`backend/main.py` 的 `POST /api/restart` 回包后 `os._exit(86)`；`start-windows.bat` 用 `if errorlevel 86 goto restart`、`start.sh` 用 `[ "$code" -eq 86 ] || break` 回到开头重装依赖再启动。改其中任一处，三处必须同步（`main.py` / bat / sh）。
+- **更新写回**只写 `frontend/src/bootstrapFiles.ts` 里的固定清单，路径来自 `embed-backend.mjs`；新增嵌入文件必须同时更新该脚本的清单。
+- **目录句柄存 IndexedDB**（库名 `listen_writing`，store `handles`，键 `bootstrap`）；换域名 / 换浏览器等于丢句柄，更新会回退为「重新选文件夹」。
+- **启动器脚本 `.bat/.sh/.command` 永不自动覆盖**（Windows cmd 边读边执行，覆盖正在运行的 bat 会错位）；embed 脚本给它们打 `launcher: true`。
+- **页面版本号**由 `embed-backend.mjs` 从 `backend/models.py` 的 `APP_VERSION.frontend` 生成（`BUNDLE_VERSION`）。任何嵌入文件改动都必须 bump frontend 段，否则用户收不到更新提示。
+
 ### 依赖锁版本纪律
 
 `requirements.txt` 里凡是 faster-whisper 的传递依赖，都要显式锁死版本，不能交给 pip 挑最新：

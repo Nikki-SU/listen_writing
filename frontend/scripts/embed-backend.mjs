@@ -33,14 +33,32 @@ for (const f of ['main.py', 'models.py', 'storage.py', 'transcriber.py', 'preloa
 // requirements.txt 写到用户文件夹根目录，启动器在根目录执行 pip install -r requirements.txt
 files.push({ path: 'requirements.txt', content: normalize('requirements.txt', readFileSync(join(repoDir, 'backend', 'requirements.txt'), 'utf8')) })
 for (const f of readdirSync(join(repoDir, 'bootstrap')).sort()) {
-  files.push({ path: f, content: normalize(f, readFileSync(join(repoDir, 'bootstrap', f), 'utf8')) })
+  files.push({
+    path: f,
+    // 启动器脚本可能正在运行（Windows 的 cmd 按字节边读边执行，覆盖正在使用的 bat
+    // 会导致命令错位），所以自动更新只做检查、不覆盖，提示用户重新写入一次。
+    launcher: /\.(bat|sh|command)$/.test(f),
+    content: normalize(f, readFileSync(join(repoDir, 'bootstrap', f), 'utf8')),
+  })
 }
+
+// 页面内置版本：用于「本地后端是否过期」判断。任何嵌入文件（含后端代码）有改动，
+// 都必须 bump APP_VERSION 的 frontend 段，否则页面不会提示更新。
+const modelsSrc = readFileSync(join(repoDir, 'backend', 'models.py'), 'utf8')
+const vm = modelsSrc.match(
+  /APP_VERSION\s*=\s*\{\s*"frontend":\s*(\d+),\s*"backend":\s*(\d+),\s*"model":\s*(\d+),\s*"data":\s*(\d+)/,
+)
+if (!vm) throw new Error('backend/models.py 里找不到 APP_VERSION，无法生成页面版本号')
+const bundleVersion = { frontend: +vm[1], backend: +vm[2], model: +vm[3], data: +vm[4] }
 
 const ts = `// 自动生成（scripts/embed-backend.mjs），勿手改；后端 / bootstrap 变更后重新 build。
 export interface BootstrapFile {
   path: string
   content: string
+  launcher?: boolean
 }
+
+export const BUNDLE_VERSION = ${JSON.stringify(bundleVersion)}
 
 export const BOOTSTRAP_FILES: BootstrapFile[] = ${JSON.stringify(files, null, 2)}
 `

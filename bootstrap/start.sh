@@ -116,6 +116,7 @@ if [ ! -x "$PY" ]; then
   exit 1
 fi
 
+while :; do
 echo "[3/4] 首次安装组件（约 300MB，需要联网）……"
 "$PY" -m pip install --disable-pip-version-check --timeout 20 --retries 2 \
   -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple || {
@@ -136,4 +137,11 @@ echo " listen_writing 本地后端正在启动：http://127.0.0.1:7850"
 echo " 请保持本窗口开启；关掉窗口就等于停止后端。"
 echo "============================================================"
 echo
-exec "$PY" backend/main.py
+"$PY" backend/main.py
+code=$?
+# 退出码 86 = 页面把新文件写回了文件夹，要求重启。回到开头重装依赖，
+# 这样 requirements.txt 有变化时也能生效；其它退出码则正常结束。
+[ "$code" -eq 86 ] || break
+echo
+echo "[更新] 本地文件已更新，正在重新安装组件并重启后端……"
+done

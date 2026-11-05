@@ -12,10 +12,13 @@
 - [x] **Windows 缺 MSVCP140.dll**（2026-11-03）：核查发现 `ctranslate2.dll` 依赖 `MSVCP140.dll`（便携 Python 只带 vcruntime140，不带 msvcp140），干净 Windows 会 `DLL load failed`。启动器在装依赖后 `import av, ctranslate2` 自检，失败则自动下载并静默安装微软官方 VC++ 运行库，需用户点一次 UAC「是」；装不上时给出官方链接让用户手动装。
 - [x] **下载没有考虑国内网络环境**（2026-11-03，用户指出）：原来只给 GitHub 一个源，国内常无法访问；从第三方镜像下可执行文件又不校验，有被篡改的风险。已改为：官方 GitHub → `gh-proxy.com` → `ghproxy.net` 三源依次尝试，每次下载后用官方 `SHA256SUMS` 里的 hash 校验，不符即删掉换源；`curl` 加 `--connect-timeout 10 --speed-limit 1024 --speed-time 20` 让死链快速失败，没有 curl 的 Windows 回退 PowerShell。pip 改为清华镜像优先、官方源兜底；HuggingFace 探测超时缩到 5s/20s 并在降级镜像时关掉 xet。
 - [x] **依赖版本浮动导致转写全挂**（2026-11-03，真机报错暴露）：`requirements.txt` 只锁了 faster-whisper，pip 自动装到 av 19，`av 19` 移除了 `open(metadata_errors=...)` 参数，faster-whisper 1.2.1 直接报错、所有转写失败。已锁 `ctranslate2==4.8.1`、`av==17.1.0`、`tokenizers==0.22.1`、`huggingface-hub>=0.21,<2`；在 Linux 完整链路重装后实测转写成功。
+- [x] **自动检查更新**（2026-11-05）：页面构建时把 `APP_VERSION` 写进 `BUNDLE_VERSION`，连上后端后比对 `/api/version`；落后就在顶部显示横幅，一键把有差异的文件写回用户文件夹（目录句柄存 IndexedDB，只写固定清单、不碰 `data/` 和 `.runtime/`），再调 `POST /api/restart`；启动器约定退出码 86 时回到开头重装依赖并重启。旧版后端没有该接口，第一次更新会提示用户手动重开一次。
 - [x] **Windows 批处理中文导致 cmd 错位执行**（2026-11-03，用户真机实测暴露）：`.bat` 里写了中文注释，cmd 按字节读文件，UTF-8 中文被按 GBK 拆成不同字符数，文件偏移错位 → 从行中间开始执行（报 `untime` / `ownloads` / `026"`，还误触发 `time` 命令）。已改：`.bat` 纯 ASCII，`embed-backend.mjs` 自动转 CRLF 且检测到非 ASCII 直接让 build 失败；shell 脚本强制 LF。
 
 ## 待办 / 坑
 
+- [ ] **自动更新未在真机走完整条链路**：版本落后 → 横幅出现 → 点「更新本地文件」→ 浏览器写权限弹窗 → 写回 → 后端收到 86 自动重启，这条链在 sandbox 里无法执行 File System Access / IndexedDB（浏览器环境拿不到本地文件夹）。已实测的是：后端 `POST /api/restart` 进程确实以 86 退出、`start.sh` 收到 86 后确实重装依赖并重启、构建产物含横幅与版本比对逻辑。Windows 的 `if errorlevel 86` 循环仍需真机验证。
+- [ ] **启动器脚本不会自动覆盖**：更新只写后端代码 / requirements / README；`.bat` / `.sh` / `.command` 内容有差异时只提示「请回到引导页重新写入一次」。若要彻底自动，需把启动器改成「薄壳 + 可安全覆盖的 PowerShell/其它脚本」，属于后续重构。
 - [ ] **Windows / macOS 启动器未真机执行**：只在 Linux x64 实测了全流程（下载运行时→装依赖→转写）。三份脚本逻辑同构，但仍需在真 Windows / 真 macOS 上各跑一次才算通过。这是最优先要补的验证。
 - [ ] **Windows 需要 Win10 1803+ 才有内置 `tar.exe`**：更老的系统会在解压步骤给出明确报错。若将来要覆盖老系统，可改用 python.org 的 zip 版（PowerShell 可直接解压）。
 - [ ] **macOS / Linux 启动仍需一条终端命令**（Windows 已真双击）：mac 上 File System Access API 写出的文件没有执行位，`.command` 双击会报权限错误，当前方案是「bash + 拖入」。后续可探索安装时自赋执行位或打包 .pkg / AppImage。

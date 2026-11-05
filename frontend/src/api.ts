@@ -32,6 +32,19 @@ export async function fetchVersion(): Promise<Version> {
   return data.version
 }
 
+/**
+ * 让本地后端进程退出并重启（启动器约定退出码 86）。
+ * 旧版后端没有这个接口，会返回 404 —— 此时前端提示用户手动重启一次。
+ */
+export async function restartBackend(): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND}/api/restart`, { method: 'POST' })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 export async function listProjects(): Promise<Project[]> {
   const data = await json<{ projects: Project[] }>(await fetch(`${BACKEND}/api/projects`))
   return data.projects

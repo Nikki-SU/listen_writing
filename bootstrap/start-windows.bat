@@ -50,6 +50,7 @@ del /q "python-runtime.tar.gz"
 :have_runtime
 if not exist "%PY%" goto runtime_missing
 
+:install_deps
 echo [3/4] Installing components (first run only, about 300 MB, needs internet)
 "%PY%" -m pip install --disable-pip-version-check --timeout 20 --retries 2 -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if not errorlevel 1 goto check_native
@@ -96,11 +97,19 @@ echo  Keep this window open while you use the web page.
 echo ============================================================
 echo.
 "%PY%" backend\main.py
+rem Exit code 86 means the web page wrote updated files and asked for a restart.
+rem Loop back through pip install so a changed requirements.txt also takes effect.
+if errorlevel 86 goto restart
 
 echo.
 echo Backend stopped. Press any key to close this window.
 pause >nul
 exit /b 0
+
+:restart
+echo.
+echo [INFO] Local files were updated. Reinstalling components and restarting ...
+goto install_deps
 
 rem ---------------------------------------------------------------
 rem Download one source into python-runtime.tar.gz and verify it.

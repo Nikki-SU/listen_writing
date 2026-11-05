@@ -15,7 +15,8 @@
 | 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
 |---|---|---|---|---|---|
 | H-1 | 后端 | `GET /api/health` | 无 | `{"status":"ok"}` | 前端启动后用来确认后端在线 |
-| V-1 | 后端 | `GET /api/version` | 无 | `{"version":{"frontend":1,"backend":1,"model":1,"data":1}}` | 软件四段版本号 |
+| V-1 | 后端 | `GET /api/version` | 无 | `{"version":{"frontend":1,"backend":1,"model":1,"data":1}}` | 软件四段版本号；`frontend` 段同时代表「嵌入文件整包」的版本，用于判断本地后端是否过期 |
+| U-1 | 后端 | `POST /api/restart` | 无 | `{"status":"restarting"}` | 更新本地文件后重启后端：回包后进程以**退出码 86** 结束，启动器据此重装依赖并重启；不是 86 时启动器正常退出 |
 | P-1 | 后端 | `POST /api/projects` | `{"name":"项目名","description":"说明"}` | `{"project":{...}}` | 创建项目（description 可空） |
 | P-2 | 后端 | `GET /api/projects` | 无 | `{"projects":[{...}]}` | 列出全部项目（按创建倒序） |
 | R-1 | 后端 | `POST /api/projects/{project_id}/recordings` | **raw 音频字节**（非 JSON）+ 头 `X-Filename`、`X-Format` | `{"recording":{...}}` | 上传录音，落 `audio.{ext}` 后**异步启动转写** |
@@ -69,6 +70,17 @@ data/
    - `start-windows.bat` / `start-mac.command` / `start.sh` / `README.md`（来源：仓库 `bootstrap/`）
 2. **运行启动器**：Windows 双击 bat；macOS 终端 `bash` + 拖入 `.command`；Linux `bash start.sh`。启动器**不要求系统已装 Python**：首次自动下载便携 CPython 到用户文件夹 `.runtime/` → 依赖装进这份运行时 → `python backend/preload.py` 预下载模型（失败不阻塞）→ 启动 `backend/main.py`。
 3. **自动重连**：后端离线期间前端每 2 秒探测 `/api/health`，通了自动进入主界面。
+
+### 自动检查更新（update）
+
+已部署的用户不需要重新下载文件就能跟上新版本：
+
+1. **检查**：构建时 `embed-backend.mjs` 从 `backend/models.py` 读出 `APP_VERSION` 写进 `bootstrapFiles.ts` 的 `BUNDLE_VERSION`；页面连上后端后比对 `/api/version` 的 `frontend` 段，落后就显示顶部横幅「本地后端还是旧版本」。检查只读，不改文件。
+2. **写入**：用户点「更新本地文件」后，用 IndexedDB 里存过的目录句柄（引导页写入时保存）申请一次写权限；没有句柄或权限被拒时回退到「重新选文件夹」。只重写**内容有差异**的文件，绝不碰 `data/`、`.runtime/` 与用户其它文件。
+3. **启动器不覆盖**：`.bat` / `.sh` / `.command` 即使有差异也不写回（Windows 的 cmd 边读边执行，覆盖正在运行的 bat 会让命令错位），横幅会提示用户重新写入一次。
+4. **重启**：写完后 `POST /api/restart`，启动器收到退出码 86 后重新 `pip install` + 重启，页面轮询 `/api/health` 自动恢复。旧版后端没有该接口（404），此时横幅提示用户手动关闭窗口重开一次；之后即可自动重启。
+
+> 版本纪律：任何嵌入文件（后端代码 / requirements / 启动器 / README）有改动，都必须 bump `APP_VERSION.frontend`，否则页面不会提示更新。
 
 约束：
 - 启动器假设目录结构为「用户文件夹根目录下有 `backend/` 与 `requirements.txt`」，改嵌入文件布局必须同步改启动器与 embed 脚本。

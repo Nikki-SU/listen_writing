@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { BOOTSTRAP_FILES, type BootstrapFile } from './bootstrapFiles'
+import { pickDirectory, saveDirHandle, writeAll } from './updater'
 
 // 引导部署：后端离线时的首屏。用户全程只做三件事——
 // ① 点按钮写入启动文件 ② 双击/拖入启动器 ③ 等页面自动连上（对应工程纪律「点按钮就能完事」）。
@@ -13,26 +14,11 @@ function isMac(): boolean {
   return /Macintosh|Mac OS X/i.test(navigator.userAgent)
 }
 
-async function writeBootstrapFiles(
-  onProgress: (written: number) => void,
-): Promise<void> {
-  const picker = window.showDirectoryPicker
-  if (!picker) throw new Error('unsupported')
-  const dir = await picker({ mode: 'readwrite' })
-  let written = 0
-  for (const f of BOOTSTRAP_FILES) {
-    const parts = f.path.split('/')
-    let handle: FileSystemDirectoryHandle = dir
-    for (let i = 0; i < parts.length - 1; i++) {
-      handle = await handle.getDirectoryHandle(parts[i], { create: true })
-    }
-    const fh = await handle.getFileHandle(parts[parts.length - 1], { create: true })
-    const w = await fh.createWritable()
-    await w.write(f.content)
-    await w.close()
-    written += 1
-    onProgress(written)
-  }
+async function writeBootstrapFiles(onProgress: (written: number) => void): Promise<void> {
+  const dir = await pickDirectory()
+  await writeAll(dir, onProgress)
+  // 记住目录：以后页面检测到后端过期，可以一键写回，不用再次选文件夹
+  await saveDirHandle(dir)
 }
 
 function downloadFile(f: BootstrapFile): void {

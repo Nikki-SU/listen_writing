@@ -8,6 +8,7 @@
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import threading
 from urllib.parse import urlparse
 
@@ -174,6 +175,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/projects":
             self._create_project()
+            return
+
+        if path == "/api/restart":
+            # 页面把新代码写回用户文件夹后调用；启动器约定退出码 86 = 重新读取文件并重启。
+            # 先回包再退出，避免前端拿不到响应。若不是通过启动器运行，进程直接结束。
+            self._send_json({"status": "restarting"})
+            threading.Timer(0.3, lambda: os._exit(86)).start()
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings$")
