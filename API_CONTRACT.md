@@ -21,7 +21,13 @@
 | P-2 | 后端 | `GET /api/projects` | 无 | `{"projects":[{...}]}` | 列出全部项目（按创建倒序） |
 | R-1 | 后端 | `POST /api/projects/{project_id}/recordings?name=...&format=...` | **raw 音频字节**（非 JSON）+ **query 参数** `name`（原文件名，UTF-8 百分号编码）、`format`（取值见下方白名单） | `{"recording":{...}}` | 上传录音，落 `audio.{ext}` 后**异步启动转写** |
 | R-3 | 后端 | `GET /api/projects/{project_id}/recordings` | 无 | `{"recordings":[{...}]}` | 列出项目下录音（仅元数据，按创建倒序） |
-| R-2 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}` | 无 | `{"recording":{...},"transcribe":{...},"sentences":[...]}` | 录音详情 + 转写状态 + 分句列表 |
+| R-2 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}` | 无 | `{"recording":{...},"transcribe":{...},"sentences":[...]}` | 录音详情 + 转写状态 + 分句列表；`recording.version` 为当前版本 `{stage,seq,current}` |
+| R-4 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/audio` | 可选 `Range: bytes=...` | 音频字节流（`200` / `206`） | `<audio>` 播放与按句跳转；支持 Range 才能任意 seek |
+| R-5 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/versions` | 无 | `{"versions":[{version,stage,seq,parent,author_nick,timestamp,message,changes}],"current":{...}}` | 版本历史（元数据，不含句子快照） |
+| R-6 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/versions/{stage}.{seq}` | 无 | `{"version":{...version, diff, sentences:[...]}}` | 单个版本：完整句子快照 + 本次 diff，可复刻 |
+| R-7 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/sentences/{sentence_id}` | `{"text":"修改后的单句"}` | `{"sentence":{...},"version":{...},"current":"0.2"}` | 单句修改；非空文本，成功后自动提交一个新版本（阶段内序号 +1） |
+| S-1 | 后端 | `GET /api/settings` | 无 | `{"settings":{"identity":{"nick","device_code"},"asr_model","llm_model"}}` | 本机身份与模型选择；首次调用生成设备码 |
+| S-2 | 后端 | `PATCH /api/settings` | 同 S-1 的任意子集 | `{"settings":{...}}` | 修改昵称 / 设备码 / 模型选择；空昵称不生效 |
 
 > R-1 是唯一的非 JSON 请求：请求体是音频原始字节，`name` 带原文件名（如 `访谈1.mp3`）、`format` 取值见下方格式白名单。前端用 `fetch` 把 `File` 直接作为 body，参数走 `URLSearchParams`（自动 UTF-8 编码）。
 >
@@ -50,11 +56,13 @@ data/
           sentences.csv                 # 行式 → CSV（列：id,recording_id,index,text,start_ms,end_ms,speaker）
           transcript.md                 # 正文稿 → Markdown
           versions/
-            {stage}.{seq}.json          # 嵌套 → JSON（版本引用）
+            {stage}.{seq}.json          # 嵌套 → JSON（版本：diff + 完整句子快照，可复刻）
+  settings.json                         # 本机身份（昵称 + 设备码）与模型选择
 ```
 
 - 模型查找顺序：`LISTEN_WRITING_MODEL` 环境变量 → `data/models/whisper-{size}/` 本地目录 → 联网下载（官方 HuggingFace，失败降级 hf-mirror.com），缓存落在项目文件夹 `data/models/hf-cache/`（不写系统盘的用户目录）。
-- 项目版本号 `stage.seq`（阶段.阶段内序号）：阶段 0 初始转写落 `versions/0.1.json`。
+- 项目版本号 `stage.seq`（阶段.阶段内序号）：阶段 0 初始转写落 `versions/0.1.json`；每次单句修改在同一阶段内 `seq+1`（如 `0.2`）；阶段升级时 `seq` 重置为 1（如 `1.1`）。
+- 版本 JSON 必含：`version/stage/seq/parent/author_nick/timestamp/message/diff/sentences`。`diff` 形如 `[{sentence_id,index,op:"replace",before:{...},after:{...}}]`；`sentences` 为该版本完整快照，用于任意两版复刻。
 - 转写状态对象 `transcribe`：`{"status":"pending|transcribing|done|error","progress":0~100,"error":""}`，随 `recording.json` 持久化；`transcribing` 期间进度实时更新。
 
 ## 字段与命名约定

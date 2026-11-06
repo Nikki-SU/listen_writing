@@ -84,9 +84,14 @@
 | `create_project` / `list_projects` / `get_project` | `storage.py` | 项目 CRUD | `id / name / description / created_at` | `main` 各项目路由；前端 `types.Project` |
 | `create_recording` / `get_recording` / `list_recordings` / `update_recording` | `storage.py` | 录音 CRUD | `id / project_id / name / audio_path / format / duration_sec / transcribe` | `main._upload_recording`、`_run_transcribe`；前端 `types.Recording` |
 | `save_audio` | `storage.py` | (pid, rid, fmt, bytes) → audio_path | `fmt` 决定扩展名 `audio.{ext}` | `main._upload_recording` 回填 `audio_path` |
-| `save_sentences` / `load_sentences` | `storage.py` | 句子 CSV 读写 | `SENTENCE_COLUMNS` 七列 | `main._run_transcribe` 落盘、`do_GET` R-2 读回 |
-| `save_transcript_md` | `storage.py` | 正文稿 Markdown | （无字段依赖） | `main._run_transcribe` |
-| `save_version` | `storage.py` | (pid, rid, stage, seq, dict) → JSON | `recording_id / stage / seq / parent / author_nick / timestamp / sentence_ids` | `main._run_transcribe` 落 `versions/0.1.json` |
+| `save_sentences` / `load_sentences` | `storage.py` | 句子 CSV 读写（原子替换） | `SENTENCE_COLUMNS` 七列 | `main._run_transcribe` 落盘、R-2 读回、R-7 单句修改 |
+| `save_transcript_md` | `storage.py` | 正文稿 Markdown | （无字段依赖） | `main._run_transcribe`、`main._update_sentence` |
+| `get_settings` / `update_settings` | `storage.py` | 读写 `data/settings.json` | `identity.nick / identity.device_code / asr_model / llm_model` | S-1 / S-2；版本作者名取 `identity.nick` |
+| `ensure_current_version` | `storage.py` | 旧录音缺 `version` 时从版本文件回填 | `stage / seq / current` | R-2、R-7、`commit_version` |
+| `commit_version` | `storage.py` | (pid, rid, sentences, diff, message, author, advance_stage) → 版本 dict | 写 `versions/{stage}.{seq}.json`，快照 + diff，并回填 `recording.version` | R-7 单句修改；后续阶段升级 |
+| `list_versions` / `get_version` / `save_version` | `storage.py` | 版本历史读取 / 落盘 | `version/stage/seq/parent/author_nick/timestamp/message/diff/sentences` | R-5 / R-6；`main._run_transcribe` 落 `0.1` |
+| `_send_audio` | `main.py` | 音频流（支持 Range） | `recording.audio_path / format`；`AUDIO_MIME` | R-4 `<audio>` 播放与按句 seek |
+| `_update_sentence` | `main.py` | 单句 PATCH 编排 | 非空 `text`；成功后 `commit_version` | R-7；前端 `TranscriptPanel.saveEdit` |
 | `Transcriber.transcribe`（抽象） | `transcriber.py` | (audio_path, on_progress) → `[{start_ms,end_ms,text,speaker}]` | 返回元素四字段 | `main._run_transcribe` |
 | `FasterWhisperTranscriber` | `transcriber.py` | 具体引擎实现 | `model_ref` 属性（本地目录优先）；环境变量 `LISTEN_WRITING_MODEL` / `LISTEN_WRITING_MODEL_SIZE`；模型缓存 `HF_HOME=data/models/hf-cache` | `transcriber.default_transcriber` |
 | `offline_model_dir` | `transcriber.py` | size → `data/models/whisper-<size>` 路径 | 依赖 `storage.DATA_ROOT` | `FasterWhisperTranscriber.model_ref`、`needs_download` |

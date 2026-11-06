@@ -20,3 +20,11 @@ dist/
 
 # 运行时数据（用户录音 / 转写稿 / 版本，人可读文本但属于用户私有数据，绝不能进公共库）
 data/
+
+# 启动器测试产物（真实源在 bootstrap/、backend/）
+.runtime/
+/start.sh
+/start-windows.bat
+/start-mac.command
+/requirements.txt
+/README.md

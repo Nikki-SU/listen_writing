@@ -9,6 +9,7 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+from pathlib import Path
 import threading
 from urllib.parse import parse_qs, urlparse
 
@@ -24,6 +25,19 @@ HOST = "127.0.0.1"
 # 上传格式白名单：由 PyAV（faster-whisper 内部解码层）原生解码，用户无需自己转格式。
 # 改这里必须同步：前端 api.formatOf、App.tsx 的 input accept、API_CONTRACT.md R-1。
 AUDIO_FORMATS = ("wav", "mp3", "m4a", "wma", "flac", "ogg", "opus", "aac", "aiff")
+
+# <audio> 需要的 MIME；不在表里的用二进制流，浏览器仍能靠扩展名/内容嗅探播放。
+AUDIO_MIME = {
+    "wav": "audio/wav",
+    "mp3": "audio/mpeg",
+    "m4a": "audio/mp4",
+    "wma": "audio/x-ms-wma",
+    "flac": "audio/flac",
+    "ogg": "audio/ogg",
+    "opus": "audio/ogg",
+    "aac": "audio/aac",
+    "aiff": "audio/aiff",
+}
 
 _transcriber = default_transcriber()
 
@@ -79,15 +93,23 @@ def _run_transcribe(project_id: str, recording_id: str) -> None:
         storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
         storage.save_version(project_id, recording_id, 0, 1, {
             "recording_id": recording_id,
+            "version": "0.1",
             "stage": 0,
             "seq": 1,
             "parent": "",
-            "author_nick": "",
+            "author_nick": storage.get_settings()["identity"]["nick"],
             "timestamp": storage.now_iso(),
-            "sentence_ids": [s["id"] for s in sentences],
+            "message": "初始转写",
+            "diff": [],
+            "sentences": sentences,
         })
         duration = _probe_duration_sec(audio_path)
-        storage.update_recording(project_id, recording_id, duration_sec=duration)
+        storage.update_recording(
+            project_id,
+            recording_id,
+            duration_sec=duration,
+            version={"stage": 0, "seq": 1, "current": "0.1"},
+        )
         storage.set_transcribe(project_id, recording_id, "done", 100)
     except Exception as e:  # noqa: BLE001 - 转写失败要如实落盘
         storage.set_transcribe(project_id, recording_id, "error", 0, str(e))
@@ -112,8 +134,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format, Range")
         # Chrome 私有网络访问（PNA）：https 的 Pages 页面请求 http://127.0.0.1 时，
         # 预检要求后端显式允许；本地回环地址本身可信，放开不影响安全边界。
         self.send_header("Access-Control-Allow-Private-Network", "true")
@@ -128,8 +150,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format, Range")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
 
@@ -144,6 +166,53 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/projects":
             self._send_json({"projects": storage.list_projects()})
+            return
+        if path == "/api/settings":
+            self._send_json({"settings": storage.get_settings()})
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/audio$")
+        if m:
+            self._send_audio(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/versions$")
+        if m:
+            project_id, recording_id = m
+            if storage.get_recording(project_id, recording_id) is None:
+                self._send_json({"error": "recording not found"}, status=404)
+                return
+            current = (storage.get_recording(project_id, recording_id) or {}).get("version")
+            versions = []
+            for v in storage.list_versions(project_id, recording_id):
+                versions.append({
+                    "version": v.get("version") or f"{v.get('stage', 0)}.{v.get('seq', 1)}",
+                    "stage": v.get("stage"),
+                    "seq": v.get("seq"),
+                    "parent": v.get("parent", ""),
+                    "author_nick": v.get("author_nick", ""),
+                    "timestamp": v.get("timestamp", ""),
+                    "message": v.get("message", ""),
+                    "changes": len(v.get("diff") or []),
+                })
+            self._send_json({"versions": versions, "current": current})
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/versions/(\d+)\.(\d+)$")
+        if m:
+            project_id, recording_id, stage, seq = m
+            version = storage.get_version(project_id, recording_id, int(stage), int(seq))
+            if version is None:
+                self._send_json({"error": "version not found"}, status=404)
+                return
+            # 旧数据兼容：早期版本文件只存了 sentence_ids，没有 diff / 快照
+            version.setdefault("version", f"{stage}.{seq}")
+            version.setdefault("diff", [])
+            version.setdefault("sentences", [])
+            version.setdefault("message", "")
+            version.setdefault("author_nick", "")
+            version.setdefault("timestamp", "")
+            self._send_json({"version": version})
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings$")
@@ -161,6 +230,9 @@ class Handler(BaseHTTPRequestHandler):
             if recording is None:
                 self._send_json({"error": "recording not found"}, status=404)
                 return
+            current = storage.ensure_current_version(project_id, recording_id)
+            if current and not recording.get("version"):
+                recording["version"] = current
             self._send_json({
                 "recording": recording,
                 "transcribe": recording.get("transcribe", {"status": "pending", "progress": 0, "error": ""}),
@@ -169,6 +241,144 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json({"error": "not found"}, status=404)
+
+    def do_PATCH(self):
+        path = urlparse(self.path).path
+
+        if path == "/api/settings":
+            self._update_settings()
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/sentences/([^/]+)$")
+        if m:
+            self._update_sentence(*m)
+            return
+
+        self._send_json({"error": "not found"}, status=404)
+
+    def _update_settings(self):
+        data = self._read_json_body()
+        if data is None:
+            return
+        self._send_json({"settings": storage.update_settings(data)})
+
+    def _read_json_body(self):
+        try:
+            data = json.loads(self._read_body().decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self._send_json({"error": "invalid json"}, status=400)
+            return None
+        if not isinstance(data, dict):
+            self._send_json({"error": "invalid json"}, status=400)
+            return None
+        return data
+
+    def _update_sentence(self, project_id: str, recording_id: str, sentence_id: str):
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if (recording.get("transcribe") or {}).get("status") != "done":
+            self._send_json({"error": "转写尚未完成，暂不能修改"}, status=409)
+            return
+
+        data = self._read_json_body()
+        if data is None:
+            return
+        text = data.get("text")
+        if not isinstance(text, str) or not text.strip():
+            self._send_json({"error": "text is required"}, status=400)
+            return
+        text = text.strip()
+
+        sentences = storage.load_sentences(project_id, recording_id)
+        target = next((s for s in sentences if s["id"] == sentence_id), None)
+        if target is None:
+            self._send_json({"error": "sentence not found"}, status=404)
+            return
+        if target["text"] == text:
+            current = storage.ensure_current_version(project_id, recording_id)
+            self._send_json({"sentence": target, "version": current, "current": (current or {}).get("current", "")})
+            return
+
+        before = {"id": target["id"], "index": target["index"], "text": target["text"]}
+        target["text"] = text
+        storage.save_sentences(project_id, recording_id, sentences)
+        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+
+        diff = [{
+            "sentence_id": target["id"],
+            "index": target["index"],
+            "op": "replace",
+            "before": before,
+            "after": {"id": target["id"], "index": target["index"], "text": text},
+        }]
+        nick = storage.get_settings()["identity"]["nick"]
+        version = storage.commit_version(
+            project_id,
+            recording_id,
+            sentences,
+            diff,
+            message=f"第 {target['index'] + 1} 句文字修改",
+            author_nick=nick,
+        )
+        self._send_json({"sentence": target, "version": version, "current": version["version"]})
+
+    def _send_audio(self, project_id: str, recording_id: str):
+        """音频流：支持 Range，浏览器 <audio> 才能精确跳转到任意句子。"""
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        audio_path = Path(recording.get("audio_path") or "")
+        if not audio_path.is_file():
+            self._send_json({"error": "audio file missing"}, status=404)
+            return
+
+        size = audio_path.stat().st_size
+        start, end, status = 0, size - 1, 200
+        range_header = self.headers.get("Range") or ""
+        if range_header.startswith("bytes="):
+            spec = range_header[len("bytes="):].split(",")[0].strip()
+            first, _, last = spec.partition("-")
+            try:
+                if first:
+                    start = int(first)
+                    end = int(last) if last else size - 1
+                else:
+                    length = int(last)
+                    start = max(0, size - length)
+                    end = size - 1
+            except ValueError:
+                start, end = 0, size - 1
+            if start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            end = min(end, size - 1)
+            status = 206
+
+        length = end - start + 1
+        mime = AUDIO_MIME.get(recording.get("format", ""), "application/octet-stream")
+        self.send_response(status)
+        self.send_header("Content-Type", mime)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.end_headers()
+        with audio_path.open("rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def do_POST(self):
         path = urlparse(self.path).path

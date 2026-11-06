@@ -1,7 +1,16 @@
 // 后端 fetch 封装。地址固定本地回环：Pages 首屏检测到后端离线会进入引导部署（BootstrapGuide），
 // 用户在本机跑起启动器后自动连上；录音数据全程不出本机。
 
-import type { Project, Recording, RecordingDetail, Version } from './types'
+import type {
+  AppSettings,
+  Project,
+  Recording,
+  RecordingDetail,
+  Sentence,
+  Version,
+  VersionDetail,
+  VersionSummary,
+} from './types'
 
 const BACKEND = 'http://127.0.0.1:7850'
 
@@ -99,4 +108,64 @@ export async function fetchRecordingDetail(
   return json<RecordingDetail>(
     await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}`),
   )
+}
+
+/** 音频流地址（支持 Range）：<audio> 用它播放并精确跳转到句子开始时间。 */
+export function audioUrl(projectId: string, recordingId: string): string {
+  return `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/audio`
+}
+
+export async function updateSentence(
+  projectId: string,
+  recordingId: string,
+  sentenceId: string,
+  text: string,
+): Promise<{ sentence: Sentence; current: string }> {
+  return json(
+    await fetch(
+      `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/sentences/${sentenceId}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      },
+    ),
+  )
+}
+
+export async function listVersions(
+  projectId: string,
+  recordingId: string,
+): Promise<VersionSummary[]> {
+  const data = await json<{ versions: VersionSummary[] }>(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/versions`),
+  )
+  return data.versions
+}
+
+export async function fetchVersionDetail(
+  projectId: string,
+  recordingId: string,
+  version: string,
+): Promise<VersionDetail> {
+  const data = await json<{ version: VersionDetail }>(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/versions/${version}`),
+  )
+  return data.version
+}
+
+export async function fetchSettings(): Promise<AppSettings> {
+  const data = await json<{ settings: AppSettings }>(await fetch(`${BACKEND}/api/settings`))
+  return data.settings
+}
+
+export async function updateSettings(fields: Partial<AppSettings>): Promise<AppSettings> {
+  const data = await json<{ settings: AppSettings }>(
+    await fetch(`${BACKEND}/api/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields),
+    }),
+  )
+  return data.settings
 }

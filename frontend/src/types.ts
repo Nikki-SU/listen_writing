@@ -20,6 +20,12 @@ export type TranscribeStatus = {
   error: string
 }
 
+export type RecordingVersion = {
+  stage: number
+  seq: number
+  current: string
+}
+
 export type Recording = {
   id: string
   project_id: string
@@ -29,6 +35,7 @@ export type Recording = {
   duration_sec: number
   created_at: string
   transcribe: TranscribeStatus
+  version?: RecordingVersion
 }
 
 export type Sentence = {
@@ -45,4 +52,35 @@ export type RecordingDetail = {
   recording: Recording
   transcribe: TranscribeStatus
   sentences: Sentence[]
+}
+
+export type DiffEntry = {
+  sentence_id: string
+  index: number
+  op: 'replace'
+  before: { id: string; index: number; text: string } | null
+  after: { id: string; index: number; text: string } | null
+}
+
+export type VersionSummary = {
+  version: string
+  stage: number
+  seq: number
+  parent: string
+  author_nick: string
+  timestamp: string
+  message: string
+  changes: number
+}
+
+export type VersionDetail = VersionSummary & {
+  recording_id: string
+  diff: DiffEntry[]
+  sentences: Sentence[]
+}
+
+export type AppSettings = {
+  identity: { nick: string; device_code: string }
+  asr_model: string
+  llm_model: string
 }

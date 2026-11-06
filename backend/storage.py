@@ -18,6 +18,15 @@ DATA_ROOT = Path(
 
 SENTENCE_COLUMNS = ["id", "recording_id", "index", "text", "start_ms", "end_ms", "speaker"]
 
+SETTINGS_PATH = DATA_ROOT / "settings.json"
+
+# 默认设置：没有登录界面，昵称 + 设备码就是身份；模型选择在设置页随时可改。
+DEFAULT_SETTINGS = {
+    "identity": {"nick": "研究者", "device_code": ""},
+    "asr_model": "whisper-small",
+    "llm_model": "qwen3-4b",
+}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -181,11 +190,17 @@ def _sentences_path(project_id: str, recording_id: str) -> Path:
 def save_sentences(project_id: str, recording_id: str, sentences: list[dict]) -> None:
     path = _sentences_path(project_id, recording_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=SENTENCE_COLUMNS)
-        writer.writeheader()
-        for s in sentences:
-            writer.writerow({c: s.get(c, "") for c in SENTENCE_COLUMNS})
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=SENTENCE_COLUMNS)
+            writer.writeheader()
+            for s in sentences:
+                writer.writerow({c: s.get(c, "") for c in SENTENCE_COLUMNS})
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def load_sentences(project_id: str, recording_id: str) -> list[dict]:
@@ -206,6 +221,138 @@ def load_sentences(project_id: str, recording_id: str) -> list[dict]:
                 "speaker": row["speaker"],
             })
     return sentences
+
+
+# ---------- 设置（身份 / 模型选择） ----------
+
+
+def get_settings() -> dict:
+    """读取设置；首次调用时生成设备码并落盘，保证同一台设备始终是同一个身份。"""
+    settings = _read_json(SETTINGS_PATH)
+    if settings is None:
+        settings = {
+            "identity": {"nick": DEFAULT_SETTINGS["identity"]["nick"], "device_code": _new_id()},
+            "asr_model": DEFAULT_SETTINGS["asr_model"],
+            "llm_model": DEFAULT_SETTINGS["llm_model"],
+        }
+        _write_json(SETTINGS_PATH, settings)
+        return settings
+    # 兼容旧文件：缺字段时补默认值，不覆盖用户已设置的内容
+    identity = settings.setdefault("identity", {})
+    identity.setdefault("nick", DEFAULT_SETTINGS["identity"]["nick"])
+    if not identity.get("device_code"):
+        identity["device_code"] = _new_id()
+        _write_json(SETTINGS_PATH, settings)
+    settings.setdefault("asr_model", DEFAULT_SETTINGS["asr_model"])
+    settings.setdefault("llm_model", DEFAULT_SETTINGS["llm_model"])
+    return settings
+
+
+def update_settings(fields: dict) -> dict:
+    settings = get_settings()
+    identity = fields.get("identity")
+    if isinstance(identity, dict):
+        if "nick" in identity and str(identity["nick"]).strip():
+            settings["identity"]["nick"] = str(identity["nick"]).strip()
+        if "device_code" in identity and str(identity["device_code"]).strip():
+            settings["identity"]["device_code"] = str(identity["device_code"]).strip()
+    for key in ("asr_model", "llm_model"):
+        if fields.get(key):
+            settings[key] = str(fields[key])
+    _write_json(SETTINGS_PATH, settings)
+    return settings
+
+
+# ---------- 版本（阶段.阶段内序号） ----------
+
+
+def versions_dir(project_id: str, recording_id: str) -> Path:
+    return recording_dir(project_id, recording_id) / "versions"
+
+
+def version_path(project_id: str, recording_id: str, stage: int, seq: int) -> Path:
+    return versions_dir(project_id, recording_id) / f"{stage}.{seq}.json"
+
+
+def list_versions(project_id: str, recording_id: str) -> list[dict]:
+    root = versions_dir(project_id, recording_id)
+    if not root.exists():
+        return []
+    versions = []
+    for f in root.glob("*.json"):
+        v = _read_json(f)
+        if v:
+            versions.append(v)
+    versions.sort(key=lambda v: (v.get("stage", 0), v.get("seq", 0)))
+    return versions
+
+
+def get_version(project_id: str, recording_id: str, stage: int, seq: int) -> dict | None:
+    return _read_json(version_path(project_id, recording_id, stage, seq))
+
+
+def ensure_current_version(project_id: str, recording_id: str) -> dict | None:
+    """兼容旧数据：录音没有 version 字段时，从已有版本文件中推导并回填。"""
+    recording = get_recording(project_id, recording_id)
+    if recording is None:
+        return None
+    current = recording.get("version")
+    if current and current.get("current"):
+        return current
+    versions = list_versions(project_id, recording_id)
+    if not versions:
+        return None
+    last = versions[-1]
+    current = {
+        "stage": last.get("stage", 0),
+        "seq": last.get("seq", 1),
+        "current": last.get("version", f"{last.get('stage', 0)}.{last.get('seq', 1)}"),
+    }
+    update_recording(project_id, recording_id, version=current)
+    return current
+
+
+def commit_version(
+    project_id: str,
+    recording_id: str,
+    sentences: list[dict],
+    diff: list[dict],
+    message: str,
+    author_nick: str = "",
+    advance_stage: bool = False,
+) -> dict:
+    """提交一次改动，产生新版本号。
+
+    - 阶段内序号 +1；`advance_stage=True` 时阶段 +1、序号归 1（如 0→1 润色、1→2 脱敏）。
+    - 版本 JSON 同时保存完整句子快照与本次 diff：任意两版之间可复刻。
+    """
+    recording = get_recording(project_id, recording_id)
+    current = (recording or {}).get("version") or ensure_current_version(project_id, recording_id)
+    if not current:
+        current = {"stage": 0, "seq": 0}
+    if advance_stage:
+        stage, seq = current["stage"] + 1, 1
+    else:
+        stage, seq = current["stage"], current["seq"] + 1
+    version = {
+        "recording_id": recording_id,
+        "version": f"{stage}.{seq}",
+        "stage": stage,
+        "seq": seq,
+        "parent": f"{current['stage']}.{current['seq']}",
+        "author_nick": author_nick,
+        "timestamp": _now_iso(),
+        "message": message,
+        "diff": diff,
+        "sentences": sentences,
+    }
+    save_version(project_id, recording_id, stage, seq, version)
+    update_recording(
+        project_id,
+        recording_id,
+        version={"stage": stage, "seq": seq, "current": f"{stage}.{seq}"},
+    )
+    return version
 
 
 # ---------- 正文稿（Markdown） ----------

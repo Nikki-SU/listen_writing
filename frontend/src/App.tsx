@@ -3,7 +3,7 @@ import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { BOOTSTRAP_FILES } from './bootstrapFiles'
-import type { Project, Recording, RecordingDetail } from './types'
+import type { Project, Recording, RecordingDetail, Sentence, VersionDetail, VersionSummary } from './types'
 import {
   applyUpdate,
   ensureWritePermission,
@@ -417,7 +417,13 @@ export default function App() {
           <div style={{ color: '#b00020', fontSize: 13, marginBottom: 12 }}>{error}</div>
         )}
         {detail ? (
-          <TranscriptPanel detail={detail} />
+          <TranscriptPanel
+            key={`${projectId}/${recordingId}`}
+            projectId={projectId!}
+            recordingId={recordingId!}
+            detail={detail}
+            onError={setError}
+          />
         ) : (
           <div style={{ color: '#aaa', fontSize: 14, marginTop: 40, textAlign: 'center' }}>
             选择一条录音查看转写结果
@@ -541,8 +547,78 @@ function RecordingList({
   )
 }
 
-function TranscriptPanel({ detail }: { detail: RecordingDetail }) {
-  const { transcribe, sentences } = detail
+function TranscriptPanel({
+  projectId,
+  recordingId,
+  detail,
+  onError,
+}: {
+  projectId: string
+  recordingId: string
+  detail: RecordingDetail
+  onError: (msg: string) => void
+}) {
+  const { transcribe, sentences, recording } = detail
+  const [localSentences, setLocalSentences] = useState<Sentence[]>(sentences)
+  const [version, setVersion] = useState(recording.version?.current ?? '')
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
+  const audioRef = useRef<HTMLAudioElement>(null)
+
+  // 服务端轮询到的句子是权威值；转写结束后不再轮询，本地编辑结果不会被覆盖
+  useEffect(() => {
+    setLocalSentences(sentences)
+  }, [sentences])
+  useEffect(() => {
+    setVersion(recording.version?.current ?? '')
+  }, [recording.version?.current])
+
+  // 播放时按时间定位当前句，滚动跟随（流式浏览用滚动）
+  function onTimeUpdate() {
+    const audio = audioRef.current
+    if (!audio) return
+    const ms = audio.currentTime * 1000
+    const current = localSentences.find((s) => ms >= s.start_ms && ms < s.end_ms)
+    if (current && current.id !== activeId) {
+      setActiveId(current.id)
+      const el = document.getElementById(`sentence-${current.id}`)
+      el?.scrollIntoView({ block: 'nearest' })
+    }
+  }
+
+  function seek(s: Sentence) {
+    setActiveId(s.id)
+    const audio = audioRef.current
+    if (!audio) return
+    audio.currentTime = s.start_ms / 1000
+    void audio.play().catch(() => {
+      // 浏览器可能因权限/格式拒绝自动播放，用户可手点播放按钮
+    })
+  }
+
+  function startEdit(s: Sentence) {
+    setEditingId(s.id)
+    setDraft(s.text)
+  }
+
+  async function saveEdit(s: Sentence) {
+    const text = draft.trim()
+    setEditingId(null)
+    if (!text || text === s.text) return
+    const snapshot = localSentences
+    // 乐观更新：先让用户看到新文字，失败再回滚
+    setLocalSentences((list) => list.map((x) => (x.id === s.id ? { ...x, text } : x)))
+    try {
+      const res = await api.updateSentence(projectId, recordingId, s.id, text)
+      setVersion(res.current || version)
+      onError('')
+    } catch (e) {
+      setLocalSentences(snapshot)
+      onError(`保存失败：${String(e)}`)
+    }
+  }
 
   if (transcribe.status === 'transcribing' || transcribe.status === 'pending') {
     return (
@@ -572,23 +648,209 @@ function TranscriptPanel({ detail }: { detail: RecordingDetail }) {
     )
   }
 
-  if (transcribe.status === 'done' && sentences.length === 0) {
+  if (transcribe.status === 'done' && localSentences.length === 0) {
     return <div style={{ marginTop: 40, textAlign: 'center', color: '#aaa' }}>未识别到任何句子</div>
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <h2 style={{ fontSize: 16, margin: '0 0 12px' }}>转写稿（{sentences.length} 句）</h2>
-      <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
-        {sentences.map((s) => (
-          <li key={s.id} style={{ padding: '10px 12px', borderBottom: '1px solid #f0f0f0', display: 'flex', gap: 12 }}>
-            <span style={{ color: '#999', fontSize: 13, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
-              {fmtMs(s.start_ms)}
+    <div style={{ display: 'flex', gap: 20, height: '100%', minHeight: 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <h2 style={{ fontSize: 16, margin: 0 }}>转写稿（{localSentences.length} 句）</h2>
+          {version && (
+            <span style={{ fontSize: 11, color: '#6b7280', background: '#f1f3f5', borderRadius: 10, padding: '2px 8px' }}>
+              v{version}
             </span>
-            <span style={{ fontSize: 15, lineHeight: 1.6 }}>{s.text}</span>
+          )}
+          <button
+            onClick={() => setShowHistory((v) => !v)}
+            style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}
+          >
+            {showHistory ? '收起版本' : '版本历史'}
+          </button>
+        </div>
+
+        <audio
+          ref={audioRef}
+          src={api.audioUrl(projectId, recordingId)}
+          controls
+          preload="metadata"
+          onTimeUpdate={onTimeUpdate}
+          style={{ width: '100%', height: 36, marginBottom: 10 }}
+        />
+
+        <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
+          {localSentences.map((s) => {
+            const active = s.id === activeId
+            return (
+              <li
+                key={s.id}
+                id={`sentence-${s.id}`}
+                onClick={() => seek(s)}
+                style={{
+                  padding: '8px 10px',
+                  borderBottom: '1px solid #f0f0f0',
+                  display: 'flex',
+                  gap: 10,
+                  cursor: 'pointer',
+                  background: active ? '#eef4ff' : 'transparent',
+                  borderLeft: active ? '3px solid #4285f4' : '3px solid transparent',
+                }}
+              >
+                <span style={{ color: '#999', fontSize: 12, flexShrink: 0, fontVariantNumeric: 'tabular-nums', paddingTop: 2 }}>
+                  {fmtMs(s.start_ms)}
+                </span>
+                {editingId === s.id ? (
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }} onClick={(e) => e.stopPropagation()}>
+                    <textarea
+                      autoFocus
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') setEditingId(null)
+                        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void saveEdit(s)
+                      }}
+                      style={{ width: '100%', fontSize: 14, lineHeight: 1.6, minHeight: 58, boxSizing: 'border-box' }}
+                    />
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={() => void saveEdit(s)} style={{ fontSize: 12, padding: '3px 12px' }}>
+                        保存
+                      </button>
+                      <button onClick={() => setEditingId(null)} style={{ fontSize: 12, padding: '3px 12px' }}>
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {s.speaker && (
+                      <span style={{ fontSize: 11, color: '#4285f4', background: '#eef4ff', borderRadius: 4, padding: '1px 6px', alignSelf: 'flex-start', flexShrink: 0 }}>
+                        {s.speaker}
+                      </span>
+                    )}
+                    <span style={{ fontSize: 15, lineHeight: 1.6, flex: 1 }}>{s.text}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        startEdit(s)
+                      }}
+                      style={{ fontSize: 11, padding: '1px 8px', alignSelf: 'flex-start', color: '#666', flexShrink: 0 }}
+                    >
+                      修改
+                    </button>
+                  </>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+
+      {showHistory && (
+        <VersionPanel
+          projectId={projectId}
+          recordingId={recordingId}
+          version={version}
+          onError={onError}
+        />
+      )}
+    </div>
+  )
+}
+
+const STAGE_LABEL: Record<number, string> = { 0: '初始转写', 1: '文字润色', 2: '脱敏' }
+
+function VersionPanel({
+  projectId,
+  recordingId,
+  version,
+  onError,
+}: {
+  projectId: string
+  recordingId: string
+  version: string
+  onError: (msg: string) => void
+}) {
+  const [versions, setVersions] = useState<VersionSummary[]>([])
+  const [selected, setSelected] = useState<VersionDetail | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .listVersions(projectId, recordingId)
+      .then((list) => {
+        if (!cancelled) setVersions([...list].reverse())
+      })
+      .catch((e) => onError(`读取版本历史失败：${String(e)}`))
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, recordingId, version, onError])
+
+  async function open(v: VersionSummary) {
+    if (v.version === selected?.version) {
+      setSelected(null)
+      return
+    }
+    try {
+      setSelected(await api.fetchVersionDetail(projectId, recordingId, v.version))
+    } catch (e) {
+      onError(`读取版本失败：${String(e)}`)
+    }
+  }
+
+  return (
+    <aside style={{ width: 280, flexShrink: 0, borderLeft: '1px solid #eee', paddingLeft: 16, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <h3 style={{ fontSize: 13, margin: '0 0 10px', color: '#333' }}>版本历史</h3>
+      <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
+        {versions.map((v) => (
+          <li
+            key={v.version}
+            onClick={() => void open(v)}
+            style={{
+              padding: '8px 8px',
+              borderBottom: '1px solid #f0f0f0',
+              cursor: 'pointer',
+              background: selected?.version === v.version ? '#f5f8ff' : 'transparent',
+            }}
+          >
+            <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>v{v.version}</span>
+              <span style={{ fontSize: 11, color: '#888' }}>{STAGE_LABEL[v.stage] ?? `阶段 ${v.stage}`}</span>
+              {v.version === version && (
+                <span style={{ fontSize: 10, color: '#1a73e8', marginLeft: 'auto' }}>当前</span>
+              )}
+            </div>
+            <div style={{ fontSize: 12, color: '#555', marginTop: 3 }}>{v.message || '改动'}</div>
+            <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+              {v.author_nick || '本机'} · {fmtTime(v.timestamp)}
+            </div>
           </li>
         ))}
       </ul>
-    </div>
+      {selected && (
+        <div className="scroll-hidden" style={{ borderTop: '1px solid #eee', marginTop: 8, paddingTop: 8, maxHeight: '45%', overflowY: 'auto', flexShrink: 0 }}>
+          {selected.diff.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#999' }}>本版本为初始稿，无文字改动。</div>
+          ) : (
+            selected.diff.map((d, i) => (
+              <div key={i} style={{ fontSize: 12, marginBottom: 8, lineHeight: 1.6 }}>
+                <div style={{ color: '#999', marginBottom: 2 }}>第 {d.index + 1} 句</div>
+                {d.before && <div style={{ color: '#b00020', textDecoration: 'line-through' }}>{d.before.text}</div>}
+                {d.after && <div style={{ color: '#1e7e34' }}>{d.after.text}</div>}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </aside>
   )
+}
+
+function fmtTime(iso: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
