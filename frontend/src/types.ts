@@ -52,14 +52,38 @@ export type RecordingDetail = {
   recording: Recording
   transcribe: TranscribeStatus
   sentences: Sentence[]
+  redactions?: RedactionMark[]
 }
 
 export type DiffEntry = {
   sentence_id: string
   index: number
-  op: 'replace'
-  before: { id: string; index: number; text: string; speaker?: string } | null
-  after: { id: string; index: number; text: string; speaker?: string } | null
+  op?: 'replace'
+  kind?: 'text' | 'redaction'
+  category?: string
+  before: { id: string; index: number; text: string; speaker?: string } | string | null
+  after: { id: string; index: number; text: string; speaker?: string } | string | null
+}
+
+export type RedactionCategory = {
+  id: string
+  name: string
+  placeholder: string
+  color: string
+  enabled: boolean
+}
+
+export type RedactionMark = {
+  id: string
+  sentence_id: string
+  start: number
+  end: number
+  original: string
+  category_id: string
+  category_name: string
+  placeholder: string
+  color: string
+  timestamp?: string
 }
 
 export type VersionSummary = {

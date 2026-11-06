@@ -263,6 +263,53 @@ def update_settings(fields: dict) -> dict:
     return settings
 
 
+# ---------- 脱敏 ----------
+
+# 建议起点标签（PRD 第 10 节）：可编辑的预设，不是不可变清单。
+# 课题模板落在项目下，录音里的标记快照类别名与占位符，模板后续改名不影响历史版本。
+DEFAULT_REDACTION_CATEGORIES = [
+    {"id": "person", "name": "人名", "color": "#e5484d", "placeholder": "[人名]", "enabled": True},
+    {"id": "place", "name": "地点/机构", "color": "#f76808", "placeholder": "[地点/机构]", "enabled": True},
+    {"id": "date_contact", "name": "日期/联系方式", "color": "#1f6feb", "placeholder": "[日期/联系方式]", "enabled": True},
+    {"id": "job", "name": "职业/身份", "color": "#7c3aed", "placeholder": "[职业/身份]", "enabled": True},
+]
+
+
+def redaction_template_path(project_id: str) -> Path:
+    return project_dir(project_id) / "redaction.json"
+
+
+def get_redaction_categories(project_id: str) -> list[dict]:
+    """项目级类别模板；首次访问写入默认建议标签。"""
+    data = _read_json(redaction_template_path(project_id))
+    if data and isinstance(data.get("categories"), list) and data["categories"]:
+        return data["categories"]
+    categories = [dict(c) for c in DEFAULT_REDACTION_CATEGORIES]
+    _write_json(redaction_template_path(project_id), {"categories": categories})
+    return categories
+
+
+def save_redaction_categories(project_id: str, categories: list[dict]) -> list[dict]:
+    _write_json(redaction_template_path(project_id), {"categories": categories})
+    return categories
+
+
+def redactions_path(project_id: str, recording_id: str) -> Path:
+    return recording_dir(project_id, recording_id) / "redactions.json"
+
+
+def get_redactions(project_id: str, recording_id: str) -> list[dict]:
+    data = _read_json(redactions_path(project_id, recording_id))
+    if not data or not isinstance(data.get("marks"), list):
+        return []
+    return data["marks"]
+
+
+def save_redactions(project_id: str, recording_id: str, marks: list[dict]) -> list[dict]:
+    _write_json(redactions_path(project_id, recording_id), {"marks": marks})
+    return marks
+
+
 # ---------- 版本（阶段.阶段内序号） ----------
 
 
@@ -320,17 +367,22 @@ def commit_version(
     message: str,
     author_nick: str = "",
     advance_stage: bool = False,
+    advance_to: int | None = None,
+    redactions: list[dict] | None = None,
 ) -> dict:
     """提交一次改动，产生新版本号。
 
     - 阶段内序号 +1；`advance_stage=True` 时阶段 +1、序号归 1（如 0→1 润色、1→2 脱敏）。
-    - 版本 JSON 同时保存完整句子快照与本次 diff：任意两版之间可复刻。
+    - `advance_to` 允许跨阶段推进（用户未先润色就直接脱敏时，0→2）。
+    - 版本 JSON 同时保存完整句子快照、脱敏标记与本次 diff：任意两版之间可复刻。
     """
     recording = get_recording(project_id, recording_id)
     current = (recording or {}).get("version") or ensure_current_version(project_id, recording_id)
     if not current:
         current = {"stage": 0, "seq": 0}
-    if advance_stage:
+    if advance_to is not None and advance_to > current["stage"]:
+        stage, seq = advance_to, 1
+    elif advance_stage:
         stage, seq = current["stage"] + 1, 1
     else:
         stage, seq = current["stage"], current["seq"] + 1
@@ -345,6 +397,7 @@ def commit_version(
         "message": message,
         "diff": diff,
         "sentences": sentences,
+        "redactions": redactions or [],
     }
     save_version(project_id, recording_id, stage, seq, version)
     update_recording(

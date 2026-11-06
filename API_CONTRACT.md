@@ -21,17 +21,24 @@
 | P-2 | 后端 | `GET /api/projects` | 无 | `{"projects":[{...}]}` | 列出全部项目（按创建倒序） |
 | R-1 | 后端 | `POST /api/projects/{project_id}/recordings?name=...&format=...` | **raw 音频字节**（非 JSON）+ **query 参数** `name`（原文件名，UTF-8 百分号编码）、`format`（取值见下方白名单） | `{"recording":{...}}` | 上传录音，落 `audio.{ext}` 后**异步启动转写** |
 | R-3 | 后端 | `GET /api/projects/{project_id}/recordings` | 无 | `{"recordings":[{...}]}` | 列出项目下录音（仅元数据，按创建倒序） |
-| R-2 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}` | 无 | `{"recording":{...},"transcribe":{...},"sentences":[...]}` | 录音详情 + 转写状态 + 分句列表；`recording.version` 为当前版本 `{stage,seq,current}` |
+| R-2 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}` | 无 | `{"recording":{...},"transcribe":{...},"sentences":[...],"redactions":[...]}` | 录音详情 + 转写状态 + 分句列表 + 脱敏标记；`recording.version` 为当前版本 `{stage,seq,current}`，`recording.asr_model` 为实际用过的转写档位 |
 | R-4 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/audio` | 可选 `Range: bytes=...` | 音频字节流（`200` / `206`） | `<audio>` 播放与按句跳转；支持 Range 才能任意 seek |
 | R-5 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/versions` | 无 | `{"versions":[{version,stage,seq,parent,author_nick,timestamp,message,changes}],"current":{...}}` | 版本历史（元数据，不含句子快照） |
 | R-6 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/versions/{stage}.{seq}` | 无 | `{"version":{...version, diff, sentences:[...]}}` | 单个版本：完整句子快照 + 本次 diff，可复刻 |
 | R-7 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/sentences/{sentence_id}` | `{"text":"修改后的单句","speaker":"可选，发言人"}` | `{"sentence":{...},"version":{...},"current":"0.2"}` | 单句文字/发言人修改；成功后自动提交新版本（阶段内序号 +1） |
 | R-8 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/speakers` | `{"action":"rename","from","to"}` 或 `{"action":"merge","from","into"}` 或 `{"action":"assign","sentence_ids":[...],"speaker"}` | `{"sentences":[...],"version":{...},"current":"0.3"}` | 发言人改名 / 合并 / 单句拆分；每次操作提交一个版本 |
-| E-1 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/export?format=md\|json&version={stage}.{seq}` | 无 | 文件流（`Content-Disposition: attachment`） | 默认导出当前版本；带 `version` 导出历史版本；MD 便于送审，JSON 保留发言人/时间戳/句子映射 |
+| R-9 | 后端 | `GET /api/projects/{project_id}/redaction` | 无 | `{"categories":[RedactionCategory…]}` | 项目级脱敏类别模板（首次访问写入 4 个建议起点标签） |
+| R-10 | 后端 | `POST /api/projects/{project_id}/redaction` | `{"categories":[{id,name,placeholder,color,enabled}…]}` | `{"categories":[...]}` | 保存类别模板（增删/改名/占位符/颜色/启停）；类别名不能为空、id 不能重复 |
+| R-11 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/redactions` | 无 | `{"marks":[RedactionMark…]}` | 录音的脱敏标记（坐标基于原句文字；另随 R-2 详情返回） |
+| R-12 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/redactions` | `{"marks":[{sentence_id,start,end,category_id}…]}` | `{"marks":[...],"version":{...},"current":"2.1"}` | 新增标记；越界/与已有标记重叠/类别不存在返回 400；首次标记把版本推进到阶段 2 |
+| R-13 | 后端 | `DELETE /api/projects/{project_id}/recordings/{recording_id}/redactions/{mark_id}` | 无 | `{"marks":[...],"version":{...},"current":"2.2"}` | 移除标记，同样提交版本留痕 |
+| E-1 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/export?format=md\|json&version={stage}.{seq}` | 无 | 文件流（`Content-Disposition: attachment`） | 默认导出当前版本；带 `version` 导出历史版本；MD 便于送审，JSON 保留发言人/时间戳/句子映射。**阶段 ≥2 且存在标记时，导出的句子已替换为占位符，JSON 不含 `original`** |
 | S-1 | 后端 | `GET /api/settings` | 无 | `{"settings":{"identity":{"nick","device_code"},"asr_model","llm_model"},"options":{"asr":[ModelOption…],"llm":[ModelOption…]}}` | 本机身份与模型选择；首次调用生成设备码。`options` 在 `transcriber.ASR_MODELS` / `llm.LLM_MODELS` 唯一定义，前端只渲染 |
 | S-2 | 后端 | `PATCH /api/settings` | 同 S-1 `settings` 的任意子集 | `{"settings":{...}}` | 修改昵称 / 设备码 / 模型选择；空昵称不生效。`asr_model` 不在 `ASR_MODELS`、`llm_model` 不在 `LLM_MODELS` 时返回 400 |
 
 `ModelOption = {id,label,min_ram,speed,note,available}`；`available=false` 表示本机运行时尚未内置，前端置灰并显示「本机未内置」，选了也不会被后端接受（转写会返回明确错误，不假装成功）。
+
+`RedactionCategory = {id,name,placeholder,color,enabled}`；`RedactionMark = {id,sentence_id,start,end,original,category_id,category_name,placeholder,color,timestamp}`。`start/end` 以**原句文字**为坐标（渲染时不替换、只加彩色底纹，保证选区坐标不漂移）；`original` 只用于界面回退与 diff，导出物必须剥离。
 
 > R-1 是唯一的非 JSON 请求：请求体是音频原始字节，`name` 带原文件名（如 `访谈1.mp3`）、`format` 取值见下方格式白名单。前端用 `fetch` 把 `File` 直接作为 body，参数走 `URLSearchParams`（自动 UTF-8 编码）。
 >

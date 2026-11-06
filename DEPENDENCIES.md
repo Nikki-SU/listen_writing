@@ -88,11 +88,17 @@
 | `save_transcript_md` | `storage.py` | 正文稿 Markdown | （无字段依赖） | `main._run_transcribe`、`main._update_sentence` |
 | `get_settings` / `update_settings` | `storage.py` | 读写 `data/settings.json` | `identity.nick / identity.device_code / asr_model / llm_model` | S-1 / S-2；版本作者名取 `identity.nick` |
 | `ensure_current_version` | `storage.py` | 旧录音缺 `version` 时从版本文件回填 | `stage / seq / current` | R-2、R-7、`commit_version` |
-| `commit_version` | `storage.py` | (pid, rid, sentences, diff, message, author, advance_stage) → 版本 dict | 写 `versions/{stage}.{seq}.json`，快照 + diff，并回填 `recording.version` | R-7 单句修改；后续阶段升级 |
+| `commit_version` | `storage.py` | (pid, rid, sentences, diff, message, author, advance_stage, advance_to, redactions) → 版本 dict | 写 `versions/{stage}.{seq}.json`，快照 + diff + `redactions`；`advance_to` 直接推进到指定阶段；并回填 `recording.version` | R-7 单句修改、R-8 发言人、R-10~R-12 脱敏；AI 纠错（阶段 1） |
 | `list_versions` / `get_version` / `save_version` | `storage.py` | 版本历史读取 / 落盘 | `version/stage/seq/parent/author_nick/timestamp/message/diff/sentences` | R-5 / R-6；`main._run_transcribe` 落 `0.1` |
 | `_send_audio` | `main.py` | 音频流（支持 Range） | `recording.audio_path / format`；`AUDIO_MIME` | R-4 `<audio>` 播放与按句 seek |
-| `_update_sentence` | `main.py` | 单句 PATCH 编排 | 非空 `text`；可选 `speaker`；成功后 `commit_version` | R-7；前端 `TranscriptPanel.saveEdit` |
-| `_update_speakers` | `main.py` | 发言人改名/合并/拆分编排 | `action` + `from/to/into/sentence_ids`；成功后 `commit_version` | R-8；前端 `renameSpeaker` / `mergeSpeaker` / 单句编辑框 |
+| `_update_sentence` | `main.py` | 单句 PATCH 编排 | 非空 `text`；可选 `speaker`；阶段 ≥2 且文字变化时清除该句脱敏标记；成功后 `commit_version(..., redactions=marks)` | R-7；前端 `TranscriptPanel.saveEdit` |
+| `_update_speakers` | `main.py` | 发言人改名/合并/拆分编排 | `action` + `from/to/into/sentence_ids`；成功后带当前 `redactions` 提交版本 | R-8；前端 `renameSpeaker` / `mergeSpeaker` / 单句编辑框 |
+| `DEFAULT_REDACTION_CATEGORIES` / `get_redaction_categories` / `save_redaction_categories` | `storage.py` | 项目级脱敏类别模板（`redaction.json`） | 字段 `id / name / placeholder / color / enabled`；类别 id 唯一 | R-13、R-11 类别管理面板 |
+| `redactions_path` / `get_redactions` / `save_redactions` | `storage.py` | 录音级脱敏标记（`redactions.json`） | 字段 `id / sentence_id / start / end / category / placeholder / original` | R-9、R-10、R-12；导出 E-1 与版本快照 |
+| `_add_redactions` | `main.py` | 新增标记编排 | 校验 `sentence_id` 存在、区间不越界/不重叠；首次标记推进阶段 2；返回 `{marks, version, current}` | R-10；前端 `markSelection` |
+| `_delete_redaction` | `main.py` | 删除单个标记 | `mark_id`；成功后提交版本；返回 `{marks, version, current}` | R-12；前端 `renderText` 点击移除 |
+| `_update_redaction_categories` | `main.py` | 保存类别模板 | 校验名称非空、id 唯一；返回类别表 | R-11；前端「管理类别」面板 |
+| `_apply_redactions` | `main.py` | 按标记把句内区间替换成占位符 | `marks` 按 `start` 倒序替换 `sentence.text` | E-1 导出；阶段 ≥2 才生效 |
 | `assign_speakers` | `diarize.py` | 本地 MFCC+基频 → k-means → 轮廓系数选 k | `Sentence.start_ms/end_ms`，写 `speaker`；numpy + PyAV | `main._run_transcribe` 转写完成后调用 |
 | `_export_transcript` | `main.py` | MD/JSON 导出（当前或历史版本） | `version.sentences` 快照、`recording.name`、`format`/`version` 查询参数 | E-1；前端 `saveExport` |
 | `Transcriber.transcribe`（抽象） | `transcriber.py` | (audio_path, on_progress) → `[{start_ms,end_ms,text,speaker}]` | 返回元素四字段 | `main._run_transcribe` |

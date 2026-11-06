@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
 import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { BOOTSTRAP_FILES } from './bootstrapFiles'
-import type { Project, Recording, RecordingDetail, Sentence, VersionDetail, VersionSummary } from './types'
+import type {
+  Project,
+  Recording,
+  RecordingDetail,
+  RedactionCategory,
+  RedactionMark,
+  Sentence,
+  VersionDetail,
+  VersionSummary,
+} from './types'
 import {
   applyUpdate,
   ensureWritePermission,
@@ -574,6 +584,12 @@ function TranscriptPanel({
   const [speakerEdit, setSpeakerEdit] = useState<string | null>(null)
   const [speakerDraft, setSpeakerDraft] = useState('')
   const [showHistory, setShowHistory] = useState(false)
+  const [marks, setMarks] = useState<RedactionMark[]>(detail.redactions ?? [])
+  const [redactMode, setRedactMode] = useState(false)
+  const [categories, setCategories] = useState<RedactionCategory[]>([])
+  const [activeCat, setActiveCat] = useState('')
+  const [catPanel, setCatPanel] = useState(false)
+  const [catDraft, setCatDraft] = useState<RedactionCategory[]>([])
   const audioRef = useRef<HTMLAudioElement>(null)
 
   // 服务端轮询到的句子是权威值；转写结束后不再轮询，本地编辑结果不会被覆盖
@@ -583,6 +599,26 @@ function TranscriptPanel({
   useEffect(() => {
     setVersion(recording.version?.current ?? '')
   }, [recording.version?.current])
+  useEffect(() => {
+    setMarks(detail.redactions ?? [])
+  }, [detail.redactions])
+
+  // 进入脱敏态才取类别模板：平时不打扰；模板是项目级，切换录音仍一致。
+  useEffect(() => {
+    if (!redactMode) return
+    let cancelled = false
+    api
+      .fetchRedactionCategories(projectId)
+      .then((cs) => {
+        if (cancelled) return
+        setCategories(cs)
+        setActiveCat((prev) => prev || cs.find((c) => c.enabled)?.id || cs[0]?.id || '')
+      })
+      .catch((e) => onError(`读取脱敏类别失败：${String(e)}`))
+    return () => {
+      cancelled = true
+    }
+  }, [redactMode, projectId, onError])
 
   // 播放时按时间定位当前句，滚动跟随（流式浏览用滚动）
   function onTimeUpdate() {
@@ -665,6 +701,132 @@ function TranscriptPanel({
 
   const speakers = [...new Set(localSentences.map((s) => s.speaker).filter(Boolean))] as string[]
 
+  /** 从当前选区取出句子内的字符区间（只统计文字，不含任何按钮）。 */
+  function selectionRange(s: Sentence): { start: number; end: number } | null {
+    const container = document.getElementById(`stext-${s.id}`)
+    const sel = window.getSelection()
+    if (!container || !sel || sel.isCollapsed || sel.rangeCount === 0) return null
+    const range = sel.getRangeAt(0)
+    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return null
+    const pre = document.createRange()
+    pre.selectNodeContents(container)
+    pre.setEnd(range.startContainer, range.startOffset)
+    const start = pre.toString().length
+    const end = start + range.toString().length
+    if (start >= end) return null
+    return { start, end }
+  }
+
+  async function markSelection(s: Sentence) {
+    if (!redactMode) return
+    const cat = categories.find((c) => c.id === activeCat && c.enabled)
+    if (!cat) {
+      onError('请先选择一个脱敏类别')
+      return
+    }
+    const range = selectionRange(s)
+    if (!range) return
+    const original = s.text.slice(range.start, range.end)
+    window.getSelection()?.removeAllRanges()
+
+    // 乐观更新：先画上颜色，失败回滚（工程纪律三.3）。
+    const snapshot = marks
+    const temp: RedactionMark = {
+      id: `tmp-${Date.now()}`,
+      sentence_id: s.id,
+      start: range.start,
+      end: range.end,
+      original,
+      category_id: cat.id,
+      category_name: cat.name,
+      placeholder: cat.placeholder,
+      color: cat.color,
+    }
+    setMarks((list) => [...list, temp])
+    try {
+      const res = await api.addRedactions(projectId, recordingId, [
+        { sentence_id: s.id, start: range.start, end: range.end, category_id: cat.id },
+      ])
+      setMarks(res.marks)
+      setVersion(res.current || version)
+      onError('')
+    } catch (e) {
+      setMarks(snapshot)
+      onError(`标记失败：${String(e)}`)
+    }
+  }
+
+  async function removeMark(mark: RedactionMark) {
+    if (!redactMode) return
+    const snapshot = marks
+    setMarks((list) => list.filter((m) => m.id !== mark.id))
+    try {
+      const res = await api.deleteRedaction(projectId, recordingId, mark.id)
+      setMarks(res.marks)
+      setVersion(res.current || version)
+      onError('')
+    } catch (e) {
+      setMarks(snapshot)
+      onError(`移除标记失败：${String(e)}`)
+    }
+  }
+
+  function openCategoryPanel() {
+    setCatDraft(categories.map((c) => ({ ...c })))
+    setCatPanel((v) => !v)
+  }
+
+  async function saveCategories() {
+    const snapshot = categories
+    const cleaned = catDraft.map((c) => ({ ...c, name: c.name.trim() }))
+    setCategories(cleaned)
+    try {
+      const cs = await api.updateRedactionCategories(projectId, cleaned)
+      setCategories(cs)
+      setActiveCat((prev) => (cs.some((c) => c.id === prev && c.enabled) ? prev : cs.find((c) => c.enabled)?.id || ''))
+      setCatPanel(false)
+      onError('')
+    } catch (e) {
+      setCategories(snapshot)
+      onError(`保存类别失败：${String(e)}`)
+    }
+  }
+
+  function renderText(s: Sentence) {
+    const text = s.text
+    const list = marks
+      .filter((m) => m.sentence_id === s.id && m.start < m.end && m.end <= text.length)
+      .sort((a, b) => a.start - b.start)
+    if (list.length === 0) return text
+    const nodes: ReactNode[] = []
+    let cursor = 0
+    list.forEach((m, i) => {
+      if (m.start < cursor) return
+      if (m.start > cursor) nodes.push(text.slice(cursor, m.start))
+      nodes.push(
+        <span
+          key={`${m.id}-${i}`}
+          title={`${m.category_name}：导出时替换为 ${m.placeholder}${redactMode ? '（点击移除）' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (redactMode) void removeMark(m)
+          }}
+          style={{
+            background: `${m.color}22`,
+            borderBottom: `2px solid ${m.color}`,
+            borderRadius: 3,
+            cursor: redactMode ? 'pointer' : 'text',
+          }}
+        >
+          {text.slice(m.start, m.end)}
+        </span>,
+      )
+      cursor = m.end
+    })
+    if (cursor < text.length) nodes.push(text.slice(cursor))
+    return nodes
+  }
+
   if (transcribe.status === 'transcribing' || transcribe.status === 'pending') {
     return (
       <div style={{ marginTop: 40, textAlign: 'center' }}>
@@ -725,6 +887,21 @@ function TranscriptPanel({
           >
             {showHistory ? '收起版本' : '版本历史'}
           </button>
+          <button
+            onClick={() => setRedactMode((v) => !v)}
+            style={{
+              fontSize: 12,
+              padding: '4px 10px',
+              marginLeft: 'auto',
+              background: redactMode ? '#fff4e0' : '#fff',
+              border: `1px solid ${redactMode ? '#f0b429' : '#ddd'}`,
+              color: redactMode ? '#8a5a00' : '#555',
+              borderRadius: 4,
+            }}
+            title="进入脱敏态：选中文字后点类别即可标记；导出时替换为占位符"
+          >
+            {redactMode ? '退出脱敏' : '脱敏'}
+          </button>
         </div>
 
         <audio
@@ -735,6 +912,96 @@ function TranscriptPanel({
           onTimeUpdate={onTimeUpdate}
           style={{ width: '100%', height: 36, marginBottom: 10 }}
         />
+
+        {redactMode && (
+          <div style={{ marginBottom: 10, fontSize: 12 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+              <span style={{ color: '#8a5a00' }}>脱敏类别：</span>
+              {categories
+                .filter((c) => c.enabled)
+                .map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => setActiveCat(c.id)}
+                    style={{
+                      fontSize: 12,
+                      padding: '2px 10px',
+                      borderRadius: 12,
+                      background: activeCat === c.id ? `${c.color}22` : '#fff',
+                      color: activeCat === c.id ? c.color : '#555',
+                      border: `1px solid ${activeCat === c.id ? c.color : '#ddd'}`,
+                    }}
+                    title={c.placeholder}
+                  >
+                    {c.name}
+                  </button>
+                ))}
+              <button onClick={openCategoryPanel} style={{ fontSize: 12, padding: '2px 10px', color: '#666' }}>
+                {catPanel ? '收起类别管理' : '管理类别'}
+              </button>
+              <span style={{ color: '#9aa0a6' }}>选中文字即标记；点彩色文字移除</span>
+            </div>
+
+            {catPanel && (
+              <div style={{ marginTop: 8, padding: 10, border: '1px solid #eceef1', borderRadius: 8, background: '#fafbfc' }}>
+                {catDraft.map((c, i) => (
+                  <div key={c.id} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                    <input
+                      value={c.name}
+                      onChange={(e) => setCatDraft((list) => list.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
+                      placeholder="类别名"
+                      style={{ width: 110, fontSize: 12, padding: '2px 6px' }}
+                    />
+                    <input
+                      value={c.placeholder}
+                      onChange={(e) => setCatDraft((list) => list.map((x, j) => (j === i ? { ...x, placeholder: e.target.value } : x)))}
+                      placeholder="占位符，如 [人名]"
+                      style={{ width: 130, fontSize: 12, padding: '2px 6px' }}
+                    />
+                    <input
+                      type="color"
+                      value={c.color}
+                      onChange={(e) => setCatDraft((list) => list.map((x, j) => (j === i ? { ...x, color: e.target.value } : x)))}
+                      style={{ width: 30, height: 24, padding: 0, border: 'none', background: 'none' }}
+                    />
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 3, color: '#666', fontSize: 11 }}>
+                      <input
+                        type="checkbox"
+                        checked={c.enabled}
+                        onChange={(e) => setCatDraft((list) => list.map((x, j) => (j === i ? { ...x, enabled: e.target.checked } : x)))}
+                      />
+                      启用
+                    </label>
+                    <button
+                      onClick={() => setCatDraft((list) => list.filter((_, j) => j !== i))}
+                      disabled={catDraft.length <= 1}
+                      style={{ fontSize: 11, padding: '1px 8px', color: '#b00020' }}
+                    >
+                      删除
+                    </button>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    onClick={() =>
+                      setCatDraft((list) => [
+                        ...list,
+                        { id: `c${Date.now()}`, name: '', placeholder: '', color: '#0f766e', enabled: true },
+                      ])
+                    }
+                    style={{ fontSize: 12, padding: '3px 10px' }}
+                  >
+                    新增类别
+                  </button>
+                  <button onClick={() => void saveCategories()} style={{ fontSize: 12, padding: '3px 12px', background: '#1f6feb', color: '#fff', border: 'none', borderRadius: 4 }}>
+                    保存类别
+                  </button>
+                  <span style={{ color: '#9aa0a6', fontSize: 11 }}>占位符留空时自动为 [类别名]；已有标记不受改名影响</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {speakers.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 10, fontSize: 12 }}>
@@ -856,7 +1123,13 @@ function TranscriptPanel({
                         {s.speaker}
                       </span>
                     )}
-                    <span style={{ fontSize: 15, lineHeight: 1.6, flex: 1 }}>{s.text}</span>
+                    <span
+                      id={`stext-${s.id}`}
+                      onMouseUp={() => void markSelection(s)}
+                      style={{ fontSize: 15, lineHeight: 1.6, flex: 1, whiteSpace: 'pre-wrap' }}
+                    >
+                      {renderText(s)}
+                    </span>
                     <button
                       onClick={(e) => {
                         e.stopPropagation()
@@ -975,18 +1248,30 @@ function VersionPanel({
           {selected.diff.length === 0 ? (
             <div style={{ fontSize: 12, color: '#999' }}>本版本为初始稿，无文字改动。</div>
           ) : (
-            selected.diff.map((d, i) => (
-              <div key={i} style={{ fontSize: 12, marginBottom: 8, lineHeight: 1.6 }}>
-                <div style={{ color: '#999', marginBottom: 2 }}>第 {d.index + 1} 句</div>
-                {d.before?.speaker !== d.after?.speaker && (
-                  <div style={{ color: '#8a6d00' }}>
-                    发言人：{d.before?.speaker || '未标注'} → {d.after?.speaker || '未标注'}
-                  </div>
-                )}
-                {d.before && <div style={{ color: '#b00020', textDecoration: 'line-through' }}>{d.before.text}</div>}
-                {d.after && <div style={{ color: '#1e7e34' }}>{d.after.text}</div>}
-              </div>
-            ))
+            selected.diff.map((d, i) => {
+              const before = typeof d.before === 'object' ? d.before : null
+              const after = typeof d.after === 'object' ? d.after : null
+              return (
+                <div key={i} style={{ fontSize: 12, marginBottom: 8, lineHeight: 1.6 }}>
+                  <div style={{ color: '#999', marginBottom: 2 }}>第 {d.index + 1} 句</div>
+                  {d.kind === 'redaction' ? (
+                    <div style={{ color: '#8a5a00' }}>
+                      脱敏（{d.category}）：{String(d.before ?? '')} → {String(d.after ?? '')}
+                    </div>
+                  ) : (
+                    <>
+                      {before?.speaker !== after?.speaker && (
+                        <div style={{ color: '#8a6d00' }}>
+                          发言人：{before?.speaker || '未标注'} → {after?.speaker || '未标注'}
+                        </div>
+                      )}
+                      {before && <div style={{ color: '#b00020', textDecoration: 'line-through' }}>{before.text}</div>}
+                      {after && <div style={{ color: '#1e7e34' }}>{after.text}</div>}
+                    </>
+                  )}
+                </div>
+              )
+            })
           )}
         </div>
       )}

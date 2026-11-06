@@ -122,6 +122,7 @@ def _run_transcribe(project_id: str, recording_id: str) -> None:
             "message": "初始转写",
             "diff": [],
             "sentences": sentences,
+            "redactions": [],
         })
         duration = _probe_duration_sec(audio_path)
         storage.update_recording(
@@ -139,21 +140,40 @@ def _run_transcribe(project_id: str, recording_id: str) -> None:
 
 
 def _sentence_snapshot(s: dict) -> dict:
-    """版本 diff 的句子快照：文字 + 发言人，保证可复刻。"""
+    """版本快照：文字 + 发言人 + 时间戳，保证任意版本都能独立复刻与导出。"""
     return {
         "id": s["id"],
         "index": s["index"],
         "text": s["text"],
         "speaker": s.get("speaker", ""),
+        "start_ms": s.get("start_ms", 0),
+        "end_ms": s.get("end_ms", 0),
     }
+
+
+def _apply_redactions(sentences: list[dict], marks: list[dict]) -> list[dict]:
+    """把脱敏标记替换成占位符（从后往前替换，避免坐标偏移）。"""
+    grouped: dict[str, list[dict]] = {}
+    for m in marks:
+        grouped.setdefault(m.get("sentence_id", ""), []).append(m)
+    out = []
+    for s in sentences:
+        text = s.get("text", "")
+        for m in sorted(grouped.get(s.get("id", ""), []), key=lambda x: x.get("start", 0), reverse=True):
+            start, end = int(m.get("start", 0)), int(m.get("end", 0))
+            if 0 <= start < end <= len(text):
+                text = text[:start] + str(m.get("placeholder") or "[已脱敏]") + text[end:]
+        out.append({**s, "text": text})
+    return out
 
 
 def _sentences_to_markdown(sentences: list[dict]) -> str:
     lines = ["# 转写稿", ""]
     for s in sentences:
-        stamp = f"[{s['start_ms'] // 60000:02d}:{s['start_ms'] // 1000 % 60:02d}]"
-        speaker = f"**{s['speaker']}** " if s["speaker"] else ""
-        lines.append(f"{stamp} {speaker}{s['text']}")
+        start = int(s.get("start_ms", 0))
+        stamp = f"[{start // 60000:02d}:{start // 1000 % 60:02d}]"
+        speaker = f"**{s.get('speaker')}** " if s.get("speaker") else ""
+        lines.append(f"{stamp} {speaker}{s.get('text', '')}")
     lines.append("")
     return "\n".join(lines)
 
@@ -164,7 +184,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format, Range")
         # Chrome 私有网络访问（PNA）：https 的 Pages 页面请求 http://127.0.0.1 时，
         # 预检要求后端显式允许；本地回环地址本身可信，放开不影响安全边界。
@@ -180,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format, Range")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
@@ -204,6 +224,22 @@ class Handler(BaseHTTPRequestHandler):
                 # 前端只负责渲染，避免两端各写一份标签后逐渐漂移。
                 "options": {"asr": list(ASR_MODELS.values()), "llm": llm.options()},
             })
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/redaction$")
+        if m:
+            if storage.get_project(m[0]) is None:
+                self._send_json({"error": "project not found"}, status=404)
+                return
+            self._send_json({"categories": storage.get_redaction_categories(m[0])})
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions$")
+        if m:
+            if storage.get_recording(*m) is None:
+                self._send_json({"error": "recording not found"}, status=404)
+                return
+            self._send_json({"marks": storage.get_redactions(*m)})
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/audio$")
@@ -277,6 +313,7 @@ class Handler(BaseHTTPRequestHandler):
                 "recording": recording,
                 "transcribe": recording.get("transcribe", {"status": "pending", "progress": 0, "error": ""}),
                 "sentences": storage.load_sentences(project_id, recording_id),
+                "redactions": storage.get_redactions(project_id, recording_id),
             })
             return
 
@@ -331,14 +368,41 @@ class Handler(BaseHTTPRequestHandler):
             version.setdefault("message", "")
             version.setdefault("author_nick", "")
             version.setdefault("timestamp", "")
+            version.setdefault("redactions", [])
             sentences = version.get("sentences") or []
         else:
             sentences = storage.load_sentences(project_id, recording_id)
-            version = {"version": current.get("current", ""), "stage": 0, "seq": 1, "message": "", "author_nick": "", "timestamp": ""}
+            version = {
+                "version": current.get("current", ""),
+                "stage": current.get("stage", 0),
+                "seq": current.get("seq", 1),
+                "message": "",
+                "author_nick": "",
+                "timestamp": "",
+                "redactions": storage.get_redactions(project_id, recording_id),
+            }
 
         if not sentences:
             self._send_json({"error": "该版本缺少句子快照，无法导出"}, status=409)
             return
+
+        # 阶段 2 起导出物必须替换敏感信息；阶段 0/1 的版本保持原样（历史可复刻）。
+        stage = int(version.get("stage") or 0)
+        redactions = version.get("redactions") or []
+        desensitized = stage >= 2 and bool(redactions)
+        if desensitized:
+            sentences = _apply_redactions(sentences, redactions)
+        # 导出物绝不携带原文片段：标记里的 original 只用于界面回退。
+        export_marks = [
+            {
+                "sentence_id": m.get("sentence_id"),
+                "start": m.get("start"),
+                "end": m.get("end"),
+                "placeholder": m.get("placeholder"),
+                "category": m.get("category_name"),
+            }
+            for m in redactions
+        ]
 
         name = str(recording.get("name") or "transcript").rsplit(".", 1)[0]
         safe = "".join(c for c in name if c.isalnum() or c in "-_") or "transcript"
@@ -346,7 +410,9 @@ class Handler(BaseHTTPRequestHandler):
             body = (
                 f"# {name}\n\n"
                 f"- 版本：{version.get('version', '')}\n"
-                f"- 导出时间：{storage.now_iso()}\n\n"
+                f"- 导出时间：{storage.now_iso()}\n"
+                + ("- 已脱敏：敏感信息已替换为占位符\n" if desensitized else "")
+                + "\n"
                 + _sentences_to_markdown(sentences)
             ).encode("utf-8")
             ctype = "text/markdown; charset=utf-8"
@@ -368,6 +434,8 @@ class Handler(BaseHTTPRequestHandler):
                     "timestamp": version.get("timestamp", ""),
                 },
                 "speakers": speakers,
+                "desensitized": desensitized,
+                "redactions": export_marks,
                 "sentences": [
                     {
                         "id": s.get("id"),
@@ -471,6 +539,19 @@ class Handler(BaseHTTPRequestHandler):
         if before["speaker"] != new_speaker:
             parts.append("发言人")
         message = f"第 {target['index'] + 1} 句" + "、".join(parts) + "修改"
+
+        # 阶段 2 之后改文字：旧标记的坐标随之失效，必须清掉这一句的标记并留下提示，
+        # 否则导出会把错误位置的文字替换成占位符。
+        marks = storage.get_redactions(project_id, recording_id)
+        if before["text"] != text and marks:
+            current_stage = (storage.ensure_current_version(project_id, recording_id) or {}).get("stage", 0)
+            if current_stage >= 2:
+                stale = [m for m in marks if m.get("sentence_id") == sentence_id]
+                if stale:
+                    marks = [m for m in marks if m.get("sentence_id") != sentence_id]
+                    storage.save_redactions(project_id, recording_id, marks)
+                    message += f"；清除该句 {len(stale)} 处已失效的脱敏标记"
+
         diff = [{
             "sentence_id": target["id"],
             "index": target["index"],
@@ -486,6 +567,7 @@ class Handler(BaseHTTPRequestHandler):
             diff,
             message=message,
             author_nick=nick,
+            redactions=marks,
         )
         self._send_json({"sentence": target, "version": version, "current": version["version"]})
 
@@ -580,13 +662,186 @@ class Handler(BaseHTTPRequestHandler):
         ]
         nick = storage.get_settings()["identity"]["nick"]
         version = storage.commit_version(
-            project_id, recording_id, sentences, diff, message=message, author_nick=nick
+            project_id, recording_id, sentences, diff, message=message, author_nick=nick,
+            redactions=storage.get_redactions(project_id, recording_id),
         )
         self._send_json({
             "sentences": sentences,
             "version": version,
             "current": version["version"],
         })
+
+    def _add_redactions(self, project_id: str, recording_id: str):
+        """新增脱敏标记。坐标基于原句文字，提交版本并推进到阶段 2。
+
+        标记快照类别名与占位符，之后改模板不会改变历史版本的语义。
+        """
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if (recording.get("transcribe") or {}).get("status") != "done":
+            self._send_json({"error": "转写尚未完成，暂不能脱敏"}, status=409)
+            return
+        data = self._read_json_body()
+        if data is None:
+            return
+        incoming = data.get("marks")
+        if not isinstance(incoming, list) or not incoming:
+            self._send_json({"error": "marks 必须是非空数组"}, status=400)
+            return
+
+        sentences = storage.load_sentences(project_id, recording_id)
+        by_id = {s["id"]: s for s in sentences}
+        categories = {c["id"]: c for c in storage.get_redaction_categories(project_id)}
+        marks = storage.get_redactions(project_id, recording_id)
+        added, diff = [], []
+
+        for item in incoming:
+            if not isinstance(item, dict):
+                self._send_json({"error": "mark 项必须是对象"}, status=400)
+                return
+            sid = str(item.get("sentence_id") or "")
+            target = by_id.get(sid)
+            if target is None:
+                self._send_json({"error": f"句子不存在：{sid}"}, status=400)
+                return
+            category = categories.get(str(item.get("category_id") or ""))
+            if category is None:
+                self._send_json({"error": "类别不存在，请先在类别管理里创建"}, status=400)
+                return
+            text = target.get("text", "")
+            try:
+                start, end = int(item.get("start")), int(item.get("end"))
+            except (TypeError, ValueError):
+                self._send_json({"error": "start / end 必须是整数"}, status=400)
+                return
+            while start < end and text[start].isspace():
+                start += 1
+            while end > start and text[end - 1].isspace():
+                end -= 1
+            if start < 0 or end > len(text) or start >= end:
+                self._send_json({"error": "标记位置超出句子范围"}, status=400)
+                return
+            if any(
+                m.get("sentence_id") == sid and start < int(m.get("end", 0)) and end > int(m.get("start", 0))
+                for m in marks
+            ):
+                self._send_json({"error": "与已有脱敏标记重叠"}, status=400)
+                return
+
+            original = text[start:end]
+            mark = {
+                "id": storage.new_id(),
+                "sentence_id": sid,
+                "start": start,
+                "end": end,
+                "original": original,
+                "category_id": category["id"],
+                "category_name": category["name"],
+                "placeholder": category.get("placeholder") or f"[{category['name']}]",
+                "color": category.get("color", "#e5484d"),
+                "timestamp": storage.now_iso(),
+            }
+            marks.append(mark)
+            added.append(mark)
+            diff.append({
+                "sentence_id": sid,
+                "index": target["index"],
+                "kind": "redaction",
+                "category": category["name"],
+                "before": original,
+                "after": mark["placeholder"],
+            })
+
+        order = {s["id"]: s["index"] for s in sentences}
+        marks.sort(key=lambda m: (order.get(m.get("sentence_id", ""), 0), int(m.get("start", 0))))
+        storage.save_redactions(project_id, recording_id, marks)
+        version = storage.commit_version(
+            project_id,
+            recording_id,
+            [_sentence_snapshot(s) for s in sentences],
+            diff,
+            message=f"新增 {len(added)} 处脱敏标记",
+            author_nick=storage.get_settings()["identity"]["nick"],
+            advance_to=2,
+            redactions=marks,
+        )
+        self._send_json({"marks": marks, "version": version, "current": version["version"]})
+
+    def _delete_redaction(self, project_id: str, recording_id: str, mark_id: str):
+        """移除一处脱敏标记；同样提交版本，保证“撤掉”也留痕。"""
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        marks = storage.get_redactions(project_id, recording_id)
+        target = next((m for m in marks if m.get("id") == mark_id), None)
+        if target is None:
+            self._send_json({"error": "mark not found"}, status=404)
+            return
+        remaining = [m for m in marks if m.get("id") != mark_id]
+        storage.save_redactions(project_id, recording_id, remaining)
+        sentences = storage.load_sentences(project_id, recording_id)
+        index = next((s["index"] for s in sentences if s["id"] == target.get("sentence_id")), 0)
+        diff = [{
+            "sentence_id": target.get("sentence_id"),
+            "index": index,
+            "kind": "redaction",
+            "category": target.get("category_name", ""),
+            "before": target.get("placeholder", ""),
+            "after": target.get("original", ""),
+        }]
+        version = storage.commit_version(
+            project_id,
+            recording_id,
+            [_sentence_snapshot(s) for s in sentences],
+            diff,
+            message="移除 1 处脱敏标记",
+            author_nick=storage.get_settings()["identity"]["nick"],
+            redactions=remaining,
+        )
+        self._send_json({"marks": remaining, "version": version, "current": version["version"]})
+
+    def _update_redaction_categories(self, project_id: str):
+        """项目级脱敏类别模板：增删、改名、改占位符、启停。"""
+        if storage.get_project(project_id) is None:
+            self._send_json({"error": "project not found"}, status=404)
+            return
+        data = self._read_json_body()
+        if data is None:
+            return
+        categories = data.get("categories")
+        if not isinstance(categories, list) or not categories:
+            self._send_json({"error": "categories 必须是非空数组"}, status=400)
+            return
+        seen_ids = set()
+        cleaned = []
+        for c in categories:
+            if not isinstance(c, dict):
+                self._send_json({"error": "类别项必须是对象"}, status=400)
+                return
+            name = str(c.get("name") or "").strip()
+            placeholder = str(c.get("placeholder") or "").strip()
+            if not name:
+                self._send_json({"error": "类别名不能为空"}, status=400)
+                return
+            cid = str(c.get("id") or "").strip() or storage.new_id()
+            if cid in seen_ids:
+                self._send_json({"error": f"类别 id 重复：{cid}"}, status=400)
+                return
+            seen_ids.add(cid)
+            if not placeholder:
+                placeholder = f"[{name}]"
+            cleaned.append({
+                "id": cid,
+                "name": name,
+                "placeholder": placeholder,
+                "color": str(c.get("color") or "#e5484d"),
+                "enabled": bool(c.get("enabled", True)),
+            })
+        storage.save_redaction_categories(project_id, cleaned)
+        self._send_json({"categories": cleaned})
 
     def _send_audio(self, project_id: str, recording_id: str):
         """音频流：支持 Range，浏览器 <audio> 才能精确跳转到任意句子。"""
@@ -658,9 +913,29 @@ class Handler(BaseHTTPRequestHandler):
             threading.Timer(0.3, lambda: os._exit(86)).start()
             return
 
+        m = _match(path, r"^/api/projects/([^/]+)/redaction$")
+        if m:
+            self._update_redaction_categories(m[0])
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions$")
+        if m:
+            self._add_redactions(*m)
+            return
+
         m = _match(path, r"^/api/projects/([^/]+)/recordings$")
         if m:
             self._upload_recording(m[0])
+            return
+
+        self._send_json({"error": "not found"}, status=404)
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions/([^/]+)$")
+        if m:
+            self._delete_redaction(*m)
             return
 
         self._send_json({"error": "not found"}, status=404)

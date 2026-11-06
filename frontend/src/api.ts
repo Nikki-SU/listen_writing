@@ -7,6 +7,8 @@ import type {
   Project,
   Recording,
   RecordingDetail,
+  RedactionCategory,
+  RedactionMark,
   Sentence,
   Version,
   VersionDetail,
@@ -205,4 +207,61 @@ export async function updateSettings(fields: Partial<AppSettings>): Promise<AppS
     }),
   )
   return data.settings
+}
+
+// ---------- 脱敏 ----------
+
+export async function fetchRedactionCategories(projectId: string): Promise<RedactionCategory[]> {
+  const data = await json<{ categories: RedactionCategory[] }>(
+    await fetch(`${BACKEND}/api/projects/${projectId}/redaction`),
+  )
+  return data.categories
+}
+
+export async function updateRedactionCategories(
+  projectId: string,
+  categories: RedactionCategory[],
+): Promise<RedactionCategory[]> {
+  const data = await json<{ categories: RedactionCategory[] }>(
+    await fetch(`${BACKEND}/api/projects/${projectId}/redaction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ categories }),
+    }),
+  )
+  return data.categories
+}
+
+export type RedactionInput = {
+  sentence_id: string
+  start: number
+  end: number
+  category_id: string
+}
+
+export async function addRedactions(
+  projectId: string,
+  recordingId: string,
+  marks: RedactionInput[],
+): Promise<{ marks: RedactionMark[]; current: string }> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/redactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marks }),
+    }),
+  )
+}
+
+export async function deleteRedaction(
+  projectId: string,
+  recordingId: string,
+  markId: string,
+): Promise<{ marks: RedactionMark[]; current: string }> {
+  return json(
+    await fetch(
+      `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/redactions/${markId}`,
+      { method: 'DELETE' },
+    ),
+  )
 }
