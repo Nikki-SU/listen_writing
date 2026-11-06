@@ -84,3 +84,17 @@ export type AppSettings = {
   asr_model: string
   llm_model: string
 }
+
+export type ModelOption = {
+  id: string
+  label: string
+  min_ram: string
+  speed: string
+  note: string
+  available: boolean
+}
+
+export type SettingsPayload = {
+  settings: AppSettings
+  options: { asr: ModelOption[]; llm: ModelOption[] }
+}

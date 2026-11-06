@@ -27,7 +27,9 @@ function normalize(name, text) {
 }
 
 const files = []
-for (const f of ['main.py', 'models.py', 'storage.py', 'transcriber.py', 'preload.py']) {
+// 后端模块清单：main 依赖 storage / transcriber / diarize / llm / models，
+// 少嵌一个就会在用户机器上 ImportError（引导部署实测过），加文件必须同步这里。
+for (const f of ['main.py', 'models.py', 'storage.py', 'transcriber.py', 'diarize.py', 'llm.py', 'preload.py']) {
   files.push({ path: `backend/${f}`, content: normalize(f, readFileSync(join(repoDir, 'backend', f), 'utf8')) })
 }
 // requirements.txt 写到用户文件夹根目录，启动器在根目录执行 pip install -r requirements.txt

@@ -3,6 +3,7 @@
 
 import type {
   AppSettings,
+  SettingsPayload,
   Project,
   Recording,
   RecordingDetail,
@@ -191,9 +192,8 @@ export async function downloadExport(
   return res.blob()
 }
 
-export async function fetchSettings(): Promise<AppSettings> {
-  const data = await json<{ settings: AppSettings }>(await fetch(`${BACKEND}/api/settings`))
-  return data.settings
+export async function fetchSettings(): Promise<SettingsPayload> {
+  return json<SettingsPayload>(await fetch(`${BACKEND}/api/settings`))
 }
 
 export async function updateSettings(fields: Partial<AppSettings>): Promise<AppSettings> {

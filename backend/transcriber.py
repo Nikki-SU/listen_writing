@@ -28,6 +28,55 @@ from storage import DATA_ROOT
 HF_MIRROR = "https://hf-mirror.com"
 DEFAULT_MODEL_SIZE = "small"
 
+# ASR 选项（PRD 第 7 节三选项）。这里是唯一权威定义：
+# - 设置接口 S-1 直接把这份表返回给前端渲染，前后端不会各写一份标签而不一致；
+# - `available` 表示本机运行时是否已内置，未内置的选项在设置页置灰并说明原因，
+#   真选了也只会得到明确报错，不会假装转写成功。
+ASR_MODELS: dict[str, dict] = {
+    "whisper-small": {
+        "id": "whisper-small",
+        "label": "Whisper small",
+        "engine": "faster-whisper",
+        "size": "small",
+        "min_ram": "8GB",
+        "speed": "约 1.5–2 倍实时",
+        "note": "通用兜底，生态成熟；默认档",
+        "available": True,
+    },
+    "whisper-medium": {
+        "id": "whisper-medium",
+        "label": "Whisper medium",
+        "engine": "faster-whisper",
+        "size": "medium",
+        "min_ram": "16GB",
+        "speed": "约 2–3 倍实时",
+        "note": "通用兜底，精度更高、更占内存",
+        "available": True,
+    },
+    "qwen3-asr-0.6b": {
+        "id": "qwen3-asr-0.6b",
+        "label": "Qwen3-ASR-0.6B",
+        "engine": "qwen3-asr",
+        "size": "0.6b",
+        "min_ram": "8GB",
+        "speed": "约 2.5GB 内存占用",
+        "note": "中文方言平衡（22 种方言）；本地运行时尚未内置",
+        "available": False,
+    },
+    "sensevoice-small": {
+        "id": "sensevoice-small",
+        "label": "SenseVoice Small",
+        "engine": "sensevoice",
+        "size": "small",
+        "min_ram": "4GB",
+        "speed": "峰值 <800MB，极轻",
+        "note": "轻量快速，中文/粤语准确率好；本地运行时尚未内置",
+        "available": False,
+    },
+}
+
+DEFAULT_ASR_MODEL = "whisper-small"
+
 # 模型缓存跟随项目文件夹，而不是默认的 C:\Users\<用户>\.cache\huggingface：
 # - 用户把文件夹拷到另一台电脑，模型跟着走，不用重新下载 500MB；
 # - 不会在系统盘悄悄占空间，用户看得见它有多大。
@@ -80,8 +129,11 @@ class Transcriber:
 
 
 class FasterWhisperTranscriber(Transcriber):
-    def __init__(self, device: str = "cpu", compute_type: str = "int8"):
-        self.size = os.environ.get("LISTEN_WRITING_MODEL_SIZE") or DEFAULT_MODEL_SIZE
+    def __init__(
+        self, size: str | None = None, device: str = "cpu", compute_type: str = "int8"
+    ):
+        # 设置页选择的大小优先；没选时沿用环境变量 / 默认 small（兼容旧启动器）。
+        self.size = size or os.environ.get("LISTEN_WRITING_MODEL_SIZE") or DEFAULT_MODEL_SIZE
         self.explicit_model = os.environ.get("LISTEN_WRITING_MODEL")
         self.device = device
         self.compute_type = compute_type
@@ -157,5 +209,29 @@ class FasterWhisperTranscriber(Transcriber):
         return sentences
 
 
+def transcriber_for(model_key: str) -> Transcriber:
+    """按设置里的 `asr_model` 构建转写器。
+
+    只返回真正可运行的引擎；未内置运行时的选项抛 RuntimeError，由转写任务把
+    错误如实写进 `recording.transcribe.error`，而不是让用户等一场假转写。
+    """
+    spec = ASR_MODELS.get(model_key)
+    if spec is None:
+        raise ValueError(f"未知的转写模型：{model_key}")
+    if spec["engine"] == "faster-whisper":
+        return FasterWhisperTranscriber(size=spec["size"])
+    raise RuntimeError(
+        f"「{spec['label']}」的本地运行时尚未内置，请先在设置里改用 Whisper"
+    )
+
+
 def default_transcriber() -> Transcriber:
-    return FasterWhisperTranscriber()
+    """默认转写器：优先跟随 `data/settings.json` 里选中的模型。"""
+    try:
+        from storage import get_settings
+
+        key = get_settings().get("asr_model") or DEFAULT_ASR_MODEL
+        return transcriber_for(key)
+    except Exception:
+        # 读设置失败不能让转写整体不可用：退回最稳的 small。
+        return FasterWhisperTranscriber()

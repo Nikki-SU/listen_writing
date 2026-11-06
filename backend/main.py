@@ -16,9 +16,10 @@ from urllib.parse import parse_qs, urlparse
 import av
 
 import diarize
+import llm
 import storage
 from models import APP_VERSION
-from transcriber import default_transcriber
+from transcriber import ASR_MODELS, transcriber_for
 
 PORT = 7850
 HOST = "127.0.0.1"
@@ -40,11 +41,20 @@ AUDIO_MIME = {
     "aiff": "audio/aiff",
 }
 
-_transcriber = default_transcriber()
-
 # 转写是长任务，用后台线程执行；同一录音不会并发转写两次（上传即单次触发）。
 _transcribe_lock = threading.Lock()
 _transcribing: set[str] = set()  # "project_id/recording_id"
+
+# 引擎按设置里的模型档位缓存：换档才重建，重复转写不必反复加载模型。
+_engine_lock = threading.Lock()
+_engines: dict[str, object] = {}
+
+
+def _get_transcriber(model_key: str):
+    with _engine_lock:
+        if model_key not in _engines:
+            _engines[model_key] = transcriber_for(model_key)
+        return _engines[model_key]
 
 
 def _probe_duration_sec(audio_path: str) -> float:
@@ -73,10 +83,16 @@ def _run_transcribe(project_id: str, recording_id: str) -> None:
         audio_path = recording["audio_path"]
         storage.set_transcribe(project_id, recording_id, "transcribing", 0)
 
+        # 转写引擎按设置里选中的档位构建；未内置运行时的档位会在这里明确报错，
+        # 错误原样写进转写状态，界面能直接看到原因。
+        asr_key = storage.get_settings().get("asr_model") or "whisper-small"
+        engine = _get_transcriber(asr_key)
+        storage.update_recording(project_id, recording_id, asr_model=asr_key)
+
         def on_progress(p: int) -> None:
             storage.set_transcribe(project_id, recording_id, "transcribing", p)
 
-        segments = _transcriber.transcribe(audio_path, on_progress)
+        segments = engine.transcribe(audio_path, on_progress)
 
         sentences = []
         for idx, seg in enumerate(segments):
@@ -182,7 +198,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"projects": storage.list_projects()})
             return
         if path == "/api/settings":
-            self._send_json({"settings": storage.get_settings()})
+            self._send_json({
+                "settings": storage.get_settings(),
+                # 选项表由后端唯一定义（transcriber.ASR_MODELS / llm.LLM_MODELS），
+                # 前端只负责渲染，避免两端各写一份标签后逐渐漂移。
+                "options": {"asr": list(ASR_MODELS.values()), "llm": llm.options()},
+            })
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/audio$")
@@ -381,6 +402,14 @@ class Handler(BaseHTTPRequestHandler):
     def _update_settings(self):
         data = self._read_json_body()
         if data is None:
+            return
+        asr = data.get("asr_model")
+        if asr is not None and asr not in ASR_MODELS:
+            self._send_json({"error": f"未知的转写模型：{asr}"}, status=400)
+            return
+        llm_key = data.get("llm_model")
+        if llm_key is not None and llm_key not in llm.LLM_MODELS:
+            self._send_json({"error": f"未知的 AI 模型：{llm_key}"}, status=400)
             return
         self._send_json({"settings": storage.update_settings(data)})
 

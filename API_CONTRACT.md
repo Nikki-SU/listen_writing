@@ -28,8 +28,10 @@
 | R-7 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/sentences/{sentence_id}` | `{"text":"修改后的单句","speaker":"可选，发言人"}` | `{"sentence":{...},"version":{...},"current":"0.2"}` | 单句文字/发言人修改；成功后自动提交新版本（阶段内序号 +1） |
 | R-8 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/speakers` | `{"action":"rename","from","to"}` 或 `{"action":"merge","from","into"}` 或 `{"action":"assign","sentence_ids":[...],"speaker"}` | `{"sentences":[...],"version":{...},"current":"0.3"}` | 发言人改名 / 合并 / 单句拆分；每次操作提交一个版本 |
 | E-1 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/export?format=md\|json&version={stage}.{seq}` | 无 | 文件流（`Content-Disposition: attachment`） | 默认导出当前版本；带 `version` 导出历史版本；MD 便于送审，JSON 保留发言人/时间戳/句子映射 |
-| S-1 | 后端 | `GET /api/settings` | 无 | `{"settings":{"identity":{"nick","device_code"},"asr_model","llm_model"}}` | 本机身份与模型选择；首次调用生成设备码 |
-| S-2 | 后端 | `PATCH /api/settings` | 同 S-1 的任意子集 | `{"settings":{...}}` | 修改昵称 / 设备码 / 模型选择；空昵称不生效 |
+| S-1 | 后端 | `GET /api/settings` | 无 | `{"settings":{"identity":{"nick","device_code"},"asr_model","llm_model"},"options":{"asr":[ModelOption…],"llm":[ModelOption…]}}` | 本机身份与模型选择；首次调用生成设备码。`options` 在 `transcriber.ASR_MODELS` / `llm.LLM_MODELS` 唯一定义，前端只渲染 |
+| S-2 | 后端 | `PATCH /api/settings` | 同 S-1 `settings` 的任意子集 | `{"settings":{...}}` | 修改昵称 / 设备码 / 模型选择；空昵称不生效。`asr_model` 不在 `ASR_MODELS`、`llm_model` 不在 `LLM_MODELS` 时返回 400 |
+
+`ModelOption = {id,label,min_ram,speed,note,available}`；`available=false` 表示本机运行时尚未内置，前端置灰并显示「本机未内置」，选了也不会被后端接受（转写会返回明确错误，不假装成功）。
 
 > R-1 是唯一的非 JSON 请求：请求体是音频原始字节，`name` 带原文件名（如 `访谈1.mp3`）、`format` 取值见下方格式白名单。前端用 `fetch` 把 `File` 直接作为 body，参数走 `URLSearchParams`（自动 UTF-8 编码）。
 >

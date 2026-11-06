@@ -96,12 +96,17 @@
 | `assign_speakers` | `diarize.py` | 本地 MFCC+基频 → k-means → 轮廓系数选 k | `Sentence.start_ms/end_ms`，写 `speaker`；numpy + PyAV | `main._run_transcribe` 转写完成后调用 |
 | `_export_transcript` | `main.py` | MD/JSON 导出（当前或历史版本） | `version.sentences` 快照、`recording.name`、`format`/`version` 查询参数 | E-1；前端 `saveExport` |
 | `Transcriber.transcribe`（抽象） | `transcriber.py` | (audio_path, on_progress) → `[{start_ms,end_ms,text,speaker}]` | 返回元素四字段 | `main._run_transcribe` |
-| `FasterWhisperTranscriber` | `transcriber.py` | 具体引擎实现 | `model_ref` 属性（本地目录优先）；环境变量 `LISTEN_WRITING_MODEL` / `LISTEN_WRITING_MODEL_SIZE`；模型缓存 `HF_HOME=data/models/hf-cache` | `transcriber.default_transcriber` |
+| `FasterWhisperTranscriber` | `transcriber.py` | 具体引擎实现 | `size` 参数优先（设置页选择）→ 环境变量 `LISTEN_WRITING_MODEL` / `LISTEN_WRITING_MODEL_SIZE`；模型缓存 `HF_HOME=data/models/hf-cache` | `transcriber.transcriber_for` |
 | `offline_model_dir` | `transcriber.py` | size → `data/models/whisper-<size>` 路径 | 依赖 `storage.DATA_ROOT` | `FasterWhisperTranscriber.model_ref`、`needs_download` |
-| `default_transcriber` | `transcriber.py` | 无 → Transcriber 实例 | — | `main` 模块级 `_transcriber` |
+| `ASR_MODELS` | `transcriber.py` | 转写选项表（id/label/min_ram/speed/note/available） | 唯一权威；`whisper-small/medium` 可用，Qwen3-ASR / SenseVoice 标记未内置 | S-1 `options.asr`、`_update_settings` 校验、`transcriber_for` |
+| `transcriber_for(model_key)` | `transcriber.py` | key → Transcriber | 未内置运行时抛 `RuntimeError`（`_run_transcribe` 把原因写入转写状态） | `main._get_transcriber`、`preload.main` |
+| `default_transcriber` | `transcriber.py` | 无 → Transcriber 实例 | 跟随 `settings.asr_model`，读设置失败退回 small | `preload.py`、兼容旧调用 |
 | `needs_download` / `ensure_model` | `transcriber.py` | 无 → bool（模型是否就绪） | 检查 `model_ref` 目录；size 名再查 HF 缓存 `snapshots/*/model.bin` | `preload.py` 预下载（命中缓存时跳过下载提示） |
 | `_hf_official_reachable` | `transcriber.py` | 无 → bool | HEAD `huggingface.co/api/models/Systran/faster-whisper-tiny`，3s 超时 | 模块导入时决定是否设 `HF_ENDPOINT=hf-mirror.com` |
-| `preload.main` | `preload.py` | 无 → int（0 就绪 / 1 失败不阻塞） | 调 `default_transcriber`；启动器在**用户文件夹根目录**执行 `python backend/preload.py`，内部按包路径 import `transcriber` | `bootstrap/start-*.sh`、`start-windows.bat` |
+| `preload.main` | `preload.py` | 无 → int（0 就绪 / 1 失败不阻塞） | 按 `settings.asr_model` 构建；启动器在**用户文件夹根目录**执行 `python backend/preload.py` | `bootstrap/start-*.sh`、`start-windows.bat` |
+| `llm.LLM_MODELS` / `llm.options` | `llm.py` | AI 选项表 + `available`（运行时是否安装） | 唯一权威；GGUF 仓库为 bartowski Q4_K_M | S-1 `options.llm`、`_update_settings` 校验 |
+| `llm.ensure_model` | `llm.py` | key → GGUF 路径（必要时下载） | `data/models/llm/<key>/`；复用 transcriber 的 HF 端点决策 | 后续 AI 纠错/脱敏接口 |
+| `llm.runtime_available` | `llm.py` | 无 → bool | `importlib.util.find_spec("llama_cpp")` | `llm.options` |
 | `_probe_duration_sec` | `main.py` | audio_path → float 秒 | 依赖 `av` | `main._run_transcribe` 回填 `duration_sec` |
 | `_run_transcribe` | `main.py` | (pid, rid) → 后台线程编排 | 编排 `storage.*` + `transcriber.transcribe` | `main._upload_recording` 启动线程 |
 | `_sentences_to_markdown` | `main.py` | list[sentence] → str | 用 `start_ms / speaker / text` | `main._run_transcribe` |
@@ -114,7 +119,7 @@
 ### 引导部署文件联动（改一处必须同步）
 
 - `backend/*.py` 或 `bootstrap/*` 改动 → 重新 `npm run build`（prebuild 自动重生成 `src/bootstrapFiles.ts`）→ 重新部署，用户写入的启动文件才是新版。
-- `frontend/scripts/embed-backend.mjs`：清单来源 = `backend/{main,models,storage,transcriber,preload}.py` + `backend/requirements.txt`（映射为用户根目录 `requirements.txt`）+ `bootstrap/*`。加新后端文件必须把它加进 embed 清单。
+- `frontend/scripts/embed-backend.mjs`：清单来源 = `backend/{main,models,storage,transcriber,diarize,llm,preload}.py` + `backend/requirements.txt`（映射为用户根目录 `requirements.txt`）+ `bootstrap/*`。加新后端文件必须把它加进 embed 清单（`diarize.py` 曾漏掉，用户机器会直接 ImportError）。
 - 启动器（`bootstrap/start-*`）假设目录结构：根目录有 `backend/`、`requirements.txt`、启动器自身；改嵌入布局必须同步启动器里的相对路径。
 - `start-mac.command` 只是转交 `start.sh`，不要把启动逻辑写回去（否则两份会漂移）。
 - `start-windows.bat` **必须纯 ASCII + CRLF**：cmd 按字节读批处理，UTF-8 中文会让文件偏移错位、从行中间开始执行。`embed-backend.mjs` 会自动转 CRLF 并在发现非 ASCII 时**让 build 失败**；shell 脚本强制 LF（CRLF 会让 bash 报 `\r` 错误）。

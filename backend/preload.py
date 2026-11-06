@@ -7,11 +7,18 @@
 
 import sys
 
-from transcriber import default_transcriber
+from storage import get_settings
+from transcriber import transcriber_for
 
 
 def main() -> int:
-    t = default_transcriber()
+    key = get_settings().get("asr_model") or "whisper-small"
+    try:
+        t = transcriber_for(key)
+    except Exception as e:
+        # 用户选中的档位还没有本地运行时：不阻塞启动，改用时界面会给出明确提示。
+        print(f"[模型] 当前选择不可用：{e}")
+        return 0
     if not t.needs_download():
         print(f"[模型] 已在本地，跳过下载：{t.model_ref}")
         return 0

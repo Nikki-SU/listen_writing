@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
+import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { BOOTSTRAP_FILES } from './bootstrapFiles'
 import type { Project, Recording, RecordingDetail, Sentence, VersionDetail, VersionSummary } from './types'
@@ -68,6 +69,7 @@ export default function App() {
   const [updProgress, setUpdProgress] = useState<{ done: number; total: number }>()
   const [updDismissed, setUpdDismissed] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -324,12 +326,14 @@ export default function App() {
       )}
 
       <header style={{ flexShrink: 0, textAlign: 'center', padding: '24px 24px 18px', position: 'relative' }}>
-        <button
-          onClick={() => setGuideOpen(true)}
-          style={{ position: 'absolute', right: 24, top: 20, fontSize: 12, padding: '4px 10px', color: '#666' }}
-        >
-          启动设置
-        </button>
+        <div style={{ position: 'absolute', right: 24, top: 20, display: 'flex', gap: 8 }}>
+          <button onClick={() => setSettingsOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
+            设置
+          </button>
+          <button onClick={() => setGuideOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
+            启动设置
+          </button>
+        </div>
         <h1 style={{ margin: 0, fontSize: 22, letterSpacing: '0.02em' }}>listen_writing</h1>
         <p
           style={{
@@ -431,6 +435,8 @@ export default function App() {
         )}
       </section>
       </main>
+
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
     </div>
   )
 }
