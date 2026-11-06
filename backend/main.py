@@ -513,6 +513,16 @@ class Handler(BaseHTTPRequestHandler):
         if raw_speaker is not None and not isinstance(raw_speaker, str):
             self._send_json({"error": "speaker must be a string"}, status=400)
             return
+        # 采纳 AI 纠错时把版本推进到阶段 1（文字润色）；普通修改不带这两个字段。
+        advance_to = data.get("advance_to")
+        if advance_to is not None:
+            if isinstance(advance_to, bool) or not isinstance(advance_to, int) or advance_to < 0 or advance_to > 2:
+                self._send_json({"error": "advance_to 必须是 0/1/2 的整数"}, status=400)
+                return
+        source = data.get("source")
+        if source is not None and source != "ai_polish":
+            self._send_json({"error": "source 仅支持 ai_polish"}, status=400)
+            return
         new_speaker = target_speaker = None
 
         sentences = storage.load_sentences(project_id, recording_id)
@@ -539,6 +549,8 @@ class Handler(BaseHTTPRequestHandler):
         if before["speaker"] != new_speaker:
             parts.append("发言人")
         message = f"第 {target['index'] + 1} 句" + "、".join(parts) + "修改"
+        if source == "ai_polish":
+            message = "AI 纠错采纳：" + message
 
         # 阶段 2 之后改文字：旧标记的坐标随之失效，必须清掉这一句的标记并留下提示，
         # 否则导出会把错误位置的文字替换成占位符。
@@ -567,6 +579,7 @@ class Handler(BaseHTTPRequestHandler):
             diff,
             message=message,
             author_nick=nick,
+            advance_to=advance_to,
             redactions=marks,
         )
         self._send_json({"sentence": target, "version": version, "current": version["version"]})
@@ -803,6 +816,45 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send_json({"marks": remaining, "version": version, "current": version["version"]})
 
+    def _polish_recording(self, project_id: str, recording_id: str):
+        """AI 语义纠错：只给建议，不改正文；采纳由用户逐句 PATCH 完成。"""
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if (recording.get("transcribe") or {}).get("status") != "done":
+            self._send_json({"error": "转写尚未完成，暂不能进行 AI 纠错"}, status=409)
+            return
+
+        data = self._read_json_body()
+        if data is None:
+            return
+        model_key = str(
+            data.get("model")
+            or storage.get_settings().get("llm_model")
+            or llm.DEFAULT_LLM_MODEL
+        )
+        if model_key not in llm.LLM_MODELS:
+            self._send_json({"error": f"未知的 AI 模型：{model_key}"}, status=400)
+            return
+        # 运行时没装时明确拒绝，而不是返回空建议假装成功（工程纪律「不许 hack」）。
+        if not llm.runtime_available():
+            self._send_json({"error": llm.RUNTIME_MISSING_MSG}, status=503)
+            return
+
+        sentences = storage.load_sentences(project_id, recording_id)
+        if not sentences:
+            self._send_json({"error": "没有可校对的句子"}, status=409)
+            return
+
+        try:
+            suggestions = llm.polish(sentences, model_key)
+        except Exception as e:  # noqa: BLE001 - 下载/推理失败原因要原样告知用户
+            self._send_json({"error": f"AI 纠错失败：{e}"}, status=503)
+            return
+
+        self._send_json({"suggestions": suggestions, "model": model_key})
+
     def _update_redaction_categories(self, project_id: str):
         """项目级脱敏类别模板：增删、改名、改占位符、启停。"""
         if storage.get_project(project_id) is None:
@@ -921,6 +973,11 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions$")
         if m:
             self._add_redactions(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/polish$")
+        if m:
+            self._polish_recording(*m)
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings$")

@@ -97,6 +97,14 @@ export type VersionSummary = {
   changes: number
 }
 
+/** AI 语义纠错建议：只描述建议，正文由用户逐条采纳后才改。 */
+export type PolishSuggestion = {
+  sentence_id: string
+  index: number
+  before: string
+  after: string
+}
+
 export type VersionDetail = VersionSummary & {
   recording_id: string
   diff: DiffEntry[]

@@ -91,7 +91,7 @@
 | `commit_version` | `storage.py` | (pid, rid, sentences, diff, message, author, advance_stage, advance_to, redactions) → 版本 dict | 写 `versions/{stage}.{seq}.json`，快照 + diff + `redactions`；`advance_to` 直接推进到指定阶段；并回填 `recording.version` | R-7 单句修改、R-8 发言人、R-10~R-12 脱敏；AI 纠错（阶段 1） |
 | `list_versions` / `get_version` / `save_version` | `storage.py` | 版本历史读取 / 落盘 | `version/stage/seq/parent/author_nick/timestamp/message/diff/sentences` | R-5 / R-6；`main._run_transcribe` 落 `0.1` |
 | `_send_audio` | `main.py` | 音频流（支持 Range） | `recording.audio_path / format`；`AUDIO_MIME` | R-4 `<audio>` 播放与按句 seek |
-| `_update_sentence` | `main.py` | 单句 PATCH 编排 | 非空 `text`；可选 `speaker`；阶段 ≥2 且文字变化时清除该句脱敏标记；成功后 `commit_version(..., redactions=marks)` | R-7；前端 `TranscriptPanel.saveEdit` |
+| `_update_sentence` | `main.py` | 单句 PATCH 编排 | 非空 `text`；可选 `speaker`；可选 `advance_to`（0/1/2，只增不减）与 `source=ai_polish`（版本说明标注采纳）；阶段 ≥2 且文字变化时清除该句脱敏标记；成功后 `commit_version(..., redactions=marks)` | R-7；前端 `TranscriptPanel.saveEdit` / `acceptSuggestion` / `startEdit(..., 'ai_polish')` |
 | `_update_speakers` | `main.py` | 发言人改名/合并/拆分编排 | `action` + `from/to/into/sentence_ids`；成功后带当前 `redactions` 提交版本 | R-8；前端 `renameSpeaker` / `mergeSpeaker` / 单句编辑框 |
 | `DEFAULT_REDACTION_CATEGORIES` / `get_redaction_categories` / `save_redaction_categories` | `storage.py` | 项目级脱敏类别模板（`redaction.json`） | 字段 `id / name / placeholder / color / enabled`；类别 id 唯一 | R-13、R-11 类别管理面板 |
 | `redactions_path` / `get_redactions` / `save_redactions` | `storage.py` | 录音级脱敏标记（`redactions.json`） | 字段 `id / sentence_id / start / end / category / placeholder / original` | R-9、R-10、R-12；导出 E-1 与版本快照 |
@@ -111,8 +111,11 @@
 | `_hf_official_reachable` | `transcriber.py` | 无 → bool | HEAD `huggingface.co/api/models/Systran/faster-whisper-tiny`，3s 超时 | 模块导入时决定是否设 `HF_ENDPOINT=hf-mirror.com` |
 | `preload.main` | `preload.py` | 无 → int（0 就绪 / 1 失败不阻塞） | 按 `settings.asr_model` 构建；启动器在**用户文件夹根目录**执行 `python backend/preload.py` | `bootstrap/start-*.sh`、`start-windows.bat` |
 | `llm.LLM_MODELS` / `llm.options` | `llm.py` | AI 选项表 + `available`（运行时是否安装） | 唯一权威；GGUF 仓库为 bartowski Q4_K_M | S-1 `options.llm`、`_update_settings` 校验 |
-| `llm.ensure_model` | `llm.py` | key → GGUF 路径（必要时下载） | `data/models/llm/<key>/`；复用 transcriber 的 HF 端点决策 | 后续 AI 纠错/脱敏接口 |
-| `llm.runtime_available` | `llm.py` | 无 → bool | `importlib.util.find_spec("llama_cpp")` | `llm.options` |
+| `llm.ensure_model` | `llm.py` | key → GGUF 路径（必要时下载） | `data/models/llm/<key>/`；复用 transcriber 的 HF 端点决策 | `llm._engine`、AI 纠错接口 |
+| `llm.runtime_available` | `llm.py` | 无 → bool | `importlib.util.find_spec("llama_cpp")` | `llm.options`、`llm.polish`、R-14 前置校验 |
+| `llm.polish` | `llm.py` | (sentences, model_key, on_status) → `[{sentence_id,index,before,after}]` | 分批 16 句；提示词带 `id + 制表符 + 原文`；只返回需改动的句子；`split_think` 清思考段；运行时缺失抛 `RuntimeError(RUNTIME_MISSING_MSG)` | `main._polish_recording`（R-14）；前端建议列表 |
+| `llm._engine` / `llm._parse_changes` | `llm.py` | 按档位缓存 `llama_cpp.Llama`；容忍代码块/包裹的 JSON 解析 | 引擎缓存在进程内复用；解析失败抛可读错误 | `llm.polish` |
+| `_polish_recording` | `main.py` | AI 纠错编排 | 校验录音/转写完成/模型名；运行时缺失 503；返回 `{suggestions, model}`，**不改正文** | R-14；前端 `runPolish` |
 | `_probe_duration_sec` | `main.py` | audio_path → float 秒 | 依赖 `av` | `main._run_transcribe` 回填 `duration_sec` |
 | `_run_transcribe` | `main.py` | (pid, rid) → 后台线程编排 | 编排 `storage.*` + `transcriber.transcribe` | `main._upload_recording` 启动线程 |
 | `_sentences_to_markdown` | `main.py` | list[sentence] → str | 用 `start_ms / speaker / text` | `main._run_transcribe` |

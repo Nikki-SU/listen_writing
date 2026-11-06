@@ -9,6 +9,7 @@ import type {
   Project,
   Recording,
   RecordingDetail,
+  PolishSuggestion,
   RedactionCategory,
   RedactionMark,
   Sentence,
@@ -590,6 +591,13 @@ function TranscriptPanel({
   const [activeCat, setActiveCat] = useState('')
   const [catPanel, setCatPanel] = useState(false)
   const [catDraft, setCatDraft] = useState<RedactionCategory[]>([])
+  // AI 语义纠错：建议列表、运行时的可用性、模型名；运行不可用时按钮置灰。
+  const [polishOpen, setPolishOpen] = useState(false)
+  const [polishing, setPolishing] = useState(false)
+  const [suggestions, setSuggestions] = useState<PolishSuggestion[]>([])
+  const [polishModel, setPolishModel] = useState('')
+  const [llmReady, setLlmReady] = useState<boolean | null>(null)
+  const [editOrigin, setEditOrigin] = useState<'ai_polish' | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
 
   // 服务端轮询到的句子是权威值；转写结束后不再轮询，本地编辑结果不会被覆盖
@@ -620,6 +628,24 @@ function TranscriptPanel({
     }
   }, [redactMode, projectId, onError])
 
+  // 读取 LLM 运行时是否就绪：未安装时按钮直接置灰并说明原因，而不是点了才报错。
+  useEffect(() => {
+    let cancelled = false
+    api
+      .fetchSettings()
+      .then((p) => {
+        if (cancelled) return
+        setLlmReady(p.options.llm.some((o) => o.available))
+        setPolishModel(p.settings.llm_model)
+      })
+      .catch(() => {
+        // 设置读取失败不影响其它功能；按钮保持可用，由接口返回明确错误。
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // 播放时按时间定位当前句，滚动跟随（流式浏览用滚动）
   function onTimeUpdate() {
     const audio = audioRef.current
@@ -643,28 +669,83 @@ function TranscriptPanel({
     })
   }
 
-  function startEdit(s: Sentence) {
+  function startEdit(s: Sentence, prefill?: string, origin: 'ai_polish' | null = null) {
     setEditingId(s.id)
-    setDraft(s.text)
+    setDraft(prefill ?? s.text)
     setDraftSpeaker(s.speaker ?? '')
+    setEditOrigin(origin)
   }
 
   async function saveEdit(s: Sentence) {
     const text = draft.trim()
     const speaker = draftSpeaker.trim()
+    const origin = editOrigin
     setEditingId(null)
+    setEditOrigin(null)
     if (!text || (text === s.text && speaker === (s.speaker ?? ''))) return
     const snapshot = localSentences
     // 乐观更新：先让用户看到新文字，失败再回滚
     setLocalSentences((list) => list.map((x) => (x.id === s.id ? { ...x, text, speaker } : x)))
     try {
-      const res = await api.updateSentence(projectId, recordingId, s.id, text, speaker)
+      const res = await api.updateSentence(
+        projectId,
+        recordingId,
+        s.id,
+        text,
+        speaker,
+        origin ? { advance_to: 1, source: origin } : undefined,
+      )
       setVersion(res.current || version)
+      if (origin === 'ai_polish') {
+        setSuggestions((list) => list.filter((x) => x.sentence_id !== s.id))
+      }
       onError('')
     } catch (e) {
       setLocalSentences(snapshot)
       onError(`保存失败：${String(e)}`)
     }
+  }
+
+  async function runPolish() {
+    if (polishing) return
+    setPolishOpen(true)
+    setPolishing(true)
+    setSuggestions([])
+    try {
+      const res = await api.polishRecording(projectId, recordingId)
+      setSuggestions(res.suggestions)
+      setPolishModel(res.model)
+      onError('')
+    } catch (e) {
+      onError(`AI 纠错失败：${String(e)}`)
+    } finally {
+      setPolishing(false)
+    }
+  }
+
+  async function acceptSuggestion(item: PolishSuggestion) {
+    if (!localSentences.some((s) => s.id === item.sentence_id)) return
+    const snapshot = localSentences
+    setSuggestions((list) => list.filter((x) => x.sentence_id !== item.sentence_id))
+    setLocalSentences((list) =>
+      list.map((x) => (x.id === item.sentence_id ? { ...x, text: item.after } : x)),
+    )
+    try {
+      const res = await api.updateSentence(projectId, recordingId, item.sentence_id, item.after, undefined, {
+        advance_to: 1,
+        source: 'ai_polish',
+      })
+      setVersion(res.current || version)
+      onError('')
+    } catch (e) {
+      setLocalSentences(snapshot)
+      setSuggestions((list) => [...list, item].sort((a, b) => a.index - b.index))
+      onError(`采纳失败：${String(e)}`)
+    }
+  }
+
+  function dismissSuggestion(item: PolishSuggestion) {
+    setSuggestions((list) => list.filter((x) => x.sentence_id !== item.sentence_id))
   }
 
   async function renameSpeaker(from: string, to: string) {
@@ -888,11 +969,31 @@ function TranscriptPanel({
             {showHistory ? '收起版本' : '版本历史'}
           </button>
           <button
-            onClick={() => setRedactMode((v) => !v)}
+            onClick={() => void runPolish()}
+            disabled={polishing || llmReady === false}
             style={{
               fontSize: 12,
               padding: '4px 10px',
               marginLeft: 'auto',
+              background: polishOpen ? '#eef5ff' : '#fff',
+              border: `1px solid ${polishOpen ? '#8ab4f8' : '#ddd'}`,
+              color: llmReady === false ? '#999' : '#245c9c',
+              borderRadius: 4,
+              cursor: polishing || llmReady === false ? 'not-allowed' : 'pointer',
+            }}
+            title={
+              llmReady === false
+                ? '本机未安装 AI 运行时（llama-cpp-python），请重新运行启动器安装'
+                : '用本地大模型纠错：只给建议，逐句采纳后才改正文；首次使用需下载模型'
+            }
+          >
+            {polishing ? 'AI 分析中…' : 'AI 纠错'}
+          </button>
+          <button
+            onClick={() => setRedactMode((v) => !v)}
+            style={{
+              fontSize: 12,
+              padding: '4px 10px',
               background: redactMode ? '#fff4e0' : '#fff',
               border: `1px solid ${redactMode ? '#f0b429' : '#ddd'}`,
               color: redactMode ? '#8a5a00' : '#555',
@@ -912,6 +1013,86 @@ function TranscriptPanel({
           onTimeUpdate={onTimeUpdate}
           style={{ width: '100%', height: 36, marginBottom: 10 }}
         />
+
+        {polishOpen && (
+          <div
+            style={{
+              marginBottom: 10,
+              border: '1px solid #dce6f2',
+              background: '#f8fbff',
+              borderRadius: 8,
+              padding: 10,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 12, color: '#245c9c', fontWeight: 600 }}>
+                AI 纠错建议
+              </span>
+              <span style={{ fontSize: 11, color: '#7a869a' }}>
+                {polishModel ? `模型 ${polishModel}` : ''}
+              </span>
+              <span style={{ fontSize: 11, color: '#7a869a' }}>
+                {polishing ? '' : `共 ${suggestions.length} 条`}
+              </span>
+              <button
+                onClick={() => setPolishOpen(false)}
+                style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px' }}
+              >
+                关闭
+              </button>
+            </div>
+            {polishing ? (
+              <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.7 }}>
+                正在本地分析，请保持窗口开启。首次使用需要下载模型（约 1–3 GB），可能耗时较久。
+              </div>
+            ) : suggestions.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#6b7280' }}>
+                未发现需要修改的句子。你也可以再点一次「AI 纠错」重新分析。
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {suggestions.map((item) => {
+                  const target = localSentences.find((s) => s.id === item.sentence_id)
+                  return (
+                    <div
+                      key={item.sentence_id}
+                      style={{ border: '1px solid #e6ecf5', background: '#fff', borderRadius: 6, padding: 8 }}
+                    >
+                      <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 2 }}>
+                        第 {item.index + 1} 句
+                      </div>
+                      <div style={{ fontSize: 12, color: '#b00020', textDecoration: 'line-through', lineHeight: 1.6 }}>
+                        {item.before}
+                      </div>
+                      <div style={{ fontSize: 13, color: '#1e7e34', lineHeight: 1.6 }}>{item.after}</div>
+                      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                        <button
+                          onClick={() => void acceptSuggestion(item)}
+                          style={{ fontSize: 11, padding: '2px 10px', border: '1px solid #b7dfc2', color: '#1e7e34', borderRadius: 4 }}
+                        >
+                          接受
+                        </button>
+                        <button
+                          onClick={() => target && startEdit(target, item.after, 'ai_polish')}
+                          disabled={!target}
+                          style={{ fontSize: 11, padding: '2px 10px', borderRadius: 4 }}
+                        >
+                          自己改
+                        </button>
+                        <button
+                          onClick={() => dismissSuggestion(item)}
+                          style={{ fontSize: 11, padding: '2px 10px', borderRadius: 4 }}
+                        >
+                          忽略
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {redactMode && (
           <div style={{ marginBottom: 10, fontSize: 12 }}>

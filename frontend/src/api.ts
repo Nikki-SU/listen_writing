@@ -7,6 +7,7 @@ import type {
   Project,
   Recording,
   RecordingDetail,
+  PolishSuggestion,
   RedactionCategory,
   RedactionMark,
   Sentence,
@@ -124,9 +125,12 @@ export async function updateSentence(
   sentenceId: string,
   text: string,
   speaker?: string,
+  options?: { advance_to?: number; source?: 'ai_polish' },
 ): Promise<{ sentence: Sentence; current: string }> {
-  const body: { text: string; speaker?: string } = { text }
+  const body: { text: string; speaker?: string; advance_to?: number; source?: 'ai_polish' } = { text }
   if (speaker !== undefined) body.speaker = speaker
+  if (options?.advance_to !== undefined) body.advance_to = options.advance_to
+  if (options?.source) body.source = options.source
   return json(
     await fetch(
       `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/sentences/${sentenceId}`,
@@ -136,6 +140,21 @@ export async function updateSentence(
         body: JSON.stringify(body),
       },
     ),
+  )
+}
+
+/** AI 语义纠错：只取建议，不改正文（POST 会阻塞到模型跑完，首次可能还要下载模型）。 */
+export async function polishRecording(
+  projectId: string,
+  recordingId: string,
+  model?: string,
+): Promise<{ suggestions: PolishSuggestion[]; model: string }> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/polish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    }),
   )
 }
 

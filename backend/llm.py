@@ -11,8 +11,11 @@ hf-mirror.com），且 `HF_HOME` 同样落在项目文件夹。
 """
 
 import importlib.util
+import json
 import logging
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -50,10 +53,20 @@ LLM_MODELS: dict[str, dict] = {
 
 DEFAULT_LLM_MODEL = "qwen3-4b"
 
-_runtime_missing_msg = (
+RUNTIME_MISSING_MSG = (
     "本地 AI 运行时（llama-cpp-python）尚未安装，无法调用语义纠错/脱敏。"
     "请重新运行启动器，它会自动安装缺失组件。"
 )
+
+# 推理引擎按模型档位缓存：一次装载后复用，避免每次纠错都重新读几 GB 的 GGUF。
+_engine_lock = threading.Lock()
+_engines: dict[str, object] = {}
+
+# llama.cpp 的 Llama 实例不保证并发安全：同一时刻只跑一个纠错任务，其余排队。
+_infer_lock = threading.Lock()
+
+# 一次提示词塞多少句：太多会超出上下文、也更容易让模型漏句；16 句实测较稳。
+POLISH_BATCH = 16
 
 
 def runtime_available() -> bool:
@@ -124,5 +137,119 @@ def ensure_model(model_key: str, on_status: Callable[[str], None] | None = None)
 
 
 def split_think(text: str) -> str:
-    """去掉 Qwen3 的思考段（`…`），只留最终答案。"""
-    return re.sub(r"^\s*.*?<｜end▁of▁thinking｜>", "", text, flags=re.S).strip()
+    """去掉 Qwen3 的思考段，只留最终答案。
+
+    GGUF 模板下思考段可能是 ` thinking… response`，也可能带 Qwen 的私有结束标记
+    `<｜end▁of▁thinking｜>`（两种都兼容）。
+    """
+    text = re.sub(r"<think(?:ing)?>.*?</think(?:ing)?>", "", text, flags=re.S)
+    text = re.sub(r"<think(?:ing)?>.*?<｜end▁of▁thinking｜>", "", text, flags=re.S)
+    text = re.sub(r"^.*?<｜end▁of▁thinking｜>", "", text, flags=re.S)
+    return text.strip()
+
+
+_POLISH_SYSTEM = (
+    "你是中文访谈转写稿的校对员。只修正明显的同音字/错别字、漏字、重复词、标点与语病；"
+    "不改变说话人原意，不删信息，不做文风改写。"
+    '只输出一个 JSON 数组，元素形如 {"id": "句子 id", "text": "修改后的完整句子"}；'
+    "没有需要修改的句子就输出 []。不要输出解释，也不要包代码块。 /no_think"
+)
+
+
+def _engine(model_key: str):
+    """按档位装载 llama.cpp 引擎（首次会触发 GGUF 下载）。"""
+    with _engine_lock:
+        if model_key not in _engines:
+            from llama_cpp import Llama
+
+            path = ensure_model(model_key)
+            _engines[model_key] = Llama(
+                model_path=str(path),
+                n_ctx=4096,
+                n_threads=max(1, (os.cpu_count() or 4) // 2),
+                verbose=False,
+            )
+        return _engines[model_key]
+
+
+def _polish_messages(batch: list[dict]) -> list[dict]:
+    lines = "\n".join(f"{s['id']}\t{s.get('text', '')}" for s in batch)
+    return [
+        {"role": "system", "content": _POLISH_SYSTEM},
+        {"role": "user", "content": "句子列表（每行：id + 制表符 + 原文）：\n" + lines},
+    ]
+
+
+def _parse_changes(raw: str) -> list[dict]:
+    """解析模型输出。容忍代码块、前后废话与 {"changes":[...]} 包裹。"""
+    text = raw.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text).strip()
+    data = None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\[.*\]", text, flags=re.S)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+            except json.JSONDecodeError:
+                data = None
+    if isinstance(data, dict):
+        data = data.get("changes") or data.get("sentences") or data.get("result")
+    if not isinstance(data, list):
+        raise RuntimeError(f"AI 返回内容不是 JSON 数组：{text[:120]}")
+    return [item for item in data if isinstance(item, dict)]
+
+
+def polish(
+    sentences: list[dict],
+    model_key: str | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """AI 语义纠错：只返回建议，不改正文。
+
+    返回 [{sentence_id, index, before, after}]；调用方负责让用户逐条接受。
+    运行时未安装时抛 `RuntimeError(RUNTIME_MISSING_MSG)`，接口原样转给界面。
+    """
+    if not runtime_available():
+        raise RuntimeError(RUNTIME_MISSING_MSG)
+    key = model_key or DEFAULT_LLM_MODEL
+    if key not in LLM_MODELS:
+        raise ValueError(f"未知的 AI 模型：{key}")
+
+    items = [s for s in sentences if str(s.get("text") or "").strip()]
+    if not items:
+        return []
+
+    engine = _engine(key)
+    suggestions: list[dict] = []
+    with _infer_lock:
+        for start in range(0, len(items), POLISH_BATCH):
+            batch = items[start:start + POLISH_BATCH]
+            if on_status:
+                on_status(f"正在校对第 {start + 1}–{start + len(batch)} 句…")
+            resp = engine.create_chat_completion(
+                messages=_polish_messages(batch),
+                temperature=0.2,
+                top_p=0.9,
+                max_tokens=min(2048, max(256, len(batch) * 160)),
+            )
+            raw = split_think((resp["choices"][0]["message"]["content"] or ""))
+            known = {s["id"]: s for s in batch}
+            for change in _parse_changes(raw):
+                sid = str(change.get("id") or "")
+                after = str(change.get("text") or "").strip()
+                original = known.get(sid)
+                if original is None or not after:
+                    continue
+                before = str(original.get("text") or "")
+                if after == before:
+                    continue
+                suggestions.append({
+                    "sentence_id": sid,
+                    "index": int(original.get("index", 0)),
+                    "before": before,
+                    "after": after,
+                })
+    return suggestions
