@@ -120,16 +120,38 @@ export async function updateSentence(
   recordingId: string,
   sentenceId: string,
   text: string,
+  speaker?: string,
 ): Promise<{ sentence: Sentence; current: string }> {
+  const body: { text: string; speaker?: string } = { text }
+  if (speaker !== undefined) body.speaker = speaker
   return json(
     await fetch(
       `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/sentences/${sentenceId}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify(body),
       },
     ),
+  )
+}
+
+export type SpeakerAction =
+  | { action: 'rename'; from: string; to: string }
+  | { action: 'merge'; from: string; into: string }
+  | { action: 'assign'; sentence_ids: string[]; speaker: string }
+
+export async function updateSpeakers(
+  projectId: string,
+  recordingId: string,
+  payload: SpeakerAction,
+): Promise<{ sentences: Sentence[]; current: string }> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/speakers`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
   )
 }
 
@@ -152,6 +174,21 @@ export async function fetchVersionDetail(
     await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/versions/${version}`),
   )
   return data.version
+}
+
+export async function downloadExport(
+  projectId: string,
+  recordingId: string,
+  format: 'md' | 'json',
+  version?: string,
+): Promise<Blob> {
+  const query = new URLSearchParams({ format })
+  if (version) query.set('version', version)
+  const res = await fetch(
+    `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/export?${query.toString()}`,
+  )
+  if (!res.ok) throw new Error((await res.text()) || `导出失败（${res.status}）`)
+  return res.blob()
 }
 
 export async function fetchSettings(): Promise<AppSettings> {

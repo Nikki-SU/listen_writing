@@ -91,7 +91,10 @@
 | `commit_version` | `storage.py` | (pid, rid, sentences, diff, message, author, advance_stage) → 版本 dict | 写 `versions/{stage}.{seq}.json`，快照 + diff，并回填 `recording.version` | R-7 单句修改；后续阶段升级 |
 | `list_versions` / `get_version` / `save_version` | `storage.py` | 版本历史读取 / 落盘 | `version/stage/seq/parent/author_nick/timestamp/message/diff/sentences` | R-5 / R-6；`main._run_transcribe` 落 `0.1` |
 | `_send_audio` | `main.py` | 音频流（支持 Range） | `recording.audio_path / format`；`AUDIO_MIME` | R-4 `<audio>` 播放与按句 seek |
-| `_update_sentence` | `main.py` | 单句 PATCH 编排 | 非空 `text`；成功后 `commit_version` | R-7；前端 `TranscriptPanel.saveEdit` |
+| `_update_sentence` | `main.py` | 单句 PATCH 编排 | 非空 `text`；可选 `speaker`；成功后 `commit_version` | R-7；前端 `TranscriptPanel.saveEdit` |
+| `_update_speakers` | `main.py` | 发言人改名/合并/拆分编排 | `action` + `from/to/into/sentence_ids`；成功后 `commit_version` | R-8；前端 `renameSpeaker` / `mergeSpeaker` / 单句编辑框 |
+| `assign_speakers` | `diarize.py` | 本地 MFCC+基频 → k-means → 轮廓系数选 k | `Sentence.start_ms/end_ms`，写 `speaker`；numpy + PyAV | `main._run_transcribe` 转写完成后调用 |
+| `_export_transcript` | `main.py` | MD/JSON 导出（当前或历史版本） | `version.sentences` 快照、`recording.name`、`format`/`version` 查询参数 | E-1；前端 `saveExport` |
 | `Transcriber.transcribe`（抽象） | `transcriber.py` | (audio_path, on_progress) → `[{start_ms,end_ms,text,speaker}]` | 返回元素四字段 | `main._run_transcribe` |
 | `FasterWhisperTranscriber` | `transcriber.py` | 具体引擎实现 | `model_ref` 属性（本地目录优先）；环境变量 `LISTEN_WRITING_MODEL` / `LISTEN_WRITING_MODEL_SIZE`；模型缓存 `HF_HOME=data/models/hf-cache` | `transcriber.default_transcriber` |
 | `offline_model_dir` | `transcriber.py` | size → `data/models/whisper-<size>` 路径 | 依赖 `storage.DATA_ROOT` | `FasterWhisperTranscriber.model_ref`、`needs_download` |

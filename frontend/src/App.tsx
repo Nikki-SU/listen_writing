@@ -564,6 +564,9 @@ function TranscriptPanel({
   const [activeId, setActiveId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const [draftSpeaker, setDraftSpeaker] = useState('')
+  const [speakerEdit, setSpeakerEdit] = useState<string | null>(null)
+  const [speakerDraft, setSpeakerDraft] = useState('')
   const [showHistory, setShowHistory] = useState(false)
   const audioRef = useRef<HTMLAudioElement>(null)
 
@@ -601,17 +604,19 @@ function TranscriptPanel({
   function startEdit(s: Sentence) {
     setEditingId(s.id)
     setDraft(s.text)
+    setDraftSpeaker(s.speaker ?? '')
   }
 
   async function saveEdit(s: Sentence) {
     const text = draft.trim()
+    const speaker = draftSpeaker.trim()
     setEditingId(null)
-    if (!text || text === s.text) return
+    if (!text || (text === s.text && speaker === (s.speaker ?? ''))) return
     const snapshot = localSentences
     // 乐观更新：先让用户看到新文字，失败再回滚
-    setLocalSentences((list) => list.map((x) => (x.id === s.id ? { ...x, text } : x)))
+    setLocalSentences((list) => list.map((x) => (x.id === s.id ? { ...x, text, speaker } : x)))
     try {
-      const res = await api.updateSentence(projectId, recordingId, s.id, text)
+      const res = await api.updateSentence(projectId, recordingId, s.id, text, speaker)
       setVersion(res.current || version)
       onError('')
     } catch (e) {
@@ -619,6 +624,40 @@ function TranscriptPanel({
       onError(`保存失败：${String(e)}`)
     }
   }
+
+  async function renameSpeaker(from: string, to: string) {
+    const name = to.trim()
+    setSpeakerEdit(null)
+    if (!name || name === from) return
+    const snapshot = localSentences
+    setLocalSentences((list) => list.map((x) => (x.speaker === from ? { ...x, speaker: name } : x)))
+    try {
+      const res = await api.updateSpeakers(projectId, recordingId, { action: 'rename', from, to: name })
+      setLocalSentences(res.sentences)
+      setVersion(res.current || version)
+      onError('')
+    } catch (e) {
+      setLocalSentences(snapshot)
+      onError(`改名失败：${String(e)}`)
+    }
+  }
+
+  async function mergeSpeaker(from: string, into: string) {
+    if (!into) return
+    const snapshot = localSentences
+    setLocalSentences((list) => list.map((x) => (x.speaker === from ? { ...x, speaker: into } : x)))
+    try {
+      const res = await api.updateSpeakers(projectId, recordingId, { action: 'merge', from, into })
+      setLocalSentences(res.sentences)
+      setVersion(res.current || version)
+      onError('')
+    } catch (e) {
+      setLocalSentences(snapshot)
+      onError(`合并失败：${String(e)}`)
+    }
+  }
+
+  const speakers = [...new Set(localSentences.map((s) => s.speaker).filter(Boolean))] as string[]
 
   if (transcribe.status === 'transcribing' || transcribe.status === 'pending') {
     return (
@@ -663,8 +702,20 @@ function TranscriptPanel({
             </span>
           )}
           <button
+            onClick={() => void saveExport(projectId, recordingId, 'md', version || undefined, onError)}
+            style={{ fontSize: 12, padding: '4px 10px' }}
+          >
+            导出 MD
+          </button>
+          <button
+            onClick={() => void saveExport(projectId, recordingId, 'json', version || undefined, onError)}
+            style={{ fontSize: 12, padding: '4px 10px' }}
+          >
+            导出 JSON
+          </button>
+          <button
             onClick={() => setShowHistory((v) => !v)}
-            style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}
+            style={{ fontSize: 12, padding: '4px 10px' }}
           >
             {showHistory ? '收起版本' : '版本历史'}
           </button>
@@ -678,6 +729,65 @@ function TranscriptPanel({
           onTimeUpdate={onTimeUpdate}
           style={{ width: '100%', height: 36, marginBottom: 10 }}
         />
+
+        {speakers.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 10, fontSize: 12 }}>
+            <span style={{ color: '#888' }}>发言人：</span>
+            {speakers.map((sp) =>
+              speakerEdit === sp ? (
+                <span key={sp} style={{ display: 'flex', gap: 4, alignItems: 'center', background: '#f5f8ff', padding: '2px 6px', borderRadius: 4 }}>
+                  <input
+                    autoFocus
+                    value={speakerDraft}
+                    onChange={(e) => setSpeakerDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') setSpeakerEdit(null)
+                      if (e.key === 'Enter') void renameSpeaker(sp, speakerDraft)
+                    }}
+                    style={{ fontSize: 12, width: 100, padding: '1px 4px' }}
+                  />
+                  <button onClick={() => void renameSpeaker(sp, speakerDraft)} style={{ fontSize: 11, padding: '1px 6px' }}>
+                    保存
+                  </button>
+                  <button onClick={() => setSpeakerEdit(null)} style={{ fontSize: 11, padding: '1px 6px' }}>
+                    取消
+                  </button>
+                  {speakers.length > 1 && (
+                    <select
+                      defaultValue=""
+                      onChange={(e) => {
+                        const into = e.target.value
+                        e.target.value = ''
+                        if (into) void mergeSpeaker(sp, into)
+                      }}
+                      style={{ fontSize: 11 }}
+                    >
+                      <option value="">并入…</option>
+                      {speakers.filter((x) => x !== sp).map((x) => (
+                        <option key={x} value={x}>
+                          {x}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </span>
+              ) : (
+                <button
+                  key={sp}
+                  onClick={() => {
+                    setSpeakerEdit(sp)
+                    setSpeakerDraft(sp)
+                  }}
+                  style={{ fontSize: 12, padding: '2px 10px', borderRadius: 12, background: '#eef4ff', color: '#1a73e8', border: '1px solid #d6e4ff' }}
+                  title="点击改名；改名后可选择并入其他发言人"
+                >
+                  {sp}
+                </button>
+              ),
+            )}
+            <span style={{ color: '#aaa' }}>（点名字改名，改单句可拆分/合并）</span>
+          </div>
+        )}
 
         <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
           {localSentences.map((s) => {
@@ -712,7 +822,19 @@ function TranscriptPanel({
                       }}
                       style={{ width: '100%', fontSize: 14, lineHeight: 1.6, minHeight: 58, boxSizing: 'border-box' }}
                     />
-                    <div style={{ display: 'flex', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <input
+                        value={draftSpeaker}
+                        onChange={(e) => setDraftSpeaker(e.target.value)}
+                        placeholder="发言人（留空=未标注，填新名字即拆分）"
+                        list="speaker-options"
+                        style={{ fontSize: 12, padding: '2px 6px', width: 190 }}
+                      />
+                      <datalist id="speaker-options">
+                        {speakers.map((sp) => (
+                          <option key={sp} value={sp} />
+                        ))}
+                      </datalist>
                       <button onClick={() => void saveEdit(s)} style={{ fontSize: 12, padding: '3px 12px' }}>
                         保存
                       </button>
@@ -830,12 +952,31 @@ function VersionPanel({
       </ul>
       {selected && (
         <div className="scroll-hidden" style={{ borderTop: '1px solid #eee', marginTop: 8, paddingTop: 8, maxHeight: '45%', overflowY: 'auto', flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+            <button
+              onClick={() => void saveExport(projectId, recordingId, 'md', selected.version, onError)}
+              style={{ fontSize: 11, padding: '2px 8px' }}
+            >
+              导出此版 MD
+            </button>
+            <button
+              onClick={() => void saveExport(projectId, recordingId, 'json', selected.version, onError)}
+              style={{ fontSize: 11, padding: '2px 8px' }}
+            >
+              导出此版 JSON
+            </button>
+          </div>
           {selected.diff.length === 0 ? (
             <div style={{ fontSize: 12, color: '#999' }}>本版本为初始稿，无文字改动。</div>
           ) : (
             selected.diff.map((d, i) => (
               <div key={i} style={{ fontSize: 12, marginBottom: 8, lineHeight: 1.6 }}>
                 <div style={{ color: '#999', marginBottom: 2 }}>第 {d.index + 1} 句</div>
+                {d.before?.speaker !== d.after?.speaker && (
+                  <div style={{ color: '#8a6d00' }}>
+                    发言人：{d.before?.speaker || '未标注'} → {d.after?.speaker || '未标注'}
+                  </div>
+                )}
                 {d.before && <div style={{ color: '#b00020', textDecoration: 'line-through' }}>{d.before.text}</div>}
                 {d.after && <div style={{ color: '#1e7e34' }}>{d.after.text}</div>}
               </div>
@@ -845,6 +986,26 @@ function VersionPanel({
       )}
     </aside>
   )
+}
+
+async function saveExport(
+  projectId: string,
+  recordingId: string,
+  format: 'md' | 'json',
+  version: string | undefined,
+  onError: (msg: string) => void,
+) {
+  try {
+    const blob = await api.downloadExport(projectId, recordingId, format, version)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `转写稿-${version || '当前版本'}.${format}`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 2000)
+  } catch (e) {
+    onError(`导出失败：${String(e)}`)
+  }
 }
 
 function fmtTime(iso: string): string {

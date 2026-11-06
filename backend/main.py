@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 import av
 
+import diarize
 import storage
 from models import APP_VERSION
 from transcriber import default_transcriber
@@ -89,6 +90,9 @@ def _run_transcribe(project_id: str, recording_id: str) -> None:
                 "speaker": seg["speaker"],
             })
 
+        # 本地说话人聚类：失败不影响转写，只是不标发言人
+        diarize.assign_speakers(audio_path, sentences)
+
         storage.save_sentences(project_id, recording_id, sentences)
         storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
         storage.save_version(project_id, recording_id, 0, 1, {
@@ -116,6 +120,16 @@ def _run_transcribe(project_id: str, recording_id: str) -> None:
     finally:
         with _transcribe_lock:
             _transcribing.discard(key)
+
+
+def _sentence_snapshot(s: dict) -> dict:
+    """版本 diff 的句子快照：文字 + 发言人，保证可复刻。"""
+    return {
+        "id": s["id"],
+        "index": s["index"],
+        "text": s["text"],
+        "speaker": s.get("speaker", ""),
+    }
 
 
 def _sentences_to_markdown(sentences: list[dict]) -> str:
@@ -174,6 +188,11 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/audio$")
         if m:
             self._send_audio(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/export$")
+        if m:
+            self._export_transcript(*m)
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/versions$")
@@ -249,12 +268,115 @@ class Handler(BaseHTTPRequestHandler):
             self._update_settings()
             return
 
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/speakers$")
+        if m:
+            self._update_speakers(*m)
+            return
+
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/sentences/([^/]+)$")
         if m:
             self._update_sentence(*m)
             return
 
         self._send_json({"error": "not found"}, status=404)
+
+    def _export_transcript(self, project_id: str, recording_id: str):
+        """导出 Markdown / JSON；默认当前版本，可指定历史版本。"""
+        from urllib.parse import quote
+
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        query = parse_qs(urlparse(self.path).query)
+        fmt = (query.get("format") or ["md"])[0]
+        if fmt not in ("md", "json"):
+            self._send_json({"error": "format must be md or json"}, status=400)
+            return
+
+        current = storage.ensure_current_version(project_id, recording_id) or {}
+        wanted = (query.get("version") or [current.get("current", "")])[0]
+        if wanted:
+            try:
+                stage, seq = wanted.split(".")
+                version = storage.get_version(project_id, recording_id, int(stage), int(seq))
+            except ValueError:
+                version = None
+            if version is None:
+                self._send_json({"error": "version not found"}, status=404)
+                return
+            version.setdefault("version", wanted)
+            version.setdefault("diff", [])
+            version.setdefault("message", "")
+            version.setdefault("author_nick", "")
+            version.setdefault("timestamp", "")
+            sentences = version.get("sentences") or []
+        else:
+            sentences = storage.load_sentences(project_id, recording_id)
+            version = {"version": current.get("current", ""), "stage": 0, "seq": 1, "message": "", "author_nick": "", "timestamp": ""}
+
+        if not sentences:
+            self._send_json({"error": "该版本缺少句子快照，无法导出"}, status=409)
+            return
+
+        name = str(recording.get("name") or "transcript").rsplit(".", 1)[0]
+        safe = "".join(c for c in name if c.isalnum() or c in "-_") or "transcript"
+        if fmt == "md":
+            body = (
+                f"# {name}\n\n"
+                f"- 版本：{version.get('version', '')}\n"
+                f"- 导出时间：{storage.now_iso()}\n\n"
+                + _sentences_to_markdown(sentences)
+            ).encode("utf-8")
+            ctype = "text/markdown; charset=utf-8"
+        else:
+            import json as _json
+
+            speakers = []
+            for s in sentences:
+                if s.get("speaker") and s["speaker"] not in speakers:
+                    speakers.append(s["speaker"])
+            payload = {
+                "recording": {"id": recording_id, "name": recording.get("name", "")},
+                "version": {
+                    "version": version.get("version", ""),
+                    "stage": version.get("stage"),
+                    "seq": version.get("seq"),
+                    "message": version.get("message", ""),
+                    "author_nick": version.get("author_nick", ""),
+                    "timestamp": version.get("timestamp", ""),
+                },
+                "speakers": speakers,
+                "sentences": [
+                    {
+                        "id": s.get("id"),
+                        "index": s.get("index"),
+                        "text": s.get("text"),
+                        "start_ms": s.get("start_ms"),
+                        "end_ms": s.get("end_ms"),
+                        "speaker": s.get("speaker", ""),
+                    }
+                    for s in sentences
+                ],
+                "exported_at": storage.now_iso(),
+            }
+            body = _json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            ctype = "application/json; charset=utf-8"
+
+        display_name = f"{safe or 'transcript'}-{version.get('version', 'current')}.{fmt}"
+        # HTTP 头只能是 latin-1：filename 用 ASCII 兜底，中文名放 filename*（RFC 5987）
+        ascii_name = f"transcript-{version.get('version', 'current')}.{fmt}"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header(
+            "Content-Disposition",
+            f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(display_name)}",
+        )
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Expose-Headers", "Content-Disposition")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _update_settings(self):
         data = self._read_json_body()
@@ -290,28 +412,42 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "text is required"}, status=400)
             return
         text = text.strip()
+        raw_speaker = data.get("speaker")
+        if raw_speaker is not None and not isinstance(raw_speaker, str):
+            self._send_json({"error": "speaker must be a string"}, status=400)
+            return
+        new_speaker = target_speaker = None
 
         sentences = storage.load_sentences(project_id, recording_id)
         target = next((s for s in sentences if s["id"] == sentence_id), None)
         if target is None:
             self._send_json({"error": "sentence not found"}, status=404)
             return
-        if target["text"] == text:
+        target_speaker = target.get("speaker", "")
+        new_speaker = target_speaker if raw_speaker is None else raw_speaker.strip()
+        if target["text"] == text and target_speaker == new_speaker:
             current = storage.ensure_current_version(project_id, recording_id)
             self._send_json({"sentence": target, "version": current, "current": (current or {}).get("current", "")})
             return
 
-        before = {"id": target["id"], "index": target["index"], "text": target["text"]}
+        before = _sentence_snapshot(target)
         target["text"] = text
+        target["speaker"] = new_speaker
         storage.save_sentences(project_id, recording_id, sentences)
         storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
 
+        parts = []
+        if before["text"] != text:
+            parts.append("文字")
+        if before["speaker"] != new_speaker:
+            parts.append("发言人")
+        message = f"第 {target['index'] + 1} 句" + "、".join(parts) + "修改"
         diff = [{
             "sentence_id": target["id"],
             "index": target["index"],
             "op": "replace",
             "before": before,
-            "after": {"id": target["id"], "index": target["index"], "text": text},
+            "after": _sentence_snapshot(target),
         }]
         nick = storage.get_settings()["identity"]["nick"]
         version = storage.commit_version(
@@ -319,10 +455,109 @@ class Handler(BaseHTTPRequestHandler):
             recording_id,
             sentences,
             diff,
-            message=f"第 {target['index'] + 1} 句文字修改",
+            message=message,
             author_nick=nick,
         )
         self._send_json({"sentence": target, "version": version, "current": version["version"]})
+
+    def _update_speakers(self, project_id: str, recording_id: str):
+        """发言人改名 / 合并 / 单句拆分。任何一次操作都提交一个版本。"""
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if (recording.get("transcribe") or {}).get("status") != "done":
+            self._send_json({"error": "转写尚未完成，暂不能修改"}, status=409)
+            return
+
+        data = self._read_json_body()
+        if data is None:
+            return
+        action = data.get("action")
+        sentences = storage.load_sentences(project_id, recording_id)
+        changed = []
+
+        if action == "rename":
+            old = str(data.get("from") or "").strip()
+            new = str(data.get("to") or "").strip()
+            if not old or not new:
+                self._send_json({"error": "from / to 不能为空"}, status=400)
+                return
+            if old == new:
+                self._send_json({"error": "新旧名称相同"}, status=400)
+                return
+            if any(s.get("speaker") == new for s in sentences):
+                self._send_json({"error": "该名称已存在，如需合并请使用 merge"}, status=409)
+                return
+            for s in sentences:
+                if s.get("speaker") == old:
+                    before = _sentence_snapshot(s)
+                    s["speaker"] = new
+                    changed.append((before, _sentence_snapshot(s)))
+            message = f"发言人「{old}」改名为「{new}」"
+        elif action == "merge":
+            source = str(data.get("from") or "").strip()
+            into = str(data.get("into") or "").strip()
+            if not source or not into or source == into:
+                self._send_json({"error": "合并双方必须不同"}, status=400)
+                return
+            if not any(s.get("speaker") == source for s in sentences):
+                self._send_json({"error": "要合并的发言人不存在"}, status=404)
+                return
+            for s in sentences:
+                if s.get("speaker") == source:
+                    before = _sentence_snapshot(s)
+                    s["speaker"] = into
+                    changed.append((before, _sentence_snapshot(s)))
+            message = f"发言人「{source}」并入「{into}」"
+        elif action == "assign":
+            speaker = str(data.get("speaker") or "").strip()
+            ids = data.get("sentence_ids")
+            if not speaker:
+                self._send_json({"error": "speaker 不能为空"}, status=400)
+                return
+            if not isinstance(ids, list) or not ids:
+                self._send_json({"error": "sentence_ids 不能为空"}, status=400)
+                return
+            id_set = {str(x) for x in ids}
+            for s in sentences:
+                if s["id"] in id_set and s.get("speaker") != speaker:
+                    before = _sentence_snapshot(s)
+                    s["speaker"] = speaker
+                    changed.append((before, _sentence_snapshot(s)))
+            if not changed:
+                self._send_json({"error": "所选句子已经是该发言人"}, status=409)
+                return
+            message = f"第 {'、'.join(str(s['index'] + 1) for s in sentences if s['id'] in id_set)} 句改标为「{speaker}」"
+        else:
+            self._send_json({"error": "action must be rename / merge / assign"}, status=400)
+            return
+
+        if not changed:
+            self._send_json({"error": "没有需要修改的句子"}, status=409)
+            return
+
+        storage.save_sentences(project_id, recording_id, sentences)
+        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+        diff = [
+            {
+                "sentence_id": after["id"],
+                "index": after["index"],
+                "op": "replace",
+                "before": before,
+                "after": after,
+            }
+            for before, after in changed
+        ]
+        nick = storage.get_settings()["identity"]["nick"]
+        version = storage.commit_version(
+            project_id, recording_id, sentences, diff, message=message, author_nick=nick
+        )
+        self._send_json({
+            "sentences": sentences,
+            "version": version,
+            "current": version["version"],
+        })
 
     def _send_audio(self, project_id: str, recording_id: str):
         """音频流：支持 Range，浏览器 <audio> 才能精确跳转到任意句子。"""

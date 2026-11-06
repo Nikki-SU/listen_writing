@@ -25,7 +25,9 @@
 | R-4 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/audio` | 可选 `Range: bytes=...` | 音频字节流（`200` / `206`） | `<audio>` 播放与按句跳转；支持 Range 才能任意 seek |
 | R-5 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/versions` | 无 | `{"versions":[{version,stage,seq,parent,author_nick,timestamp,message,changes}],"current":{...}}` | 版本历史（元数据，不含句子快照） |
 | R-6 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/versions/{stage}.{seq}` | 无 | `{"version":{...version, diff, sentences:[...]}}` | 单个版本：完整句子快照 + 本次 diff，可复刻 |
-| R-7 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/sentences/{sentence_id}` | `{"text":"修改后的单句"}` | `{"sentence":{...},"version":{...},"current":"0.2"}` | 单句修改；非空文本，成功后自动提交一个新版本（阶段内序号 +1） |
+| R-7 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/sentences/{sentence_id}` | `{"text":"修改后的单句","speaker":"可选，发言人"}` | `{"sentence":{...},"version":{...},"current":"0.2"}` | 单句文字/发言人修改；成功后自动提交新版本（阶段内序号 +1） |
+| R-8 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/speakers` | `{"action":"rename","from","to"}` 或 `{"action":"merge","from","into"}` 或 `{"action":"assign","sentence_ids":[...],"speaker"}` | `{"sentences":[...],"version":{...},"current":"0.3"}` | 发言人改名 / 合并 / 单句拆分；每次操作提交一个版本 |
+| E-1 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/export?format=md\|json&version={stage}.{seq}` | 无 | 文件流（`Content-Disposition: attachment`） | 默认导出当前版本；带 `version` 导出历史版本；MD 便于送审，JSON 保留发言人/时间戳/句子映射 |
 | S-1 | 后端 | `GET /api/settings` | 无 | `{"settings":{"identity":{"nick","device_code"},"asr_model","llm_model"}}` | 本机身份与模型选择；首次调用生成设备码 |
 | S-2 | 后端 | `PATCH /api/settings` | 同 S-1 的任意子集 | `{"settings":{...}}` | 修改昵称 / 设备码 / 模型选择；空昵称不生效 |
 

@@ -58,8 +58,8 @@ export type DiffEntry = {
   sentence_id: string
   index: number
   op: 'replace'
-  before: { id: string; index: number; text: string } | null
-  after: { id: string; index: number; text: string } | null
+  before: { id: string; index: number; text: string; speaker?: string } | null
+  after: { id: string; index: number; text: string; speaker?: string } | null
 }
 
 export type VersionSummary = {
