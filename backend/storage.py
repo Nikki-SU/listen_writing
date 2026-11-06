@@ -37,9 +37,24 @@ def new_id() -> str:
     return _new_id()
 
 
-def _write_json(path: Path, data: dict) -> None:
+def _atomic_write_text(path: Path, text: str) -> None:
+    """先写同目录临时文件，再原子替换。
+
+    前端在上传后立刻轮询录制详情，而转写线程同时在改写 recording.json；
+    直接覆盖写会让并发读读到空文件或半截 JSON（曾导致详情请求断连）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def _write_json(path: Path, data: dict) -> None:
+    _atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _read_json(path: Path) -> dict | None:
@@ -198,7 +213,7 @@ def load_sentences(project_id: str, recording_id: str) -> list[dict]:
 
 def save_transcript_md(project_id: str, recording_id: str, text: str) -> None:
     path = recording_dir(project_id, recording_id) / "transcript.md"
-    path.write_text(text, encoding="utf-8")
+    _atomic_write_text(path, text)
 
 
 # ---------- 版本引用（JSON） ----------
