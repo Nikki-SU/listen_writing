@@ -5,6 +5,7 @@
 
 ## 已填的坑
 
+- [x] **PRD 没入库，导致 AI 反复遗忘**（2026-11-06，用户指出）：用户早就发过 PRD v1.0，但文件只留在 `.uploads`（只读临时目录），对话一压缩就丢，AI 还反过来声称「找不到 PRD」。已把 `docs/PRD.md` 和 `docs/交互细节清单.md` 纳入版本库；以后功能对照一律以仓库内这两份为准，不再依赖对话记忆。
 - [x] **引导部署**（2026-11-03）：Pages 首屏检测后端离线 → 引导页三步（一键写入启动文件 → 运行启动器 → 每 2 秒自动重连）。写入清单由 `frontend/scripts/embed-backend.mjs` 在 build 时从 `backend/` + `bootstrap/` 生成，无双维护。后端加了 `Access-Control-Allow-Private-Network` 头过 Chrome PNA 预检。
 - [x] **模型首次下载**（2026-11-03）：启动器内 `backend/preload.py` 预下载模型（失败不阻塞启动，首次转写自动重试）；转写进度 <5% 时页面显示「可能在下载模型」提示。
 - [x] **录音格式白名单**（2026-11-03）：扩展为 `wav/mp3/m4a/wma/flac/ogg/opus/aac/aiff`，解码全部由后端 PyAV 内置完成（不再让用户自己转格式）；flac 已端到端实测转写跑通。
