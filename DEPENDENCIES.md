@@ -116,6 +116,17 @@
 | `llm.polish` | `llm.py` | (sentences, model_key, on_status) → `[{sentence_id,index,before,after}]` | 分批 16 句；提示词带 `id + 制表符 + 原文`；只返回需改动的句子；`split_think` 清思考段；运行时缺失抛 `RuntimeError(RUNTIME_MISSING_MSG)` | `main._polish_recording`（R-14）；前端建议列表 |
 | `llm._engine` / `llm._parse_changes` | `llm.py` | 按档位缓存 `llama_cpp.Llama`；容忍代码块/包裹的 JSON 解析 | 引擎缓存在进程内复用；解析失败抛可读错误 | `llm.polish` |
 | `_polish_recording` | `main.py` | AI 纠错编排 | 校验录音/转写完成/模型名；运行时缺失 503；返回 `{suggestions, model}`，**不改正文** | R-14；前端 `runPolish` |
+| `collab.DEFAULT_ROLES` / `VALID_CAPS` / `PLAYBACK_MODES` | `collab.py` | 五角色权限模板、合法能力、三种播放模式 | `RoleCaps` 与 API_CONTRACT G-10 同步；`owner` 必须保留 `roles/manage` | `collab._require`、`update_roles`、`get_group` |
+| `collab._require` / `_caps` / `_is_reviewer` | `collab.py` | 设备 → 成员 → 能力校验 | 调用者身份来自 `main._collab_device`；无权限抛 `CollabError(403)` | 所有 G 接口 |
+| `collab.create_group` / `list_groups` / `get_group` / `delete_group` | `collab.py` | 群组 CRUD 与配对码 | `code` 6 位唯一；落 `data/groups/{gid}/group.json`；`my_role/my_role_name/member_count` 供前端 | G-1~G-5 |
+| `collab.join_group` / `members` / `update_member` / `decide_member_request` / `remove_member` / `update_roles` | `collab.py` | 入群、成员与权限管理 | 入群仅 `reader/reviewer`；管理员提名管理员进 `member_requests`；角色模板可改名/改 caps | G-3、G-6~G-10；前端成员页 |
+| `collab.add_material` / `list_materials` / `get_material` | `collab.py` | 材料快照（当前版本）与审查者视图 | 快照字段 `sentences/base_sentences/redactions/audio_path/stage/version/history`；审查者 `_visible` 只放 stage≥2、`from main import _apply_redactions` 脱敏、历史截断、`review_mode=true` | G-11~G-13；前端材料页 |
+| `collab.create_proposal` / `decide_proposal` / `list_proposals` | `collab.py` | 逐句提案与合并 | 同句已被覆盖时先标 `conflict` 并 409，再次调用强制应用；版本 `_version_next` + history | G-14~G-16 |
+| `collab.merge_snapshot` | `collab.py` | 有副本模式三方合并 | 入参 `base_sentences/current/incoming` 逐句比对；双改同句返回 `status=conflict`；`force=true` 冲突句采用本地版本 | G-17；前端本地草稿编辑 |
+| `collab.request_playback` / `decide_playback` / `playback_target` / `consume_playback` | `collab.py` | 播放审批门禁 | 三模式 `burn/permanent/timed`；`cast` 校验申请设备、状态、过期；burn 只在 `consume` 后置 `used` | G-18~G-22；前端 `<audio>` |
+| `collab.access_log` / `_log` | `collab.py` | 访问留痕 | 上限 500 条；需 `members` 能力 | G-23；前端访问留痕页 |
+| `_collab_device` / `_collab_nick` / `_collab_call` | `main.py` | 协作身份解析与异常转 JSON | body/query `device_code` 缺省取本机设置；`CollabError.status` 映射 HTTP | 所有 G 路由 |
+| `_stream_file` | `main.py` | 通用音频流（Range） | `_send_audio` 与 G-22 门禁音频共用 | R-4、G-22 |
 | `_probe_duration_sec` | `main.py` | audio_path → float 秒 | 依赖 `av` | `main._run_transcribe` 回填 `duration_sec` |
 | `_run_transcribe` | `main.py` | (pid, rid) → 后台线程编排 | 编排 `storage.*` + `transcriber.transcribe` | `main._upload_recording` 启动线程 |
 | `_sentences_to_markdown` | `main.py` | list[sentence] → str | 用 `start_ms / speaker / text` | `main._run_transcribe` |
@@ -128,7 +139,7 @@
 ### 引导部署文件联动（改一处必须同步）
 
 - `backend/*.py` 或 `bootstrap/*` 改动 → 重新 `npm run build`（prebuild 自动重生成 `src/bootstrapFiles.ts`）→ 重新部署，用户写入的启动文件才是新版。
-- `frontend/scripts/embed-backend.mjs`：清单来源 = `backend/{main,models,storage,transcriber,diarize,llm,preload}.py` + `backend/requirements.txt`（映射为用户根目录 `requirements.txt`）+ `bootstrap/*`。加新后端文件必须把它加进 embed 清单（`diarize.py` 曾漏掉，用户机器会直接 ImportError）。
+- `frontend/scripts/embed-backend.mjs`：清单来源 = `backend/{main,models,storage,transcriber,diarize,llm,collab,preload}.py` + `backend/requirements.txt`（映射为用户根目录 `requirements.txt`）+ `bootstrap/*`。加新后端文件必须把它加进 embed 清单（`diarize.py` 曾漏掉，用户机器会直接 ImportError；`collab.py` 已加入）。
 - 启动器（`bootstrap/start-*`）假设目录结构：根目录有 `backend/`、`requirements.txt`、启动器自身；改嵌入布局必须同步启动器里的相对路径。
 - `start-mac.command` 只是转交 `start.sh`，不要把启动逻辑写回去（否则两份会漂移）。
 - `start-windows.bat` **必须纯 ASCII + CRLF**：cmd 按字节读批处理，UTF-8 中文会让文件偏移错位、从行中间开始执行。`embed-backend.mjs` 会自动转 CRLF 并在发现非 ASCII 时**让 build 失败**；shell 脚本强制 LF（CRLF 会让 bash 报 `\r` 错误）。

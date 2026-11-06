@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 import av
 
+import collab
 import diarize
 import llm
 import storage
@@ -197,6 +198,27 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(length) if length else b""
 
+    # ---- 协作路由的小工具：设备身份默认取本机设置，也允许跨设备请求显式带入 ----
+
+    def _collab_device(self, data: dict | None = None) -> str:
+        if isinstance(data, dict) and data.get("device_code"):
+            return str(data["device_code"])
+        q = parse_qs(urlparse(self.path).query)
+        if q.get("device_code"):
+            return q["device_code"][0]
+        return storage.get_settings()["identity"]["device_code"]
+
+    def _collab_nick(self, data: dict | None = None) -> str:
+        if isinstance(data, dict) and data.get("nick"):
+            return str(data["nick"])
+        return storage.get_settings()["identity"]["nick"]
+
+    def _collab_call(self, fn):
+        try:
+            self._send_json(fn())
+        except collab.CollabError as e:
+            self._send_json({"error": str(e)}, status=e.status)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -225,6 +247,42 @@ class Handler(BaseHTTPRequestHandler):
                 "options": {"asr": list(ASR_MODELS.values()), "llm": llm.options()},
             })
             return
+
+        q = parse_qs(urlparse(self.path).query)
+        device = self._collab_device()
+
+        if path == "/api/groups":
+            self._collab_call(lambda: {
+                "groups": collab.list_groups(device, self._collab_nick()),
+                "identity": storage.get_settings()["identity"],
+            })
+            return
+
+        # 审批门禁的音频流：没有批准（或烧毁/过期）一律 403，且不暴露可下载直链。
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/audio$")
+        if m:
+            approval_id = (q.get("approval_id") or [""])[0]
+            try:
+                audio_path, fmt, _approval = collab.playback_target(m[0], m[1], approval_id, device)
+            except collab.CollabError as e:
+                self._send_json({"error": str(e)}, status=e.status)
+                return
+            self._stream_file(audio_path, AUDIO_MIME.get(fmt, "application/octet-stream"))
+            return
+
+        for pattern, fn in (
+            (r"^/api/groups/([^/]+)/materials$", lambda g: collab.list_materials(g, device)),
+            (r"^/api/groups/([^/]+)/materials/([^/]+)$", lambda g, mid: collab.get_material(g, mid, device)),
+            (r"^/api/groups/([^/]+)/members$", lambda g: collab.members(g, device)),
+            (r"^/api/groups/([^/]+)/proposals$", lambda g: collab.list_proposals(g, device)),
+            (r"^/api/groups/([^/]+)/approvals$", lambda g: collab.list_approvals(g, device)),
+            (r"^/api/groups/([^/]+)/access$", lambda g: collab.access_log(g, device)),
+            (r"^/api/groups/([^/]+)$", lambda g: collab.get_group(g, device)),
+        ):
+            m = _match(path, pattern)
+            if m:
+                self._collab_call(lambda m=m, fn=fn: fn(*m))
+                return
 
         m = _match(path, r"^/api/projects/([^/]+)/redaction$")
         if m:
@@ -324,6 +382,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/settings":
             self._update_settings()
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/members/([^/]+)$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.update_member(
+                m[0], m[1], str(data.get("role") or ""), device, str(data.get("nick") or "")
+            ))
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/speakers$")
@@ -905,7 +974,10 @@ class Handler(BaseHTTPRequestHandler):
         if not audio_path.is_file():
             self._send_json({"error": "audio file missing"}, status=404)
             return
+        self._stream_file(audio_path, AUDIO_MIME.get(recording.get("format", ""), "application/octet-stream"))
 
+    def _stream_file(self, audio_path: Path, mime: str):
+        """支持 Range 的文件流；本地音频与协作材料播放共用。"""
         size = audio_path.stat().st_size
         start, end, status = 0, size - 1, 200
         range_header = self.headers.get("Range") or ""
@@ -931,7 +1003,6 @@ class Handler(BaseHTTPRequestHandler):
             status = 206
 
         length = end - start + 1
-        mime = AUDIO_MIME.get(recording.get("format", ""), "application/octet-stream")
         self.send_response(status)
         self.send_header("Content-Type", mime)
         self.send_header("Accept-Ranges", "bytes")
@@ -956,6 +1027,147 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/projects":
             self._create_project()
+            return
+
+        # ---- 局域网协作 ----
+        if path == "/api/groups":
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            nick = self._collab_nick(data)
+            self._collab_call(lambda: collab.create_group(
+                str(data.get("name") or ""),
+                str(data.get("mode") or "authoritative"),
+                device,
+                nick,
+            ))
+            return
+
+        if path == "/api/groups/join":
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            nick = self._collab_nick(data)
+            self._collab_call(lambda: collab.join_group(
+                str(data.get("code") or ""),
+                device,
+                nick,
+                str(data.get("role") or "reader"),
+            ))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            project_id = str(data.get("project_id") or "")
+            recording_id = str(data.get("recording_id") or "")
+            self._collab_call(lambda: collab.add_material(m[0], project_id, recording_id, device))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/proposals$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.create_proposal(
+                m[0], m[1],
+                str(data.get("sentence_id") or ""),
+                str(data.get("after") or ""),
+                device,
+            ))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/merge$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            sentences = data.get("sentences")
+            if not isinstance(sentences, list):
+                self._send_json({"error": "sentences 必须是数组"}, status=400)
+                return
+            self._collab_call(lambda: collab.merge_snapshot(
+                m[0], m[1],
+                str(data.get("parent") or ""),
+                sentences,
+                device,
+                bool(data.get("force", False)),
+            ))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/playback$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.request_playback(
+                m[0], m[1],
+                str(data.get("mode") or ""),
+                data.get("days", 7),
+                device,
+            ))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/proposals/([^/]+)/decide$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            accept = bool(data.get("accept", True))
+            self._collab_call(lambda: collab.decide_proposal(m[0], m[1], accept, device))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/approvals/([^/]+)/consume$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.consume_playback(m[0], m[1], device))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/approvals/([^/]+)/decide$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            approve = bool(data.get("approve", True))
+            self._collab_call(lambda: collab.decide_playback(m[0], m[1], approve, device))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/member_requests/([^/]+)/decide$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            approve = bool(data.get("approve", True))
+            self._collab_call(lambda: collab.decide_member_request(m[0], m[1], approve, device))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/roles$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.update_roles(
+                m[0],
+                str(data.get("role") or ""),
+                data.get("caps") or [],
+                str(data.get("name") or ""),
+                device,
+            ))
             return
 
         if path == "/api/restart":
@@ -993,6 +1205,22 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions/([^/]+)$")
         if m:
             self._delete_redaction(*m)
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/members/([^/]+)$")
+        if m:
+            self._collab_call(lambda: collab.remove_member(m[0], m[1], self._collab_device()))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)$")
+        if m:
+            device = self._collab_device()
+            try:
+                collab.delete_group(m[0], device)
+            except collab.CollabError as e:
+                self._send_json({"error": str(e)}, status=e.status)
+                return
+            self._send_json({"status": "deleted"})
             return
 
         self._send_json({"error": "not found"}, status=404)

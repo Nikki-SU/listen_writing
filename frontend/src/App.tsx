@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
+import CollabPanel from './CollabPanel'
 import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { BOOTSTRAP_FILES } from './bootstrapFiles'
@@ -80,6 +81,7 @@ export default function App() {
   const [updProgress, setUpdProgress] = useState<{ done: number; total: number }>()
   const [updDismissed, setUpdDismissed] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
+  const [collabOpen, setCollabOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -338,6 +340,9 @@ export default function App() {
 
       <header style={{ flexShrink: 0, textAlign: 'center', padding: '24px 24px 18px', position: 'relative' }}>
         <div style={{ position: 'absolute', right: 24, top: 20, display: 'flex', gap: 8 }}>
+          <button onClick={() => setCollabOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
+            局域网协作
+          </button>
           <button onClick={() => setSettingsOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
             设置
           </button>
@@ -448,6 +453,7 @@ export default function App() {
       </main>
 
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {collabOpen && <CollabPanel projects={projects} onClose={() => setCollabOpen(false)} />}
     </div>
   )
 }

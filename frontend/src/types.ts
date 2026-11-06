@@ -105,6 +105,97 @@ export type PolishSuggestion = {
   after: string
 }
 
+// ---- 局域网协作 ----
+
+export type CollabRole = { name: string; caps: string[] }
+
+export type CollabMember = {
+  device_code: string
+  nick: string
+  role: string
+  joined_at: string
+}
+
+export type CollabGroupSummary = {
+  id: string
+  name: string
+  code: string
+  mode: 'authoritative' | 'replica'
+  created_at: string
+  owner_device: string
+  member_count: number
+  material_count: number
+  pending_proposals: number
+  pending_playbacks: number
+  pending_requests: number
+  my_role?: string
+  my_role_name?: string
+  roles?: Record<string, CollabRole>
+}
+
+export type CollabMaterial = {
+  id: string
+  name: string
+  stage: number
+  version: string
+  sentence_count: number
+  added_at: string
+  added_by: string
+  can_play: boolean
+}
+
+export type CollabMaterialDetail = {
+  material: CollabMaterial & {
+    sentences: Sentence[]
+    history: { version: string; stage: number; at: string; by: string; message: string }[]
+    redactions: unknown[]
+  }
+  can_play: boolean
+  approval: CollabApproval | null
+  review_mode: boolean
+}
+
+export type CollabProposal = {
+  id: string
+  material_id: string
+  sentence_id: string
+  index: number
+  before: string
+  after: string
+  by_device: string
+  by: string
+  created_at: string
+  status: 'pending' | 'accepted' | 'rejected' | 'conflict'
+  conflict_text?: string
+  decided_by?: string
+  decided_at?: string
+}
+
+export type CollabApproval = {
+  id: string
+  material_id: string
+  device_code: string
+  nick: string
+  mode: 'burn' | 'permanent' | 'timed'
+  days: number
+  status: 'pending' | 'approved' | 'denied' | 'used'
+  requested_at: string
+  granted_by?: string
+  granted_at?: string
+  expires_at?: string
+  used_at?: string
+}
+
+export type CollabAccess = {
+  id: string
+  at: string
+  device_code: string
+  nick: string
+  action: string
+  material_id: string
+  detail: string
+}
+
 export type VersionDetail = VersionSummary & {
   recording_id: string
   diff: DiffEntry[]

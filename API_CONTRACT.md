@@ -37,6 +37,38 @@
 | S-1 | 后端 | `GET /api/settings` | 无 | `{"settings":{"identity":{"nick","device_code"},"asr_model","llm_model"},"options":{"asr":[ModelOption…],"llm":[ModelOption…]}}` | 本机身份与模型选择；首次调用生成设备码。`options` 在 `transcriber.ASR_MODELS` / `llm.LLM_MODELS` 唯一定义，前端只渲染 |
 | S-2 | 后端 | `PATCH /api/settings` | 同 S-1 `settings` 的任意子集 | `{"settings":{...}}` | 修改昵称 / 设备码 / 模型选择；空昵称不生效。`asr_model` 不在 `ASR_MODELS`、`llm_model` 不在 `LLM_MODELS` 时返回 400 |
 
+### 局域网协作（G 系列）
+
+所有 G 接口都可以用 `device_code` 指定调用者身份：POST/PATCH 放请求体，GET/DELETE 放 query；缺省取本机 `settings.identity.device_code`。前端同一后端下默认就是本机身份。权限不足统一 `403`，实体不存在 `404`，参数不合法 `400`。
+
+| 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
+|---|---|---|---|---|---|
+| G-1 | 后端 | `GET /api/groups` | 无 | `{"groups":[GroupSummary…],"identity":{nick,device_code}}` | 本机可见的全部群组 |
+| G-2 | 后端 | `POST /api/groups` | `{"name","mode":"authoritative\|replica"}` | `{"group":GroupSummary}` | 建群，创建者为群主，返回 6 位配对码 |
+| G-3 | 后端 | `POST /api/groups/join` | `{"code","role":"reader\|reviewer","nick?"}` | `{"group":GroupSummary}` | 凭配对码入群；角色只能只读/审查者，其他角色 400 |
+| G-4 | 后端 | `GET /api/groups/{gid}` | 无 | `{"group":GroupSummary}` | 群组详情（含 `my_role/my_role_name/member_count`） |
+| G-5 | 后端 | `DELETE /api/groups/{gid}` | 无 | `{"ok":true}` | 仅群主可解散 |
+| G-6 | 后端 | `GET /api/groups/{gid}/members` | 无 | `{"members":[…], "roles":{role:Role}, "member_requests":[…], "owner_device":""}` | 成员、角色模板与待群主批准的管理员任免 |
+| G-7 | 后端 | `PATCH /api/groups/{gid}/members/{device}` | `{"role"}` | `{"member":…}` 或 `{"pending":…}` | 管理员可任免下级；管理员提名管理员返回 `pending`，等群主 G-9 决定 |
+| G-8 | 后端 | `DELETE /api/groups/{gid}/members/{device}` | 无 | `{"members":[…]}` | 不能移除群主；管理员不能移除管理员 |
+| G-9 | 后端 | `POST /api/groups/{gid}/member_requests/{rid}/decide` | `{"approve":bool}` | `{"member_requests":[…]}` | 仅群主 |
+| G-10 | 后端 | `POST /api/groups/{gid}/roles` | `{"role","name","caps":[…]}` | `{"roles":{role:Role}}` | 自定义五级权限；能力见下；群主必须保留 `roles` 与 `manage` |
+| G-11 | 后端 | `GET /api/groups/{gid}/materials` | 无 | `{"materials":[MaterialMeta…]}` | 审查者只返回阶段 ≥2 的材料 |
+| G-12 | 后端 | `POST /api/groups/{gid}/materials` | `{"project_id","recording_id"}` | `{"material":MaterialMeta}` | 管理员及以上灌入**当前版本**快照（句子/脱敏/音频路径/阶段/版本） |
+| G-13 | 后端 | `GET /api/groups/{gid}/materials/{mid}` | 无 | `{"material":MaterialDetail,"review_mode":bool,"can_play":bool,"approval?":…}` | 审查者返回阶段 ≥2 的脱敏正文、历史截断到阶段 2 之前、`review_mode=true` |
+| G-14 | 后端 | `POST /api/groups/{gid}/materials/{mid}/proposals` | `{"sentence_id","after"}` | `{"proposal":…}` | 读写及以上提交逐句修改提案，不改正文 |
+| G-15 | 后端 | `GET /api/groups/{gid}/proposals` | 无 | `{"proposals":[…]}` | 群组内全部提案 |
+| G-16 | 后端 | `POST /api/groups/{gid}/proposals/{pid}/decide` | `{"accept":bool}` | `{"proposal":…,"material":…}` | 需 `merge` 能力；同一句已被覆盖时先标 `conflict` 并返回 409，再次调用即强制采用提案 |
+| G-17 | 后端 | `POST /api/groups/{gid}/materials/{mid}/merge` | `{"parent","sentences":[…],"force?":bool}` | `{"status":"merged\|conflict","conflicts?":[…],"version?"}` 或 `{"material":…}` 错误 | 有副本模式的节点三方合并（base/current/incoming）；冲突返回 `status=conflict` 并列出 `base/current/incoming`；`force=true` 时冲突句采用本地版本 |
+| G-18 | 后端 | `POST /api/groups/{gid}/materials/{mid}/playback` | `{"mode":"burn\|permanent\|timed","days?":1~365}` | `{"approval":…}` | 申请播放；同一设备已有 pending 时 409 |
+| G-19 | 后端 | `GET /api/groups/{gid}/approvals` | 无 | `{"approvals":[…]}` | 有 `approve` 能力看全部，否则只看自己的申请 |
+| G-20 | 后端 | `POST /api/groups/{gid}/approvals/{aid}/decide` | `{"approve":bool}` | `{"approval":…}` | 需 `approve` 能力；timed 批准时写入 `expires_at` |
+| G-21 | 后端 | `POST /api/groups/{gid}/approvals/{aid}/consume` | 无 | `{"approval":…}` | 阅后即焚在 `<audio>` 播完后由前端上报；未上报前不会失效 |
+| G-22 | 后端 | `GET /api/groups/{gid}/materials/{mid}/audio?approval_id={aid}` | 可选 `Range` | 音频字节流（`200`/`206`） | **门禁**：审批不存在/非申请设备/已用/已过期/材料无音频一律 403，页面拿不到直链；支持 Range |
+| G-23 | 后端 | `GET /api/groups/{gid}/access` | 无 | `{"access":[…]}` | 访问留痕，需 `members` 能力；上限 500 条 |
+
+`RoleCaps`：`view / edit / submit / merge / material / approve / members / roles / review / manage`。默认五角色 `owner/admin/editor/reader/reviewer` 可改名与增删能力（权限模板不硬编码）。
+
 `ModelOption = {id,label,min_ram,speed,note,available}`；`available=false` 表示本机运行时尚未内置，前端置灰并显示「本机未内置」，选了也不会被后端接受（转写会返回明确错误，不假装成功）。
 
 `RedactionCategory = {id,name,placeholder,color,enabled}`；`RedactionMark = {id,sentence_id,start,end,original,category_id,category_name,placeholder,color,timestamp}`。`start/end` 以**原句文字**为坐标（渲染时不替换、只加彩色底纹，保证选区坐标不漂移）；`original` 只用于界面回退与 diff，导出物必须剥离。
@@ -70,6 +102,9 @@ data/
           versions/
             {stage}.{seq}.json          # 嵌套 → JSON（版本：diff + 完整句子快照，可复刻）
   settings.json                         # 本机身份（昵称 + 设备码）与模型选择
+  groups/
+    {group_id}/
+      group.json                        # 群组：配对码 / 模式 / 角色模板 / 成员 / 材料快照 / 提案 / 审批 / 留痕
 ```
 
 - 模型查找顺序：`LISTEN_WRITING_MODEL` 环境变量 → `data/models/whisper-{size}/` 本地目录 → 联网下载（官方 HuggingFace，失败降级 hf-mirror.com），缓存落在项目文件夹 `data/models/hf-cache/`（不写系统盘的用户目录）。
@@ -88,7 +123,7 @@ data/
 后端不在时，前端首屏渲染引导页（`BootstrapGuide.tsx`），三步把本地后端跑起来：
 
 1. **写入启动文件**：用户点按钮选一个空文件夹，页面把嵌入的文件一键写进去（File System Access API；不支持的浏览器逐个下载兜底）。写入清单 = `frontend/src/bootstrapFiles.ts`，由 `frontend/scripts/embed-backend.mjs` 在 build 时从仓库生成：
-   - `backend/{main,models,storage,transcriber,preload}.py`
+   - `backend/{main,models,storage,transcriber,preload,llm,collab}.py`
    - `requirements.txt`（写到用户文件夹根目录，启动器在根目录执行 `pip install -r requirements.txt`）
    - `start-windows.bat` / `start-mac.command` / `start.sh` / `README.md`（来源：仓库 `bootstrap/`）
 2. **运行启动器**：Windows 双击 bat；macOS 终端 `bash` + 拖入 `.command`；Linux `bash start.sh`。启动器**不要求系统已装 Python**：首次自动下载便携 CPython 到用户文件夹 `.runtime/` → 依赖装进这份运行时 → `python backend/preload.py` 预下载模型（失败不阻塞）→ 启动 `backend/main.py`。

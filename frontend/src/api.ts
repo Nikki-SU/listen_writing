@@ -3,6 +3,14 @@
 
 import type {
   AppSettings,
+  CollabAccess,
+  CollabApproval,
+  CollabGroupSummary,
+  CollabMaterial,
+  CollabMaterialDetail,
+  CollabMember,
+  CollabProposal,
+  CollabRole,
   SettingsPayload,
   Project,
   Recording,
@@ -282,5 +290,252 @@ export async function deleteRedaction(
       `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/redactions/${markId}`,
       { method: 'DELETE' },
     ),
+  )
+}
+// ---- 局域网协作 ----
+
+export async function listGroups(): Promise<{
+  groups: CollabGroupSummary[]
+  identity: { nick: string; device_code: string }
+}> {
+  return json(await fetch(`${BACKEND}/api/groups`))
+}
+
+export async function createGroup(
+  name: string,
+  mode: 'authoritative' | 'replica',
+): Promise<CollabGroupSummary> {
+  return json(
+    await fetch(`${BACKEND}/api/groups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, mode }),
+    }),
+  )
+}
+
+export async function joinGroup(
+  code: string,
+  role: 'reader' | 'reviewer',
+): Promise<CollabGroupSummary> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, role }),
+    }),
+  )
+}
+
+export async function groupDetail(groupId: string): Promise<CollabGroupSummary> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}`))
+}
+
+export async function groupMembers(groupId: string): Promise<{
+  members: CollabMember[]
+  roles: Record<string, CollabRole>
+  member_requests: {
+    id: string
+    device_code: string
+    nick: string
+    role: string
+    by_nick: string
+    at: string
+    status: string
+  }[]
+  owner_device: string
+}> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/members`))
+}
+
+export async function updateMember(
+  groupId: string,
+  deviceCode: string,
+  role: string,
+): Promise<{ member?: CollabMember; members?: CollabMember[]; pending?: unknown }> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/members/${deviceCode}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    }),
+  )
+}
+
+export async function removeMember(groupId: string, deviceCode: string): Promise<{ members: CollabMember[] }> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/members/${deviceCode}`, { method: 'DELETE' }),
+  )
+}
+
+export async function decideMemberRequest(
+  groupId: string,
+  requestId: string,
+  approve: boolean,
+): Promise<unknown> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/member_requests/${requestId}/decide`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approve }),
+    }),
+  )
+}
+
+export async function updateRole(
+  groupId: string,
+  role: string,
+  caps: string[],
+  name: string,
+): Promise<{ roles: Record<string, CollabRole> }> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/roles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, caps, name }),
+    }),
+  )
+}
+
+export async function addGroupMaterial(
+  groupId: string,
+  projectId: string,
+  recordingId: string,
+): Promise<CollabMaterial> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, recording_id: recordingId }),
+    }),
+  )
+}
+
+export async function listGroupMaterials(groupId: string): Promise<CollabMaterial[]> {
+  const data = await json<{ materials: CollabMaterial[] }>(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials`),
+  )
+  return data.materials
+}
+
+export async function groupMaterial(groupId: string, materialId: string): Promise<CollabMaterialDetail> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}`))
+}
+
+export async function createProposal(
+  groupId: string,
+  materialId: string,
+  sentenceId: string,
+  after: string,
+): Promise<CollabProposal> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/proposals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sentence_id: sentenceId, after }),
+    }),
+  )
+}
+
+export async function listProposals(groupId: string): Promise<CollabProposal[]> {
+  const data = await json<{ proposals: CollabProposal[] }>(
+    await fetch(`${BACKEND}/api/groups/${groupId}/proposals`),
+  )
+  return data.proposals
+}
+
+export async function decideProposal(
+  groupId: string,
+  proposalId: string,
+  accept: boolean,
+): Promise<unknown> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/proposals/${proposalId}/decide`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accept }),
+    }),
+  )
+}
+
+export async function requestPlayback(
+  groupId: string,
+  materialId: string,
+  mode: 'burn' | 'permanent' | 'timed',
+  days = 7,
+): Promise<CollabApproval> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/playback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, days }),
+    }),
+  )
+}
+
+export async function listApprovals(groupId: string): Promise<CollabApproval[]> {
+  const data = await json<{ approvals: CollabApproval[] }>(
+    await fetch(`${BACKEND}/api/groups/${groupId}/approvals`),
+  )
+  return data.approvals
+}
+
+export async function decidePlayback(
+  groupId: string,
+  approvalId: string,
+  approve: boolean,
+): Promise<CollabApproval> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/approvals/${approvalId}/decide`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approve }),
+    }),
+  )
+}
+
+export async function mergeSnapshot(
+  groupId: string,
+  materialId: string,
+  parent: string,
+  sentences: Sentence[],
+  force = false,
+): Promise<{
+  status: 'merged' | 'conflict'
+  conflicts?: { sentence_id: string; index: number; base: string; current: string; incoming: string }[]
+  version?: string
+}> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parent, sentences, force }),
+    }),
+  )
+}
+
+export async function groupAccess(groupId: string): Promise<CollabAccess[]> {
+  const data = await json<{ access: CollabAccess[] }>(
+    await fetch(`${BACKEND}/api/groups/${groupId}/access`),
+  )
+  return data.access
+}
+
+/** 审批门禁的播放地址：只有持有有效审批的 <audio> 才拿得到，页面不提供直链下载。 */
+export function groupAudioUrl(groupId: string, materialId: string, approvalId: string): string {
+  return `${BACKEND}/api/groups/${groupId}/materials/${materialId}/audio?approval_id=${encodeURIComponent(approvalId)}`
+}
+
+/** 烧毁模式播放结束上报；服务端据此把这条审批标记为已用。 */
+export async function consumePlayback(
+  groupId: string,
+  approvalId: string,
+): Promise<CollabApproval> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/approvals/${approvalId}/consume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    }),
   )
 }
