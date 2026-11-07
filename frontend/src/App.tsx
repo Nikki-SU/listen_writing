@@ -7,6 +7,7 @@ import LiveRecorder from './LiveRecorder'
 import ModelSetup from './ModelSetup'
 import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
+import { jobFor, useModels } from './useModels'
 import { BOOTSTRAP_FILES } from './bootstrapFiles'
 import type {
   Project,
@@ -85,7 +86,8 @@ export default function App() {
   const [updProgress, setUpdProgress] = useState<{ done: number; total: number }>()
   const [updDismissed, setUpdDismissed] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
-  const [collabOpen, setCollabOpen] = useState(false)
+  // 共享任务不是弹层里的“小入口”：它和「我的录音」并列，是同一层级的常驻工作区。
+  const [view, setView] = useState<'workspace' | 'collab'>('workspace')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [liveOpen, setLiveOpen] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -359,9 +361,6 @@ export default function App() {
 
       <header style={{ flexShrink: 0, textAlign: 'center', padding: '24px 24px 18px', position: 'relative' }}>
         <div style={{ position: 'absolute', right: 24, top: 20, display: 'flex', gap: 8 }}>
-          <button onClick={() => setCollabOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
-            局域网协作
-          </button>
           <button onClick={() => setSettingsOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
             设置
           </button>
@@ -369,7 +368,42 @@ export default function App() {
             启动设置
           </button>
         </div>
-        <h1 style={{ margin: 0, fontSize: 22, letterSpacing: '0.02em' }}>listen_writing</h1>
+        <h1 style={{ margin: 0, fontSize: 22, letterSpacing: '0.02em' }}>访谈录音台</h1>
+        <nav
+          style={{
+            display: 'inline-flex',
+            gap: 4,
+            marginTop: 14,
+            padding: 3,
+            background: '#f2f4f7',
+            borderRadius: 8,
+          }}
+        >
+          {(
+            [
+              ['workspace', '我的录音'],
+              ['collab', '共享任务'],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setView(key)}
+              style={{
+                fontSize: 13,
+                padding: '6px 18px',
+                border: 'none',
+                borderRadius: 6,
+                cursor: 'pointer',
+                background: view === key ? '#fff' : 'transparent',
+                color: view === key ? '#1f2937' : '#6b7280',
+                boxShadow: view === key ? '0 1px 3px rgba(16,24,40,.12)' : 'none',
+                fontWeight: view === key ? 600 : 400,
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
         <p
           style={{
             margin: '8px 0 0',
@@ -386,6 +420,22 @@ export default function App() {
         </p>
       </header>
 
+      {view === 'collab' ? (
+        <main
+          style={{
+            display: 'flex',
+            flex: 1,
+            minHeight: 0,
+            width: '100%',
+            maxWidth: 1120,
+            margin: '0 auto',
+            padding: '0 24px 24px',
+            boxSizing: 'border-box',
+          }}
+        >
+          <CollabPanel projects={projects} embedded onClose={() => setView('workspace')} />
+        </main>
+      ) : (
       <main
         style={{
           display: 'flex',
@@ -477,9 +527,9 @@ export default function App() {
         )}
       </section>
       </main>
+      )}
 
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
-      {collabOpen && <CollabPanel projects={projects} onClose={() => setCollabOpen(false)} />}
       {liveOpen && projectId && (
         <LiveRecorder
           projectId={projectId}
@@ -654,11 +704,20 @@ function TranscriptPanel({
   const [suggestions, setSuggestions] = useState<PolishSuggestion[]>([])
   const [polishModel, setPolishModel] = useState('')
   const [llmReady, setLlmReady] = useState<boolean | null>(null)
+  // 模型下载状态：选了档位但还没下载时，点 AI 按钮先起后台下载，而不是让请求挂几分钟。
+  const { models: modelState, download: downloadModel } = useModels(1500)
+  const [aiNotice, setAiNotice] = useState('')
   // AI 整理断句：先出预览（合并前后句数 + 正文），用户确认后才落盘。
   const [resegmenting, setResegmenting] = useState(false)
   const [resegPreview, setResegPreview] = useState<ResegmentResult | null>(null)
   const [editOrigin, setEditOrigin] = useState<'ai_polish' | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
+
+  const llmKey = polishModel || 'qwen3-4b'
+  const llmModelInfo = modelState?.llm.find((m) => m.id === llmKey)
+  const llmDownloaded = llmModelInfo?.downloaded ?? null
+  const llmJob = jobFor(modelState, 'llm', llmKey)
+  const llmDownloading = llmJob?.status === 'running'
 
   // 服务端轮询到的句子是权威值；转写结束后不再轮询，本地编辑结果不会被覆盖
   useEffect(() => {
@@ -766,8 +825,34 @@ function TranscriptPanel({
     }
   }
 
+  // AI 调用前的就绪检查：运行时缺失直接说明；模型没下载就先起后台下载任务，
+  // 绝不让一个 HTTP 请求在服务端同步拉几 GB（界面看起来就是卡死）。
+  async function ensureLlmReady(): Promise<boolean> {
+    if (llmReady === false) {
+      onError('本机未安装 AI 运行时（llama-cpp-python）：请重新运行启动器安装后重启，再用 AI 功能')
+      return false
+    }
+    if (llmReady === null || llmDownloaded === null) return true // 状态未知，交给后端给明确错误
+    if (llmDownloaded) return true
+    setAiNotice(
+      `AI 模型「${llmModelInfo?.label || llmKey}」还没下载，已开始后台下载（约 1–5GB）；完成后直接再点一次即可。`,
+    )
+    if (!llmDownloading) await downloadModel('llm', llmKey)
+    return false
+  }
+
+  useEffect(() => {
+    if (!aiNotice) return
+    if (llmDownloaded) {
+      setAiNotice('AI 模型已就绪，再点一次「AI 纠错 / AI 整理断句」即可使用。')
+    } else if (llmJob?.status === 'error') {
+      setAiNotice(`AI 模型下载失败：${llmJob.error || llmJob.message || '请到设置里重试'}`)
+    }
+  }, [aiNotice, llmDownloaded, llmJob?.status, llmJob?.error, llmJob?.message])
+
   async function runPolish() {
     if (polishing) return
+    if (!(await ensureLlmReady())) return
     setPolishOpen(true)
     setPolishing(true)
     setSuggestions([])
@@ -775,6 +860,7 @@ function TranscriptPanel({
       const res = await api.polishRecording(projectId, recordingId)
       setSuggestions(res.suggestions)
       setPolishModel(res.model)
+      setAiNotice('')
       onError('')
     } catch (e) {
       onError(`AI 纠错失败：${String(e)}`)
@@ -785,11 +871,13 @@ function TranscriptPanel({
 
   async function runResegment() {
     if (resegmenting) return
+    if (!(await ensureLlmReady())) return
     setResegmenting(true)
     setResegPreview(null)
     try {
       const res = await api.resegmentRecording(projectId, recordingId, false)
       setResegPreview(res)
+      setAiNotice('')
       onError('')
     } catch (e) {
       onError(`AI 整理断句失败：${String(e)}`)
@@ -1115,7 +1203,7 @@ function TranscriptPanel({
           </button>
           <button
             onClick={() => void runPolish()}
-            disabled={polishing || llmReady === false || transcribe.status !== 'done'}
+            disabled={polishing || llmReady === false || llmDownloading || transcribe.status !== 'done'}
             style={{
               fontSize: 12,
               padding: '4px 10px',
@@ -1124,19 +1212,21 @@ function TranscriptPanel({
               border: `1px solid ${polishOpen ? '#8ab4f8' : '#ddd'}`,
               color: llmReady === false ? '#999' : '#245c9c',
               borderRadius: 4,
-              cursor: polishing || llmReady === false ? 'not-allowed' : 'pointer',
+              cursor: polishing || llmReady === false || llmDownloading ? 'not-allowed' : 'pointer',
             }}
             title={
               llmReady === false
                 ? '本机未安装 AI 运行时（llama-cpp-python），请重新运行启动器安装'
-                : '用本地大模型纠错：只给建议，逐句采纳后才改正文；首次使用需下载模型'
+                : llmDownloaded === false
+                  ? '模型还没下载：点击会先在后台下载，完成后就能用'
+                  : '用本地大模型纠错：只给建议，逐句采纳后才改正文；首次使用需下载模型'
             }
           >
-            {polishing ? 'AI 分析中…' : 'AI 纠错'}
+            {polishing ? 'AI 分析中…' : llmDownloading ? '模型下载中…' : 'AI 纠错'}
           </button>
           <button
             onClick={() => void runResegment()}
-            disabled={resegmenting || llmReady === false || transcribe.status !== 'done'}
+            disabled={resegmenting || llmReady === false || llmDownloading || transcribe.status !== 'done'}
             style={{
               fontSize: 12,
               padding: '4px 10px',
@@ -1145,13 +1235,19 @@ function TranscriptPanel({
               color: llmReady === false ? '#999' : '#245c9c',
               borderRadius: 4,
               cursor:
-                resegmenting || llmReady === false || transcribe.status !== 'done'
+                resegmenting || llmReady === false || llmDownloading || transcribe.status !== 'done'
                   ? 'not-allowed'
                   : 'pointer',
             }}
-            title="把按停顿切碎的片段交给本地 AI，合并成人类能读懂的句子；只给预览，确认后才写入"
+            title={
+              llmReady === false
+                ? '本机未安装 AI 运行时（llama-cpp-python），请重新运行启动器安装'
+                : llmDownloaded === false
+                  ? '模型还没下载：点击会先在后台下载，完成后就能用'
+                  : '把按停顿切碎的片段交给本地 AI，合并成人类能读懂的句子；只给预览，确认后才写入'
+            }
           >
-            {resegmenting ? 'AI 整理中…' : 'AI 整理断句'}
+            {resegmenting ? 'AI 整理中…' : llmDownloading ? '模型下载中…' : 'AI 整理断句'}
           </button>
           <button
             onClick={() => setRedactMode((v) => !v)}
@@ -1168,6 +1264,39 @@ function TranscriptPanel({
             {redactMode ? '退出脱敏' : '脱敏'}
           </button>
         </div>
+
+        {llmReady === false && (
+          <div
+            style={{
+              fontSize: 12,
+              color: '#8a5a00',
+              background: '#fff8e6',
+              border: '1px solid #f0d9a8',
+              borderRadius: 6,
+              padding: '6px 10px',
+              marginBottom: 8,
+            }}
+          >
+            AI 纠错 / AI 整理断句需要本地运行时（llama-cpp-python）：请重新运行一次启动器安装组件后重启。
+          </div>
+        )}
+
+        {aiNotice && (
+          <div
+            style={{
+              fontSize: 12,
+              color: '#245c9c',
+              background: '#eef5ff',
+              border: '1px solid #d5e5fb',
+              borderRadius: 6,
+              padding: '6px 10px',
+              marginBottom: 8,
+            }}
+          >
+            {aiNotice}
+            {llmDownloading && ` 下载中 ${Math.max(1, llmJob?.progress ?? 0)}%`}
+          </div>
+        )}
 
         {transcribe.status === 'transcribing' && (
           <div

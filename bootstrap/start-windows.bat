@@ -114,7 +114,7 @@ echo [4/4] Preparing the speech model (first run downloads about 500 MB)
 
 echo.
 echo ============================================================
-echo  listen_writing backend is starting:
+echo  Interview Recorder backend is starting:
 echo      http://127.0.0.1:7850
 echo  Keep this window open while you use the web page.
 echo ============================================================

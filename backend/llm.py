@@ -10,6 +10,7 @@
 hf-mirror.com），且 `HF_HOME` 同样落在项目文件夹。
 """
 
+import difflib
 import importlib.util
 import json
 import logging
@@ -316,11 +317,15 @@ def redact(
 
 
 _RESEGMENT_SYSTEM = (
-    "你是中文访谈转写稿的断句编辑。语音识别按停顿切出的碎片经常半句一断，"
-    "请把连续、语义完整的多条碎片合并成人类能读懂的句子。"
+    "你是中文访谈转写稿的断句编辑。语音识别按停顿切出的碎片经常半句一断。"
+    "请只把确实属于同一句话的连续碎片合并；一条碎片如果已经是完整句子（尤其是已带句号、问号、"
+    "感叹号，或本身语义完整），就让它单独成句，不要为了凑长句硬并。"
     '只输出一个 JSON 数组，元素形如 {"ids": ["id1", "id2"], "text": "合并后的完整句子"}；'
-    "ids 必须是输入中连续、且按原顺序排列的 id，每个 id 只能出现一次，不能漏句、不能改顺序；"
-    "text 只做断句、补标点、去掉重复口癖，不增加原文没有的信息，不 summary、不改写事实。"
+    "从第一组到最后一组必须按输入顺序覆盖所有 id，每个 id 恰好出现一次，不能漏句、不能改顺序；"
+    "每组一般 1–4 条碎片，合并后不要超过约 60 字；"
+    "text 只做断句、补标点、去掉单独成片的语气词（呃、嗯、那个），不增加原文没有的信息，不改写事实。"
+    "示例：输入 a\\t呃那个 / b\\t我们明天 / c\\t早上九点开会 / d\\t你觉得呢 / e\\t可以"
+    '输出 [{"ids":["a","b","c"],"text":"我们明天早上九点开会。"},{"ids":["d","e"],"text":"你觉得呢？可以。"}]'
     "不要输出解释，也不要包代码块。 /no_think"
 )
 
@@ -338,12 +343,24 @@ def _norm_text(text: str) -> str:
     return re.sub(r"[\s\W_]+", "", text or "")
 
 
+# 整条碎片只是语气词时，允许 AI 在合并结果里丢掉它（如「呃那个」）。
+# 只认这类独立成片的词，不碰句中的「这个/那个」，避免误删指代。
+_FILLER_ONLY = re.compile(r"^(?:呃|额|嗯|啊|哦|噢|欸|诶|那个)+$")
+
+_PUNCT_RE = re.compile(r"[，。！？；：、,.!?;:]")
+# 已经带句末标点的碎片就是一句完整的话，绝不能再和下一句合并。
+_STRONG_END = re.compile(r"[。！？!?…]+$")
+
+
 def _merge_group(group: list[dict], text: str) -> dict:
     origin = "".join(str(s.get("text") or "").strip() for s in group)
+    content = [s for s in group if not _FILLER_ONLY.match(_norm_text(str(s.get("text") or "")))]
+    base = "".join(str(s.get("text") or "").strip() for s in content) or origin
     candidate = (text or "").strip()
-    # 只接受“只动标点/空格/口癖”的改写；一旦与原文实体不一致就退回逐字拼接，
-    # 宁可句子不好读，也不能让 AI 悄悄改掉访谈内容。
-    merged_text = candidate if candidate and _norm_text(candidate) == _norm_text(origin) else origin
+    # 只接受“只动标点/空格/语气词”的改写；一旦与原文实体不一致就退回逐字拼接，
+    # 宁可句子不好读，也不能让 AI 悄悄改掉访谈内容。退回时用去掉语气词的 base，
+    # 避免「呃那个」这类独立语气词一直粘在句首。
+    merged_text = candidate if candidate and _norm_text(candidate) == _norm_text(base) else base
     if merged_text and merged_text[-1] not in "。！？!?…；;":
         merged_text += "。"
     speaker = next((s.get("speaker") for s in group if s.get("speaker")), "")
@@ -397,8 +414,9 @@ def resegment(
             cursor = 0
             for g in groups:
                 ids = [str(x) for x in (g.get("ids") or []) if str(x) in pos]
-                # 只接受从当前游标开始的连续片段，乱序/漏 id 的分组一律跳过。
-                if not ids:
+                # 只接受从当前游标开始的连续片段，乱序/漏 id 的分组一律跳过；
+                # 超过 8 条的分组视为模型“整段硬并”，同样跳过，保留原碎片。
+                if not ids or len(ids) > 8:
                     continue
                 first = pos[ids[0]]
                 if first < cursor:
@@ -414,8 +432,19 @@ def resegment(
                 if not valid:
                     continue
                 group = batch[first:first + len(ids)]
-                result.append(_merge_group(group, str(g.get("text") or "")))
-                cursor = first + len(ids)
+                # 不跨过已经带句末标点的碎片：那是完整一句，再并就是错句。
+                cut = len(group)
+                for k in range(len(group) - 1):
+                    if _STRONG_END.search(str(group[k].get("text") or "").strip()):
+                        cut = k + 1
+                        break
+                if cut < len(group):
+                    group = group[:cut]
+                    text = ""  # 模型给的 text 覆盖了被截掉的句子，只能退回逐字拼接
+                else:
+                    text = str(g.get("text") or "")
+                result.append(_merge_group(group, text))
+                cursor = first + len(group)
             while cursor < len(batch):
                 result.append(batch[cursor])
                 cursor += 1
@@ -423,6 +452,25 @@ def resegment(
     for i, s in enumerate(result):
         s["index"] = i
     return result
+
+
+def _safe_polish(before: str, after: str) -> bool:
+    """纠错建议的改动幅度守卫。
+
+    允许同音字、错别字、标点、语气词的修改；不允许把半句补成另一句、
+    也不允许整句改写。用长度比例 + 字符相似度双重约束，宁可少给建议。
+    """
+    a = _norm_text(before)
+    b = _norm_text(after)
+    if not a or not b:
+        return False
+    if a == b:
+        # 只动了标点：允许补标点，不允许把句末标点删掉（会把稿子越改越难读）。
+        return len(_PUNCT_RE.findall(after)) > len(_PUNCT_RE.findall(before))
+    ratio = len(b) / len(a)
+    if ratio < 0.5 or ratio > 1.7:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.5
 
 
 def polish(
@@ -470,6 +518,11 @@ def polish(
                     continue
                 before = str(original.get("text") or "")
                 if after == before:
+                    continue
+                if not _safe_polish(before, after):
+                    # 模型偶尔会把「呃那个」补成一句完整的话（凭空加事实）。
+                    # 纠错只允许改错别字/标点/语气词，改动幅度异常的一律丢弃。
+                    logger.warning("丢弃疑似改写的纠错建议：%r -> %r", before, after)
                     continue
                 suggestions.append({
                     "sentence_id": sid,

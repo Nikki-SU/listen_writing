@@ -1433,6 +1433,14 @@ class Handler(BaseHTTPRequestHandler):
         if not llm.runtime_available():
             self._send_json({"error": llm.RUNTIME_MISSING_MSG}, status=503)
             return
+        # 模型没下载时不能在这个请求线程里同步拉几 GB：界面会长时间无反馈、像卡死。
+        # 明确让前端先走模型下载任务，下载完成后再点。
+        if llm.model_file(model_key) is None:
+            self._send_json({
+                "error": f"AI 模型「{llm.LLM_MODELS[model_key]['label']}」尚未下载，请先在「设置 → AI 模型」下载",
+                "need_download": {"kind": "llm", "key": model_key},
+            }, status=409)
+            return
 
         sentences = storage.load_sentences(project_id, recording_id)
         if not sentences:
@@ -1477,6 +1485,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not llm.runtime_available():
             self._send_json({"error": llm.RUNTIME_MISSING_MSG}, status=503)
+            return
+        if llm.model_file(model_key) is None:
+            self._send_json({
+                "error": f"AI 模型「{llm.LLM_MODELS[model_key]['label']}」尚未下载，请先在「设置 → AI 模型」下载",
+                "need_download": {"kind": "llm", "key": model_key},
+            }, status=409)
             return
 
         sentences = storage.load_sentences(project_id, recording_id)
@@ -1545,6 +1559,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not llm.runtime_available():
             self._send_json({"error": llm.RUNTIME_MISSING_MSG}, status=503)
+            return
+        if llm.model_file(model_key) is None:
+            self._send_json({
+                "error": f"AI 模型「{llm.LLM_MODELS[model_key]['label']}」尚未下载，请先在「设置 → AI 模型」下载",
+                "need_download": {"kind": "llm", "key": model_key},
+            }, status=409)
             return
 
         categories = storage.get_redaction_categories(project_id)

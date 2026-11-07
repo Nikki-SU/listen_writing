@@ -26,18 +26,18 @@ const CAP_LABELS: Record<string, string> = {
   members: '管理成员',
   roles: '改权限',
   review: '审查模式',
-  manage: '管理群组',
+  manage: '协作管理',
 }
 
 const ROLE_ORDER = ['owner', 'admin', 'editor', 'reader', 'reviewer']
 
 const TABS = [
-  ['material', '材料'],
+  ['material', '任务材料'],
   ['members', '成员与权限'],
   ['proposals', '修改提案'],
   ['approvals', '播放审批'],
   ['access', '访问留痕'],
-  ['devices', '设备与节点'],
+  ['devices', '我的设备'],
 ] as const
 
 type Tab = (typeof TABS)[number][0]
@@ -57,9 +57,19 @@ function escapeXml(text: string): string {
   return text.replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c] || c))
 }
 
-export default function CollabPanel({ projects, onClose }: { projects: Project[]; onClose: () => void }) {
+export default function CollabPanel({
+  projects,
+  onClose,
+  embedded = false,
+}: {
+  projects: Project[]
+  onClose: () => void
+  embedded?: boolean
+}) {
   const [groups, setGroups] = useState<CollabGroupSummary[]>([])
   const [identity, setIdentity] = useState<{ nick: string; device_code: string }>({ nick: '', device_code: '' })
+  const [nickDraft, setNickDraft] = useState('')
+  const [deviceDraft, setDeviceDraft] = useState('')
   const [selected, setSelected] = useState<CollabGroupSummary | null>(null)
   const [tab, setTab] = useState<Tab>('material')
   const [error, setError] = useState('')
@@ -151,6 +161,34 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
     const data = await api.listGroups()
     setGroups(data.groups)
     setIdentity(data.identity)
+    setNickDraft(data.identity.nick)
+    setDeviceDraft(data.identity.device_code)
+  }
+
+  // 代号（昵称）与个人码都由用户自己定：个人码用于把同一人的多台设备合并，
+  // 不需要知道对方 IP。保存走已有的设置接口，立即落盘并刷新本机身份。
+  async function saveIdentity(fields: { nick?: string; device_code?: string }) {
+    const next = { ...identity, ...fields }
+    if (!next.nick.trim()) {
+      setError('代号（昵称）不能为空：共享任务里其他人看到的就是这个名字')
+      return
+    }
+    if (
+      fields.device_code !== undefined &&
+      (fields.device_code.trim().length < 4 ||
+        fields.device_code.trim().length > 64 ||
+        !/^[A-Za-z0-9._:-]+$/.test(fields.device_code.trim()))
+    ) {
+      setError('个人码需为 4–64 位，只能包含字母、数字和 . _ : -')
+      return
+    }
+    await run(async () => {
+      const s = await api.updateSettings({ identity: next })
+      setIdentity(s.identity)
+      setNickDraft(s.identity.nick)
+      setDeviceDraft(s.identity.device_code)
+      setNotice('身份已保存')
+    })
   }
 
   async function loadPeers() {
@@ -260,6 +298,10 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
   }
 
   async function onCreate() {
+    if (!identity.nick.trim()) {
+      setError('先在上面设置你的代号（昵称），再创建共享任务')
+      return
+    }
     await run(async () => {
       await api.createGroup(newName.trim(), newMode)
       setNewName('')
@@ -268,6 +310,10 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
   }
 
   async function onJoin() {
+    if (!identity.nick.trim()) {
+      setError('先在上面设置你的代号（昵称），再加入共享任务')
+      return
+    }
     await run(async () => {
       const g = await api.joinGroup(joinCode.trim(), joinRole)
       setJoinCode('')
@@ -438,41 +484,62 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
 
   return (
     <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(28, 32, 38, .38)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 50,
-        padding: 20,
-        boxSizing: 'border-box',
-      }}
+      style={
+        embedded
+          ? { display: 'flex', flex: 1, minHeight: 0, width: '100%' }
+          : {
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(28, 32, 38, .38)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 50,
+              padding: 20,
+              boxSizing: 'border-box',
+            }
+      }
       onClick={(e) => {
+        if (embedded) return
         if (e.target === e.currentTarget) onClose()
       }}
     >
       <div
-        style={{
-          background: '#fff',
-          borderRadius: 12,
-          width: 'min(980px, 100%)',
-          maxHeight: '88vh',
-          overflow: 'auto',
-          boxShadow: '0 18px 60px rgba(0,0,0,.22)',
-          padding: 18,
-          boxSizing: 'border-box',
-        }}
+        style={
+          embedded
+            ? {
+                background: '#fff',
+                border: '1px solid #eceef1',
+                borderRadius: 12,
+                width: '100%',
+                flex: 1,
+                minHeight: 0,
+                overflow: 'auto',
+                padding: 20,
+                boxSizing: 'border-box',
+              }
+            : {
+                background: '#fff',
+                borderRadius: 12,
+                width: 'min(980px, 100%)',
+                maxHeight: '88vh',
+                overflow: 'auto',
+                boxShadow: '0 18px 60px rgba(0,0,0,.22)',
+                padding: 18,
+                boxSizing: 'border-box',
+              }
+        }
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 17 }}>局域网协作</h2>
+          <h2 style={{ margin: 0, fontSize: 17 }}>共享任务</h2>
           <span style={{ fontSize: 11, color: '#8a8f98' }}>
-            本机 {identity.nick || '—'} · {identity.device_code}
+            一个配对码 = 一个群 = 一个共享任务 · 我 {identity.nick || '未设代号'} · 个人码 {identity.device_code || '—'}
           </span>
-          <button onClick={onClose} style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}>
-            关闭
-          </button>
+          {!embedded && (
+            <button onClick={onClose} style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}>
+              关闭
+            </button>
+          )}
         </div>
 
         {error && <div style={{ color: '#b00020', fontSize: 12, marginBottom: 8 }}>{error}</div>}
@@ -480,10 +547,57 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
 
         {!selected ? (
           <div style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <section
+              style={{
+                flex: '1 1 100%',
+                border: '1px solid #e2e6ec',
+                borderRadius: 10,
+                background: '#fbfcfe',
+                padding: '10px 12px',
+              }}
+            >
+              <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>我的身份（进入共享任务前先设好）</h3>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
+                <span style={{ fontSize: 12, color: '#6b7280', width: 88 }}>代号（昵称）</span>
+                <input
+                  value={nickDraft}
+                  onChange={(e) => setNickDraft(e.target.value)}
+                  placeholder="比如：老王 / 访谈员-李"
+                  style={{ fontSize: 12, width: 170 }}
+                />
+                <button
+                  disabled={busy || !nickDraft.trim() || nickDraft.trim() === identity.nick}
+                  onClick={() => void saveIdentity({ nick: nickDraft.trim() })}
+                  style={{ fontSize: 11, padding: '3px 10px' }}
+                >
+                  保存代号
+                </button>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: '#6b7280', width: 88 }}>个人码</span>
+                <input
+                  value={deviceDraft}
+                  onChange={(e) => setDeviceDraft(e.target.value)}
+                  placeholder="自己定：如 li-2026"
+                  style={{ fontSize: 12, width: 170 }}
+                />
+                <button
+                  disabled={busy || !deviceDraft.trim() || deviceDraft.trim() === identity.device_code}
+                  onClick={() => void saveIdentity({ device_code: deviceDraft.trim() })}
+                  style={{ fontSize: 11, padding: '3px 10px' }}
+                >
+                  保存个人码
+                </button>
+                <span style={{ fontSize: 11, color: '#8a8f98' }}>
+                  不同设备填同一个个人码，局域网内自动合并为同一个人；不需要知道 IP。
+                </span>
+              </div>
+            </section>
+
             <section style={{ flex: '1 1 320px', minWidth: 280 }}>
-              <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>我的群组</h3>
+              <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>我的共享任务</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {groups.length === 0 && <div style={{ fontSize: 12, color: '#999' }}>还没有群组，先建一个或输入配对码加入。</div>}
+                {groups.length === 0 && <div style={{ fontSize: 12, color: '#999' }}>还没有共享任务，先建一个或输入配对码加入。</div>}
                 {groups.map((g) => (
                   <button
                     key={g.id}
@@ -514,11 +628,11 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
             </section>
 
             <section style={{ flex: '1 1 240px', minWidth: 220 }}>
-              <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>新建群组</h3>
+              <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>新建共享任务</h3>
               <input
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
-                placeholder="群组名称"
+                placeholder="共享任务名称（如：XX 乡村访谈）"
                 style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
               />
               <select
@@ -533,11 +647,11 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
                 创建
               </button>
 
-              <h3 style={{ fontSize: 13, margin: '16px 0 8px' }}>加入群组</h3>
+              <h3 style={{ fontSize: 13, margin: '16px 0 8px' }}>用配对码加入</h3>
               <input
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                placeholder="6 位配对码"
+                placeholder="6 位配对码（由群主发给你）"
                 style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
               />
               <select
@@ -557,7 +671,7 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
           <>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
               <button onClick={() => { setSelected(null); setMaterialView(null) }} style={{ fontSize: 12, padding: '3px 10px' }}>
-                ← 群组
+                ← 共享任务
               </button>
               <span style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</span>
               <span style={{ fontSize: 11, color: '#8a8f98' }}>
@@ -632,7 +746,7 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
                   </div>
                 )}
                 {materials.length === 0 ? (
-                  <div style={{ fontSize: 12, color: '#999' }}>这个群组还没有材料。</div>
+                  <div style={{ fontSize: 12, color: '#999' }}>这个共享任务还没有材料。</div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {materials.map((m) => (
@@ -1167,29 +1281,38 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
               </div>
             )}
 
-            {/* ---- 设备与节点 ---- */}
+            {/* ---- 我的设备 ---- */}
             {tab === 'devices' && (
               <div>
-                <div style={{ fontSize: 12, color: '#8a8f98', marginBottom: 10 }}>
-                  节点只在局域网内互相发现（UDP 广播），不经过任何中心服务器。交换机拦截广播时，可在下面手工填对方
-                  IP:端口 完成登记；昵称与设备码完全相同的多台设备视为同一个人，项目与录音会自动同步。
+                <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6, lineHeight: 1.7 }}>
+                  同一局域网内的设备会自动互相发现（UDP 广播），不经过任何中心服务器。
+                  <br />
+                  把每台设备都设成同一个<strong>个人码 + 代号</strong>，系统就会把它们认成“同一个人”，项目与录音自动同步——
+                  <strong>不需要知道 IP</strong>。
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: '#245c9c',
+                    background: '#eef5ff',
+                    border: '1px solid #d5e5fb',
+                    borderRadius: 6,
+                    padding: '7px 10px',
+                    marginBottom: 12,
+                  }}
+                >
+                  我的个人码：<strong>{identity.device_code || '未设置'}</strong> · 我的代号：<strong>{identity.nick || '未设置'}</strong>
+                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                    还没设好？回到「共享任务」首页，在“我的身份”里改。
+                  </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
-                  <input
-                    value={peerUrl}
-                    onChange={(e) => setPeerUrl(e.target.value)}
-                    placeholder="http://192.168.1.20:7850"
-                    style={{ flex: 1, fontSize: 12 }}
-                  />
-                  <button disabled={busy || !peerUrl.trim()} onClick={() => void onAddPeer()} style={{ fontSize: 11 }}>
-                    登记节点
-                  </button>
                   <button disabled={busy} onClick={() => void run(loadPeers)} style={{ fontSize: 11 }}>
-                    刷新
+                    刷新发现的设备
                   </button>
                 </div>
                 {peers.length === 0 ? (
-                  <div style={{ fontSize: 12, color: '#999' }}>暂未发现在线节点。</div>
+                  <div style={{ fontSize: 12, color: '#999' }}>暂未发现在线设备。</div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {peers.map((p) => (
@@ -1198,11 +1321,10 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
                         <span style={{ color: '#8a8f98', minWidth: 80 }}>{p.device_code}</span>
                         <span style={{ color: '#245c9c', flex: 1 }}>{p.base_url}</span>
                         <span style={{ fontSize: 11, color: p.same_identity ? '#2e7d32' : '#6b7280' }}>
-                          {p.same_identity ? '同一人多设备' : '协作节点'}
+                          {p.same_identity ? '同一人的另一台设备' : '协作节点'}
                         </span>
-                        <span style={{ fontSize: 11, color: '#6b7280' }}>{p.groups.length} 个群组</span>
+                        <span style={{ fontSize: 11, color: '#6b7280' }}>{p.groups.length} 个共享任务</span>
                         <span style={{ fontSize: 11, color: p.online ? '#2e7d32' : '#b00020' }}>{p.online ? '在线' : '离线'}</span>
-                        <span style={{ fontSize: 10, color: '#9aa1ab' }}>{p.via === 'manual' ? '手工' : '发现'}</span>
                         <button onClick={() => void onRemovePeer(p.key)} style={{ fontSize: 10, padding: '1px 6px', color: '#b00020' }}>
                           移除
                         </button>
@@ -1210,6 +1332,27 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
                     ))}
                   </div>
                 )}
+
+                {/* 广播被交换机拦截时才需要手工登记；默认完全不需要用户懂 IP。 */}
+                <details style={{ marginTop: 16 }}>
+                  <summary style={{ fontSize: 11, color: '#8a8f98', cursor: 'pointer' }}>
+                    高级：局域网广播被拦截时，手工登记一台设备
+                  </summary>
+                  <div style={{ fontSize: 11, color: '#8a8f98', margin: '6px 0' }}>
+                    只有自动发现失败时才用；需要对方把自己的地址（形如 http://192.168.1.20:7850）发给你。
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      value={peerUrl}
+                      onChange={(e) => setPeerUrl(e.target.value)}
+                      placeholder="http://192.168.1.20:7850"
+                      style={{ flex: 1, fontSize: 12 }}
+                    />
+                    <button disabled={busy || !peerUrl.trim()} onClick={() => void onAddPeer()} style={{ fontSize: 11 }}>
+                      手工登记
+                    </button>
+                  </div>
+                </details>
               </div>
             )}
           </>

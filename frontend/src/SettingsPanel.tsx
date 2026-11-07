@@ -198,7 +198,7 @@ export default function SettingsPanel({
                 />
               ))}
               <Hint>
-                首次使用会自动下载模型（约 1–5GB），之后全程离线运行。
+                先在这里下载选定模型（约 1–5GB），之后全程离线运行；未下载时点击「AI 纠错 / AI 整理断句」也会自动开始后台下载。
                 {models && !models.runtime.llm && ' 当前 AI 运行时未安装，下载完成后仍需运行启动器安装组件。'}
               </Hint>
             </Section>
