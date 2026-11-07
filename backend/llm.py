@@ -31,7 +31,7 @@ LLM_MODELS: dict[str, dict] = {
         "min_ram": "8GB",
         "speed": "速度较快",
         "note": "最低配置默认回退档",
-        "repo": "bartowski/Qwen3-1.7B-GGUF",
+        "repo": "bartowski/Qwen_Qwen3-1.7B-GGUF",
     },
     "qwen3-4b": {
         "id": "qwen3-4b",
@@ -39,7 +39,7 @@ LLM_MODELS: dict[str, dict] = {
         "min_ram": "16GB",
         "speed": "精度与速度折中",
         "note": "中间平衡档；默认",
-        "repo": "bartowski/Qwen3-4B-GGUF",
+        "repo": "bartowski/Qwen_Qwen3-4B-GGUF",
     },
     "qwen2.5-7b": {
         "id": "qwen2.5-7b",
@@ -149,10 +149,12 @@ def split_think(text: str) -> str:
 
 
 _POLISH_SYSTEM = (
-    "你是中文访谈转写稿的校对员。只修正明显的同音字/错别字、漏字、重复词、标点与语病；"
-    "不改变说话人原意，不删信息，不做文风改写。"
+    "你是中文访谈转写稿的校对员。逐句检查输入，修正明显的同音字/错别字、漏字、重复词、"
+    "标点与语病，删掉无意义的语气词（呃、呃那个）；不改变说话人原意，不删信息，不做文风改写。"
     '只输出一个 JSON 数组，元素形如 {"id": "句子 id", "text": "修改后的完整句子"}；'
-    "没有需要修改的句子就输出 []。不要输出解释，也不要包代码块。 /no_think"
+    "只包含确实改动过的句子，没改的句子不要出现；全部无需修改就输出 []。"
+    '示例：输入 "a\\t我们门今天开会呃" 输出 [{"id":"a","text":"我们今天开会"}]。'
+    "不要输出解释，也不要包代码块。 /no_think"
 )
 
 
@@ -236,6 +238,8 @@ def polish(
                 max_tokens=min(2048, max(256, len(batch) * 160)),
             )
             raw = split_think((resp["choices"][0]["message"]["content"] or ""))
+            if not raw:
+                continue
             known = {s["id"]: s for s in batch}
             for change in _parse_changes(raw):
                 sid = str(change.get("id") or "")

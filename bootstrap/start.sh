@@ -128,6 +128,17 @@ echo "[3/4] 首次安装组件（约 300MB，需要联网）……"
   }
 }
 
+# AI 语义纠错运行时：PyPI 只有源码包，必须从项目自带的 CPU wheel 源装。
+# 失败不阻塞启动（转写、校对、脱敏都不依赖它），界面会如实提示未安装。
+if ! "$PY" -c "import llama_cpp" >/dev/null 2>&1; then
+  echo "[3/4] 安装本地 AI 运行时（可选，约 30MB）……"
+  "$PY" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 \
+    llama-cpp-python==0.3.36 \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu >/dev/null 2>&1 || {
+    echo "      AI 纠错运行时安装失败（不影响录音转写）；下次运行启动器会自动重试。"
+  }
+fi
+
 echo "[4/4] 准备语音模型（首次约 500MB）……"
 "$PY" backend/preload.py
 

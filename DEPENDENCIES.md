@@ -21,6 +21,8 @@
 | 便携 CPython 3.12.16 | GitHub `astral-sh/python-build-standalone` release `20261026`，install_only 包：Windows x64 47MB / macOS 25MB / Linux x64 68MB | 解压到用户文件夹 `.runtime/`；依赖直接装进这份运行时（不建 venv） |
 | 语音模型 | HuggingFace `Systran/faster-whisper-small` ≈ 500MB | 缓存位置由 `HF_HOME` 指向 `data/models/hf-cache/`（随项目文件夹走，不写系统盘用户目录）；也可离线：放入 `data/models/whisper-small/` 即优先使用 |
 | Microsoft VC++ 运行库（`MSVCP140.dll`） | 仅 Windows；官方 `https://aka.ms/vs/17/release/vc_redist.x64.exe` | `ctranslate2.dll` 依赖它，便携 Python 只带 vcruntime140 不带 msvcp140；启动器自检 `import av, ctranslate2` 失败时自动下载安装（需一次 UAC 确认），失败则给出手动安装链接 |
+| 本地 AI 运行时 `llama-cpp-python==0.3.36` | `https://abetlen.github.io/llama-cpp-python/whl/cpu`（官方 PyPI 只有源码包）；win_amd64 / macosx_11_0_arm64 / manylinux x86_64 预编译 wheel，约 30MB | 启动器在转写组件装完后单独装一次，失败不阻塞（AI 纠错如实提示「运行时未安装」，转写/校对/脱敏不受影响）；Intel Mac 无 wheel，会跳过 |
+| AI 纠错模型 | HuggingFace `bartowski/Qwen_Qwen3-1.7B-GGUF`（Q4_K_M ≈1.3GB）/ `bartowski/Qwen_Qwen3-4B-GGUF`（≈2.5GB） | 不随启动器下载，首次点「AI 纠错」时按设置档位下载到 `data/models/llm/<档位>/`；国内自动走 `hf-mirror.com` |
 
 - Windows 解压依赖系统自带 `tar.exe`（Win10 1803+ / Win11）；下载优先 `curl.exe`，缺失则回退 PowerShell。
 - macOS / Linux 解压用系统 `tar`，下载用 `curl`（缺失回退 `wget`）。
@@ -35,6 +37,7 @@
 |---|---|---|
 | 便携 Python 包 | `github.com` → `https://gh-proxy.com/` → `https://ghproxy.net/` | 每次下载后用官方 `SHA256SUMS` 里的 hash 校验；不符即删文件换下一个源 |
 | pip 依赖 | 清华 `https://pypi.tuna.tsinghua.edu.cn/simple` → 官方 PyPI | `--timeout 20 --retries 2`，失败自动换源 |
+| 本地 AI 运行时 | 官方 CPU wheel 源 `abetlen.github.io`（PyPI 没有预编译包，源码安装需 cmake 工具链） | 装失败只提示、不退出；下次启动重试 |
 | whisper 模型 | 导入时探测官方 `huggingface.co`（HEAD 模型接口，3s 超时）；不通则整个进程改用 `hf-mirror.com` | `HF_HUB_ETAG_TIMEOUT=5` / `HF_HUB_DOWNLOAD_TIMEOUT=20`；`HF_HUB_DISABLE_SYMLINKS_WARNING=1`；端点不通时置 `HF_HUB_DISABLE_XET=1`。**端点必须在 import 前定下**：huggingface_hub 1.x 运行中改 `constants.ENDPOINT` 不生效（已实测） |
 
 - **SHA256 是硬编码在脚本里的**，不是下载时从网络取（否则源被劫持就失去意义）。当前 5 条：

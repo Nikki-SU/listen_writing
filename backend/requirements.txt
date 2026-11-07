@@ -12,3 +12,12 @@ huggingface-hub>=0.21,<2
 
 # 其余由 faster-whisper 自动带入（此处仅登记备查）
 # onnxruntime          # VAD 可选依赖
+
+# AI 语义纠错（阶段 1，可选）：llama-cpp-python 不随本文件安装。
+# 官方 PyPI 只有源码包，用户机器没有编译工具链会装不上；启动器单独执行：
+#   pip install llama-cpp-python==0.3.36 \
+#     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+# 预编译 wheel 覆盖 win_amd64 / macosx_11_0_arm64 / manylinux x86_64；
+# Intel Mac 等没有 wheel 的平台会装失败，此时 AI 纠错如实提示「运行时未安装」，
+# 不影响录音、转写、校对、脱敏。
+

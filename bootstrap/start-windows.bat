@@ -58,6 +58,16 @@ echo        Mirror failed, retrying with the official index ...
 "%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 -r requirements.txt
 if errorlevel 1 goto pip_failed
 
+rem AI correction runtime: PyPI only ships sources. Install the CPU wheel from the
+rem project wheel index. Failure is not fatal - transcription still works and the
+rem web page reports that the AI runtime is missing.
+"%PY%" -c "import llama_cpp" >nul 2>nul
+if not errorlevel 1 goto check_native
+echo        Installing the optional local AI runtime (about 30 MB) ...
+"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 llama-cpp-python==0.3.36 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu >nul 2>nul
+if not errorlevel 1 goto check_native
+echo        Local AI runtime not installed (transcription is unaffected; retried next run).
+
 :check_native
 rem ctranslate2 / av dlls need MSVCP140.dll, which the portable Python does not ship.
 rem A clean Windows would fail with "DLL load failed", so check and install the
