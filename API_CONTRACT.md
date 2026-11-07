@@ -67,9 +67,46 @@
 | G-22 | 后端 | `GET /api/groups/{gid}/materials/{mid}/audio?approval_id={aid}` | 可选 `Range` | 音频字节流（`200`/`206`） | **门禁**：审批不存在/非申请设备/已用/已过期/材料无音频一律 403，页面拿不到直链；支持 Range |
 | G-23 | 后端 | `GET /api/groups/{gid}/access` | 无 | `{"access":[…]}` | 访问留痕，需 `members` 能力；上限 500 条 |
 
+### 单次 / 单材料授权（PRD 12.4，G 系列延伸）
+
+长期角色模板之外的临时放权：`uses=1` 即单次，`scope=material` 即只对指定材料生效。过期 / 撤销 / 次数用完自动失效，不删记录。发放与撤销都需要 `approve` 能力。
+
+| 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
+|---|---|---|---|---|---|
+| G-24 | 后端 | `GET /api/groups/{gid}/grants` | 无 | `{"grants":[Grant…]}` | 有 `approve` 看全部，否则只看发给自己的 |
+| G-25 | 后端 | `POST /api/groups/{gid}/grants` | `{"device_code?","target","caps":[…],"scope":"group\|material","material_ids?":[…],"uses?":1~999\|null,"days?":1~365\|null,"note?"}` | `{"grant":Grant}` | **`target` 是收授权的成员设备码**（不是调用者）；`caps` 只能取 `view/edit/submit/material`；`scope=material` 必须给存在的 `material_ids`；`uses=null` 表示不限次 |
+| G-26 | 后端 | `DELETE /api/groups/{gid}/grants/{grant_id}` | `{"device_code?"}` | `{"grant":Grant}` | 软撤销：写 `revoked/revoked_by/revoked_at`，记录保留可审计 |
+
+`Grant = {id,device_code,nick,caps,scope,material_ids,uses,used,expires_at,note,created_by,created_at,revoked,revoked_by?,revoked_at?,exhausted_at?}`。
+
+### 局域网节点发现与跨机同步（N 系列）
+
+无中心服务器、数据只在局域网内（PRD §5 / §12.2 / §12.3）。每个后端是一个节点：UDP 广播互相发现（默认端口 7851，可用 `LISTEN_WRITING_DISCOVERY_PORT` 覆盖；广播被交换机拦截时可手工登记 IP），默认 HTTP 端口 7850（`LISTEN_WRITING_PORT`）。
+
+- **无副本群组**（`mode=authoritative`）：群主节点是唯一权威，其他节点的写请求由本机原样转发给群主；群主离线返回 `503 {"error":"…","code":"owner_offline"}`。
+- **有副本群组**（`mode=replica`）：每个节点持有完整副本，改动后互推快照，按修订号（`rev` / `revs`）判断祖先、句子级三方合并；真冲突保留本地文本，并把对方文本写成 `status=conflict` 的群组提案交给人决定。
+- **同人多设备**：昵称 + 设备码完全一致视为同一个人，自动同步项目、录音、音频（仅对这类设备开放）。
+- 非回环地址只开放 `/api/peer/*`、`/api/groups*` 与 `/api/health`、`/api/version`，其它接口返回 `403 {"code":"local_only"}`。
+
+| 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
+|---|---|---|---|---|---|
+| N-1 | 后端 | `GET /api/peer/info` | 无 | `{"instance","http_port","identity":{nick,device_code},"groups":[gid…]}` | 节点自述；手工登记时先拉这个 |
+| N-2 | 后端 | `GET /api/peers` | 无 | `{"instance","http_port","discovery_port","identity",…,"peers":[PeerNode…]}` | 当前在线节点（15s 心跳 TTL）；`PeerNode.online / base_url / same_identity` 由后端计算 |
+| N-3 | 后端 | `POST /api/peers` | `{"url":"192.168.1.8:7850","device_code?","nick?"}` | `{"peer":PeerNode,"peers":[…]}` | 手工登记：主动请求对方 `/api/peer/info`；连不上 `502` |
+| N-4 | 后端 | `DELETE /api/peers/{key}` | 无 | `{"peers":[…]}` | `key` 可以是 `instance` 或 `device_code`（自动 URL 解码） |
+| N-5 | 后端 | `GET /api/peer/groups/by-code/{code}` | 无 | `GroupDetail` | 凭配对码向节点要群组快照；不存在 `404` |
+| N-6 | 后端 | `GET /api/peer/groups/{gid}/snapshot?device_code={device}` | 无 | `{"group":…}` | 拉取群组快照（`collab.CollabError.status` 透传） |
+| N-7 | 后端 | `POST /api/peer/groups/{gid}/snapshot?device_code={device}` | 群组快照 JSON | `{"group":…,"changed":bool}` | 收到对方推送后本地合并；有副本模式回推一次 |
+| N-8 | 后端 | `POST /api/peer/groups/{gid}/join` | `{"code","device_code","nick","role"}` | `{"group":…}` | 跨机入群；配对码不匹配 `403` |
+| N-9 | 后端 | `GET /api/peer/projects?device_code={d}&nick={n}` | 无 | `{"projects":[{…,"recordings":[…]}]}` | **仅同人设备**；不一致 `403` |
+| N-10 | 后端 | `GET /api/peer/projects/{pid}/recordings/{rid}/bundle?device_code={d}&nick={n}` | 无 | `{"project","recording","sentences","redactions","categories","versions"}` | 同人同步单条录音完整包 |
+| N-11 | 后端 | `GET /api/peer/projects/{pid}/recordings/{rid}/audio?device_code={d}&nick={n}` | 可选 `Range` | 音频字节流（`200`/`206`） | 同人同步音频本体 |
+
+`PeerNode = {key,device_code,nick,host,port,instance,groups,via,last_seen,online,base_url,same_identity}`；`via` 为 `udp` / `manual`。
+
 `RoleCaps`：`view / edit / submit / merge / material / approve / members / roles / review / manage`。默认五角色 `owner/admin/editor/reader/reviewer` 可改名与增删能力（权限模板不硬编码）。
 
-`ModelOption = {id,label,min_ram,speed,note,available}`；`available=false` 表示本机运行时尚未内置，前端置灰并显示「本机未内置」，选了也不会被后端接受（转写会返回明确错误，不假装成功）。
+`ModelOption = {id,label,min_ram,speed,note,available}`；`available` 由 `transcriber.asr_options()` 用 `importlib.util.find_spec` 实时探测（sherpa-onnx / torch / transformers）。为 `false` 时前端置灰并显示「本机运行时未安装」，重新运行启动器会自动补装；仍可选择，但转写会返回明确错误，不假装成功。
 
 `RedactionCategory = {id,name,placeholder,color,enabled}`；`RedactionMark = {id,sentence_id,start,end,original,category_id,category_name,placeholder,color,timestamp}`。`start/end` 以**原句文字**为坐标（渲染时不替换、只加彩色底纹，保证选区坐标不漂移）；`original` 只用于界面回退与 diff，导出物必须剥离。
 
@@ -104,10 +141,10 @@ data/
   settings.json                         # 本机身份（昵称 + 设备码）与模型选择
   groups/
     {group_id}/
-      group.json                        # 群组：配对码 / 模式 / 角色模板 / 成员 / 材料快照 / 提案 / 审批 / 留痕
+      group.json                        # 群组：配对码 / 模式 / 角色模板 / 成员 / 临时授权 grants / 材料快照（含 rev/revs）/ 提案 / 审批 / 留痕
 ```
 
-- 模型查找顺序：`LISTEN_WRITING_MODEL` 环境变量 → `data/models/whisper-{size}/` 本地目录 → 联网下载（官方 HuggingFace，失败降级 hf-mirror.com），缓存落在项目文件夹 `data/models/hf-cache/`（不写系统盘的用户目录）。
+- 模型查找顺序：`LISTEN_WRITING_MODEL` 环境变量 → `data/models/whisper-{size}/` 本地目录 → 联网下载（官方 HuggingFace，失败降级 hf-mirror.com），缓存落在项目文件夹 `data/models/hf-cache/`（不写系统盘的用户目录）。SenseVoice 在 `data/models/sensevoice/`（只留 int8），Qwen3-ASR 在 `data/models/qwen3-asr-0.6b/`。
 - 项目版本号 `stage.seq`（阶段.阶段内序号）：阶段 0 初始转写落 `versions/0.1.json`；每次单句修改在同一阶段内 `seq+1`（如 `0.2`）；阶段升级时 `seq` 重置为 1（如 `1.1`）。
 - 版本 JSON 必含：`version/stage/seq/parent/author_nick/timestamp/message/diff/sentences`。`diff` 形如 `[{sentence_id,index,op:"replace",before:{...},after:{...}}]`；`sentences` 为该版本完整快照，用于任意两版复刻。
 - 转写状态对象 `transcribe`：`{"status":"pending|transcribing|done|error","progress":0~100,"error":""}`，随 `recording.json` 持久化；`transcribing` 期间进度实时更新。

@@ -6,11 +6,13 @@ import type {
   CollabAccess,
   CollabApproval,
   CollabGroupSummary,
+  CollabGrant,
   CollabMaterial,
   CollabMaterialDetail,
   CollabMember,
   CollabProposal,
   CollabRole,
+  PeerSnapshot,
   SettingsPayload,
   Project,
   Recording,
@@ -366,6 +368,59 @@ export async function removeMember(groupId: string, deviceCode: string): Promise
   return json(
     await fetch(`${BACKEND}/api/groups/${groupId}/members/${deviceCode}`, { method: 'DELETE' }),
   )
+}
+
+// ---- 单次 / 单材料授权 ----
+
+export async function listGrants(groupId: string): Promise<{ grants: CollabGrant[] }> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/grants`))
+}
+
+export async function createGrant(
+  groupId: string,
+  payload: {
+    target: string
+    caps: string[]
+    scope: 'group' | 'material'
+    material_ids?: string[]
+    uses?: number | null
+    days?: number | null
+    note?: string
+  },
+): Promise<CollabGrant> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/grants`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  )
+}
+
+export async function revokeGrant(groupId: string, grantId: string): Promise<CollabGrant> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/grants/${grantId}`, { method: 'DELETE' }),
+  )
+}
+
+// ---- 局域网节点 ----
+
+export async function listPeers(): Promise<PeerSnapshot> {
+  return json(await fetch(`${BACKEND}/api/peers`))
+}
+
+export async function addPeer(url: string): Promise<{ peers: PeerSnapshot['peers'] }> {
+  return json(
+    await fetch(`${BACKEND}/api/peers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    }),
+  )
+}
+
+export async function removePeer(key: string): Promise<{ peers: PeerSnapshot['peers'] }> {
+  return json(await fetch(`${BACKEND}/api/peers/${encodeURIComponent(key)}`, { method: 'DELETE' }))
 }
 
 export async function decideMemberRequest(

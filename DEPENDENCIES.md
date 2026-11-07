@@ -9,19 +9,26 @@
 | Python 运行时 | 3.12.16（python-build-standalone `20261026`） | 用户电脑上**没有也不需要**系统 Python；启动器首次把便携 CPython 下载到 `.runtime/` | 升级会连带影响所有 wheel 兼容性；见下方「运行组件」 |
 | faster-whisper | 1.2.1 | ASR 转写引擎（阶段 0 初始转写） | 换引擎 / 换模型大小时在此变更；见 `transcriber.py` |
 | ctranslate2 | 4.8.1 | whisper 的 CTranslate2 CPU 推理引擎 | faster-whisper 直接依赖；3.12 用 cp312 wheel |
-| av | 17.1.0 | 音频解码 + 时长探测 | faster-whisper 传递依赖；`main._probe_duration_sec` 直接 import 使用；**它内置 FFmpeg，因此用户机器无需安装 FFmpeg** |
+| av | 17.1.0 | 音频解码 + 时长探测 | faster-whisper 传递依赖；`audio.decode_audio` / `main._probe_duration_sec` 直接 import；**它内置 FFmpeg，因此用户机器无需安装 FFmpeg** |
 | tokenizers | 0.22.1 | 字节对编码分词 | faster-whisper 传递依赖 |
 | huggingface-hub | `>=0.21,<2` | 模型下载，支持 `HF_ENDPOINT` 镜像 | 下载源默认官方、失败降级 hf-mirror.com（见 `transcriber.py`）；2.0 起接口可能变，故封顶 |
 | onnxruntime | — | VAD 可选依赖 | faster-whisper 传递依赖 |
+| sherpa-onnx | 2.0.1 | SenseVoice Small 的离线推理（PRD §7 第二档） | `transcriber.SenseVoiceTranscriber`；int8 模型峰值 <800MB；升级必须重跑真实转写 |
+| transformers | 5.22.2 | Qwen3-ASR-0.6B 的处理器与模型加载（PRD §7 第三档） | 只用 `AutoProcessor` / `AutoModelForMultimodalLM`；接口变动会直接影响 `Qwen3AsrTranscriber._load` |
+| torch（CPU） | 2.15.0+cpu | Qwen3-ASR CPU 推理 | **不写进 `requirements.txt`**：PyPI 默认包在 Linux 会拖 CUDA/NVIDIA（数 GB），由启动器从 `download.pytorch.org/whl/cpu` 单独装；失败只让该档标为不可用 |
+| numpy | 由 av / sherpa-onnx 带入 | 音频波形与 VAD 计算 | `audio.py`、`diarize.py` 直接用；升级 ASR 依赖后要复查 `to_ndarray` 接口 |
 
 ### 运行组件（首次自动下载，用户零安装）
 
 | 组件 | 来源 / 大小 | 说明 |
 |---|---|---|
 | 便携 CPython 3.12.16 | GitHub `astral-sh/python-build-standalone` release `20261026`，install_only 包：Windows x64 47MB / macOS 25MB / Linux x64 68MB | 解压到用户文件夹 `.runtime/`；依赖直接装进这份运行时（不建 venv） |
-| 语音模型 | HuggingFace `Systran/faster-whisper-small` ≈ 500MB | 缓存位置由 `HF_HOME` 指向 `data/models/hf-cache/`（随项目文件夹走，不写系统盘用户目录）；也可离线：放入 `data/models/whisper-small/` 即优先使用 |
+| 语音模型（Whisper） | HuggingFace `Systran/faster-whisper-small` ≈ 500MB | 缓存位置由 `HF_HOME` 指向 `data/models/hf-cache/`（随项目文件夹走，不写系统盘用户目录）；也可离线：放入 `data/models/whisper-small/` 即优先使用 |
+| SenseVoice Small 模型 | GitHub `k2-fsa/sherpa-onnx` release `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2`（发布包约 1GB，解压后只保留 `model.int8.onnx` 229MB） | 落在 `data/models/sensevoice/<package>/`；`_download_with_mirrors` 依次走 GitHub → gh-proxy.com → ghproxy.net；fp32 模型解压后立即删除 |
+| Qwen3-ASR-0.6B 权重 | HuggingFace `Qwen/Qwen3-ASR-0.6B-hf` ≈ 1.2GB | 落在 `data/models/qwen3-asr-0.6b/`；走 `hf-mirror.com` 降级；首次选中该档时由 `preload.py` 下载 |
 | Microsoft VC++ 运行库（`MSVCP140.dll`） | 仅 Windows；官方 `https://aka.ms/vs/17/release/vc_redist.x64.exe` | `ctranslate2.dll` 依赖它，便携 Python 只带 vcruntime140 不带 msvcp140；启动器自检 `import av, ctranslate2` 失败时自动下载安装（需一次 UAC 确认），失败则给出手动安装链接 |
 | 本地 AI 运行时 `llama-cpp-python==0.3.36` | `https://abetlen.github.io/llama-cpp-python/whl/cpu`（官方 PyPI 只有源码包）；win_amd64 / macosx_11_0_arm64 / manylinux x86_64 预编译 wheel，约 30MB | 启动器在转写组件装完后单独装一次，失败不阻塞（AI 纠错如实提示「运行时未安装」，转写/校对/脱敏不受影响）；Intel Mac 无 wheel，会跳过 |
+| Qwen3-ASR 运行时 `torch==2.15.0`（CPU） | Linux/macOS 从 `https://download.pytorch.org/whl/cpu` 装（避免 PyPI 包拖入数 GB CUDA 依赖）；Windows 用 PyPI 的 CPU wheel（清华镜像 → 官方源） | 启动器在 llama-cpp 之后单独装一次，失败不阻塞；设置页按 `importlib.util.find_spec` 实际探测并标为「本机运行时未安装」 |
 | AI 纠错模型 | HuggingFace `bartowski/Qwen_Qwen3-1.7B-GGUF`（Q4_K_M ≈1.3GB）/ `bartowski/Qwen_Qwen3-4B-GGUF`（≈2.5GB） | 不随启动器下载，首次点「AI 纠错」时按设置档位下载到 `data/models/llm/<档位>/`；国内自动走 `hf-mirror.com` |
 
 - Windows 解压依赖系统自带 `tar.exe`（Win10 1803+ / Win11）；下载优先 `curl.exe`，缺失则回退 PowerShell。
@@ -38,7 +45,9 @@
 | 便携 Python 包 | `github.com` → `https://gh-proxy.com/` → `https://ghproxy.net/` | 每次下载后用官方 `SHA256SUMS` 里的 hash 校验；不符即删文件换下一个源 |
 | pip 依赖 | 清华 `https://pypi.tuna.tsinghua.edu.cn/simple` → 官方 PyPI | `--timeout 20 --retries 2`，失败自动换源 |
 | 本地 AI 运行时 | 官方 CPU wheel 源 `abetlen.github.io`（PyPI 没有预编译包，源码安装需 cmake 工具链） | 装失败只提示、不退出；下次启动重试 |
-| whisper 模型 | 导入时探测官方 `huggingface.co`（HEAD 模型接口，3s 超时）；不通则整个进程改用 `hf-mirror.com` | `HF_HUB_ETAG_TIMEOUT=5` / `HF_HUB_DOWNLOAD_TIMEOUT=20`；`HF_HUB_DISABLE_SYMLINKS_WARNING=1`；端点不通时置 `HF_HUB_DISABLE_XET=1`。**端点必须在 import 前定下**：huggingface_hub 1.x 运行中改 `constants.ENDPOINT` 不生效（已实测） |
+| Qwen3-ASR 运行时（torch） | Linux/macOS：`download.pytorch.org/whl/cpu`；Windows：清华镜像 → 官方 PyPI | `torch==2.15.0`；装失败只让该档标为未安装，不影响 Whisper / SenseVoice |
+| 语音模型（Whisper / Qwen3-ASR） | 导入时探测官方 `huggingface.co`（HEAD 模型接口，3s 超时）；不通则整个进程改用 `hf-mirror.com` | `HF_HUB_ETAG_TIMEOUT=5` / `HF_HUB_DOWNLOAD_TIMEOUT=20`；`HF_HUB_DISABLE_SYMLINKS_WARNING=1`；端点不通时置 `HF_HUB_DISABLE_XET=1`。**端点必须在 import 前定下**：huggingface_hub 1.x 运行中改 `constants.ENDPOINT` 不生效（已实测） |
+| SenseVoice 模型 | GitHub release → `gh-proxy.com` → `ghproxy.net` | 解压后只保留 int8（删掉 fp32 约 895MB）；失败下次启动重试 |
 
 - **SHA256 是硬编码在脚本里的**，不是下载时从网络取（否则源被劫持就失去意义）。当前 5 条：
   - Windows x64 `590dfcbe3a34c07301e6332e13e2188b98655cd072b08afa45a7998dc4c22bc5`（在 `start-windows.bat` 的 `SHA`）
@@ -78,6 +87,15 @@
    - 定义处：`storage.create_recording`（初始化 pending）
    - 更新处：`storage.set_transcribe`
    - 消费处：前端 `types.ts` 的 `TranscribeStatus`、`App.tsx` 进度轮询与状态标签
+3. **材料修订号 `rev / revs`**：`rev` 是当前修订、`revs` 是历史修订集合（截断 200）
+   - 定义 / 更新处：`collab.add_material`、`collab._bump_revision`
+   - 消费处：`peers._merge_material`（判断祖先关系）、`collab.merge_snapshot`
+   - 约束：**任何改正文的路径都必须调用 `_bump_revision`**，漏掉会让有副本同步把新内容误判为旧快照
+4. **临时授权 `Grant`**：`id/device_code/nick/caps/scope/material_ids/uses/used/expires_at/revoked/exhausted_at`
+   - 定义处：`collab.create_grant`；消费处：`_active_grants` / `_grant_caps` / `_require`
+   - 前端：`types.ts` `CollabGrant`、`CollabPanel` 授权区块；字段改名必须同步三处
+5. **节点 `PeerNode`**：`key/device_code/nick/host/port/instance/groups/via/last_seen/online/base_url/same_identity`
+   - 定义处：`peers._record` / `peer_snapshot`；消费处：N-2 与前端「设备与节点」页
 
 ### 函数清单
 
@@ -107,8 +125,12 @@
 | `Transcriber.transcribe`（抽象） | `transcriber.py` | (audio_path, on_progress) → `[{start_ms,end_ms,text,speaker}]` | 返回元素四字段 | `main._run_transcribe` |
 | `FasterWhisperTranscriber` | `transcriber.py` | 具体引擎实现 | `size` 参数优先（设置页选择）→ 环境变量 `LISTEN_WRITING_MODEL` / `LISTEN_WRITING_MODEL_SIZE`；模型缓存 `HF_HOME=data/models/hf-cache` | `transcriber.transcriber_for` |
 | `offline_model_dir` | `transcriber.py` | size → `data/models/whisper-<size>` 路径 | 依赖 `storage.DATA_ROOT` | `FasterWhisperTranscriber.model_ref`、`needs_download` |
-| `ASR_MODELS` | `transcriber.py` | 转写选项表（id/label/min_ram/speed/note/available） | 唯一权威；`whisper-small/medium` 可用，Qwen3-ASR / SenseVoice 标记未内置 | S-1 `options.asr`、`_update_settings` 校验、`transcriber_for` |
-| `transcriber_for(model_key)` | `transcriber.py` | key → Transcriber | 未内置运行时抛 `RuntimeError`（`_run_transcribe` 把原因写入转写状态） | `main._get_transcriber`、`preload.main` |
+| `ASR_MODELS` | `transcriber.py` | 转写选项表（id/label/engine/min_ram/speed/note） | 唯一权威；四档内置：`whisper-small` / `whisper-medium` / `qwen3-asr-0.6b` / `sensevoice-small` | `asr_options`、`_update_settings` 校验、`transcriber_for` |
+| `asr_options()` | `transcriber.py` | 无 → `[{…,available}]` | 用 `importlib.util.find_spec` 探测 sherpa_onnx / torch / transformers；缺运行时置 `available=false` 并改写 note | S-1 `options.asr`（前端据此置灰） |
+| `SenseVoiceTranscriber` / `Qwen3AsrTranscriber` | `transcriber.py` | 具体引擎实现 | SenseVoice 用 `sherpa_onnx.OfflineRecognizer` + `model.int8.onnx`；Qwen3 用 `AutoProcessor.apply_transcription_request` + `AutoModelForMultimodalLM`，直接传 numpy 采样避免 librosa | `transcriber_for` |
+| `decode_audio` / `split_speech` | `audio.py` | 音频 → 16kHz 单声道 float32；能量 VAD 切句 | 依赖 PyAV + numpy；返回 `(samples, duration_sec)` / `[(start_sec,end_sec)…]` | SenseVoice / Qwen3 引擎 |
+| `_download_with_mirrors` / `SenseVoiceTranscriber.ensure_model` | `transcriber.py` | 下载 SenseVoice 压缩包并只留 int8 | 镜像顺序 GitHub → gh-proxy → ghproxy；解压后删 fp32 | `preload.py`、首档转写 |
+| `transcriber_for(model_key)` | `transcriber.py` | key → Transcriber | 运行时缺失先抛 `RuntimeError`（可读中文），避免 ModuleNotFoundError 直接冒泡 | `main._get_transcriber`、`preload.main` |
 | `default_transcriber` | `transcriber.py` | 无 → Transcriber 实例 | 跟随 `settings.asr_model`，读设置失败退回 small | `preload.py`、兼容旧调用 |
 | `needs_download` / `ensure_model` | `transcriber.py` | 无 → bool（模型是否就绪） | 检查 `model_ref` 目录；size 名再查 HF 缓存 `snapshots/*/model.bin` | `preload.py` 预下载（命中缓存时跳过下载提示） |
 | `_hf_official_reachable` | `transcriber.py` | 无 → bool | HEAD `huggingface.co/api/models/Systran/faster-whisper-tiny`，3s 超时 | 模块导入时决定是否设 `HF_ENDPOINT=hf-mirror.com` |
@@ -120,12 +142,21 @@
 | `llm._engine` / `llm._parse_changes` | `llm.py` | 按档位缓存 `llama_cpp.Llama`；容忍代码块/包裹的 JSON 解析 | 引擎缓存在进程内复用；解析失败抛可读错误 | `llm.polish` |
 | `_polish_recording` | `main.py` | AI 纠错编排 | 校验录音/转写完成/模型名；运行时缺失 503；返回 `{suggestions, model}`，**不改正文** | R-14；前端 `runPolish` |
 | `collab.DEFAULT_ROLES` / `VALID_CAPS` / `PLAYBACK_MODES` | `collab.py` | 五角色权限模板、合法能力、三种播放模式 | `RoleCaps` 与 API_CONTRACT G-10 同步；`owner` 必须保留 `roles/manage` | `collab._require`、`update_roles`、`get_group` |
-| `collab._require` / `_caps` / `_is_reviewer` | `collab.py` | 设备 → 成员 → 能力校验 | 调用者身份来自 `main._collab_device`；无权限抛 `CollabError(403)` | 所有 G 接口 |
+| `collab._require` / `_caps` / `_is_reviewer` | `collab.py` | 设备 → 成员/临时授权 → 能力校验 | 调用者身份来自 `main._collab_device`；传 `material_id` 时还会消耗单次授权；无权限抛 `CollabError(403)` | 所有 G 接口、G-13 材料读取 |
 | `collab.create_group` / `list_groups` / `get_group` / `delete_group` | `collab.py` | 群组 CRUD 与配对码 | `code` 6 位唯一；落 `data/groups/{gid}/group.json`；`my_role/my_role_name/member_count` 供前端 | G-1~G-5 |
 | `collab.join_group` / `members` / `update_member` / `decide_member_request` / `remove_member` / `update_roles` | `collab.py` | 入群、成员与权限管理 | 入群仅 `reader/reviewer`；管理员提名管理员进 `member_requests`；角色模板可改名/改 caps | G-3、G-6~G-10；前端成员页 |
 | `collab.add_material` / `list_materials` / `get_material` | `collab.py` | 材料快照（当前版本）与审查者视图 | 快照字段 `sentences/base_sentences/redactions/audio_path/stage/version/history`；审查者 `_visible` 只放 stage≥2、`from main import _apply_redactions` 脱敏、历史截断、`review_mode=true` | G-11~G-13；前端材料页 |
 | `collab.create_proposal` / `decide_proposal` / `list_proposals` | `collab.py` | 逐句提案与合并 | 同句已被覆盖时先标 `conflict` 并 409，再次调用强制应用；版本 `_version_next` + history | G-14~G-16 |
-| `collab.merge_snapshot` | `collab.py` | 有副本模式三方合并 | 入参 `base_sentences/current/incoming` 逐句比对；双改同句返回 `status=conflict`；`force=true` 冲突句采用本地版本 | G-17；前端本地草稿编辑 |
+| `collab.merge_snapshot` | `collab.py` | 有副本模式三方合并 | 入参 `base_sentences/current/incoming` 逐句比对；双改同句返回 `status=conflict`；`force=true` 冲突句采用本地版本；改正文后 `_bump_revision` | G-17；前端本地草稿编辑 |
+| `collab._bump_revision` | `collab.py` | 改正文后生成新 `rev`，旧 rev 并入 `revs`（截断 200） | 有副本同步靠 `rev/revs` 判断祖先，不能再用会碰撞的版本号 | `add_material`、`decide_proposal`、`merge_snapshot`、`peers._merge_material` |
+| `collab.create_grant` / `list_grants` / `revoke_grant` | `collab.py` | 单次 / 单材料授权（PRD 12.4） | Grant 字段见 API_CONTRACT；`scope=material` 校验 `material_ids`；`uses/days` 可空；撤销写 `revoked*` 不删除 | G-24~G-26；前端成员页授权区块 |
+| `collab._grant_caps` / `_active_grants` / `_require(..., material_id)` | `collab.py` | 计算临时能力；按材料消耗次数 | 过期 / 撤销 / `exhausted_at` 不生效；使用后 `used += 1`，用完写 `exhausted_at` | 所有能力校验与 G-13 材料读取 |
+| `peers.start` / `snapshot` / `peers` | `peers.py` | UDP 广播发现 + 心跳（默认 7851，15s TTL）+ 节点快照 | 广播包含 `instance/http_port/device_code/nick`；`snapshot()` 供 N-1/N-2；`INSTANCE` 是数据目录哈希（不广播本机路径） | `main` 启动时 `peers.start()`；N-1/N-2 |
+| `peers.register_peer` / `remove_peer` | `peers.py` | 手工登记与移除节点 | `register_peer` 主动拉 `/api/peer/info`，失败抛可读错误；`remove_peer` 支持 `instance/device_code` 且先 URL 解码 | N-3/N-4；前端设备页 |
+| `peers.push_group` / `pull_group` | `peers.py` | 有副本群组互推快照 | 广播/手工节点逐个 POST `/api/peer/groups/{gid}/snapshot`；拉取后补一次推送保证 GET 流量收敛 | G-17 之后、N-6/N-7 |
+| `peers.maybe_forward` / `_forward` | `peers.py` | 无副本模式请求转发 | 非群主节点把原始 HTTP 请求转发给群主；群主离线返回 `503 code=owner_offline` | 所有 G 写接口 |
+| `peers._merge_group` / `_merge_material` / `_three_way_material` | `peers.py` | 句子级三方合并 + 冲突提案 | 用 `rev/revs` 判祖先；真冲突保留本地文本，把对方文本写进 **群组层** `proposals`（`status=conflict`），按 `(sentence_id, after)` 去重 | N-7、有副本模式 |
+| `peers.sync_identity_projects` / `_pull_projects` / `_apply_bundle` / `_pull_audio` | `peers.py` | 同人设备全量同步 | 昵称 + 设备码一致才同步项目、录音、句子、音频；后台循环调用 | N-9~N-11；前端设备页 |
 | `collab.request_playback` / `decide_playback` / `playback_target` / `consume_playback` | `collab.py` | 播放审批门禁 | 三模式 `burn/permanent/timed`；`cast` 校验申请设备、状态、过期；burn 只在 `consume` 后置 `used` | G-18~G-22；前端 `<audio>` |
 | `collab.access_log` / `_log` | `collab.py` | 访问留痕 | 上限 500 条；需 `members` 能力 | G-23；前端访问留痕页 |
 | `_collab_device` / `_collab_nick` / `_collab_call` | `main.py` | 协作身份解析与异常转 JSON | body/query `device_code` 缺省取本机设置；`CollabError.status` 映射 HTTP | 所有 G 路由 |
@@ -142,7 +173,7 @@
 ### 引导部署文件联动（改一处必须同步）
 
 - `backend/*.py` 或 `bootstrap/*` 改动 → 重新 `npm run build`（prebuild 自动重生成 `src/bootstrapFiles.ts`）→ 重新部署，用户写入的启动文件才是新版。
-- `frontend/scripts/embed-backend.mjs`：清单来源 = `backend/{main,models,storage,transcriber,diarize,llm,collab,preload}.py` + `backend/requirements.txt`（映射为用户根目录 `requirements.txt`）+ `bootstrap/*`。加新后端文件必须把它加进 embed 清单（`diarize.py` 曾漏掉，用户机器会直接 ImportError；`collab.py` 已加入）。
+- `frontend/scripts/embed-backend.mjs`：清单来源 = `backend/{main,models,storage,transcriber,audio,diarize,llm,collab,peers,preload}.py` + `backend/requirements.txt`（映射为用户根目录 `requirements.txt`）+ `bootstrap/*`。加新后端文件必须把它加进 embed 清单（`diarize.py` 曾漏掉，用户机器会直接 ImportError；`audio.py` / `peers.py` 是本轮补上的）。
 - 启动器（`bootstrap/start-*`）假设目录结构：根目录有 `backend/`、`requirements.txt`、启动器自身；改嵌入布局必须同步启动器里的相对路径。
 - `start-mac.command` 只是转交 `start.sh`，不要把启动逻辑写回去（否则两份会漂移）。
 - `start-windows.bat` **必须纯 ASCII + CRLF**：cmd 按字节读批处理，UTF-8 中文会让文件偏移错位、从行中间开始执行。`embed-backend.mjs` 会自动转 CRLF 并在发现非 ASCII 时**让 build 失败**；shell 脚本强制 LF（CRLF 会让 bash 报 `\r` 错误）。

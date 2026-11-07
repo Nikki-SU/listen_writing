@@ -51,7 +51,7 @@ del /q "python-runtime.tar.gz"
 if not exist "%PY%" goto runtime_missing
 
 :install_deps
-echo [3/4] Installing components (first run only, about 300 MB, needs internet)
+echo [3/4] Installing components (first run only, about 600 MB, needs internet)
 "%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 if not errorlevel 1 goto check_native
 echo        Mirror failed, retrying with the official index ...
@@ -62,11 +62,24 @@ rem AI correction runtime: PyPI only ships sources. Install the CPU wheel from t
 rem project wheel index. Failure is not fatal - transcription still works and the
 rem web page reports that the AI runtime is missing.
 "%PY%" -c "import llama_cpp" >nul 2>nul
-if not errorlevel 1 goto check_native
+if not errorlevel 1 goto torch_runtime
 echo        Installing the optional local AI runtime (about 30 MB) ...
 "%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 llama-cpp-python==0.3.36 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu >nul 2>nul
-if not errorlevel 1 goto check_native
+if not errorlevel 1 goto torch_runtime
 echo        Local AI runtime not installed (transcription is unaffected; retried next run).
+
+:torch_runtime
+rem Qwen3-ASR needs torch. The PyPI Windows wheel is CPU-only, so no CUDA deps.
+rem Failure is not fatal: Whisper / SenseVoice still work and the settings page
+rem reports this option as unavailable on this machine.
+"%PY%" -c "import torch" >nul 2>nul
+if not errorlevel 1 goto check_native
+echo        Installing the Qwen3-ASR runtime (optional, about 200 MB) ...
+"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 torch==2.15.0 -i https://pypi.tuna.tsinghua.edu.cn/simple >nul 2>nul
+if not errorlevel 1 goto check_native
+"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 torch==2.15.0 >nul 2>nul
+if not errorlevel 1 goto check_native
+echo        Qwen3-ASR runtime not installed (Whisper / SenseVoice are unaffected; retried next run).
 
 :check_native
 rem ctranslate2 / av dlls need MSVCP140.dll, which the portable Python does not ship.

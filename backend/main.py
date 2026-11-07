@@ -11,19 +11,20 @@ import json
 import os
 from pathlib import Path
 import threading
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import av
 
 import collab
 import diarize
 import llm
+import peers
 import storage
 from models import APP_VERSION
-from transcriber import ASR_MODELS, transcriber_for
+from transcriber import ASR_MODELS, asr_options, transcriber_for
 
-PORT = 7850
-HOST = "127.0.0.1"
+PORT = int(os.environ.get("LISTEN_WRITING_PORT") or 7850)
+HOST = "0.0.0.0"  # 局域网节点需要被其他机器访问；非局域网接口在 Handler 里限制本机回环
 
 # 上传格式白名单：由 PyAV（faster-whisper 内部解码层）原生解码，用户无需自己转格式。
 # 改这里必须同步：前端 api.formatOf、App.tsx 的 input accept、API_CONTRACT.md R-1。
@@ -193,6 +194,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        peers.after_request(self)
+
+    def _guard_lan(self, path: str) -> bool:
+        """非回环地址只开放 P2P 面（/api/peer）与需要成员身份的群组接口。
+
+        数据不出局域网，但也不等于把整台机器的项目文件暴露给同网段任意设备。
+        """
+        client = (self.client_address or ("",))[0]
+        if client in ("127.0.0.1", "::1", "localhost"):
+            return True
+        if path.startswith("/api/peer/") or path.startswith("/api/groups") or path in ("/api/health", "/api/version"):
+            return True
+        self._send_json({"error": "该接口仅允许本机访问", "code": "local_only"}, status=403)
+        return False
+
+    def _peer_identity_ok(self, query: dict) -> bool:
+        """项目 / 录音同步只对「昵称 + 设备码一致」的同人设备开放。"""
+        mine = storage.get_settings()["identity"]
+        device = (query.get("device_code") or [""])[0]
+        nick = (query.get("nick") or [""])[0]
+        return device == mine.get("device_code") and nick == mine.get("nick")
 
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length") or 0)
@@ -219,6 +241,14 @@ class Handler(BaseHTTPRequestHandler):
         except collab.CollabError as e:
             self._send_json({"error": str(e)}, status=e.status)
 
+    def _join_and_announce(self, code: str, device: str, nick: str, role: str) -> dict:
+        """本机加入群组后，把成员身份告知群主节点，跨机才看得到这个成员。"""
+        result = collab.join_group(code, device, nick, role)
+        group = collab.try_load_group(result["id"])
+        if group is not None:
+            peers.push_join(group, device, nick, role)
+        return result
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -229,6 +259,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if not self._guard_lan(path):
+            return
+        if peers.maybe_forward(self):
+            return
 
         if path == "/api/health":
             self._send_json({"status": "ok"})
@@ -236,6 +270,86 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/version":
             self._send_json({"version": APP_VERSION})
             return
+        if path == "/api/peers":
+            self._send_json(peers.snapshot())
+            return
+        if path == "/api/peer/info":
+            self._send_json({
+                "instance": peers.INSTANCE,
+                "http_port": peers.HTTP_PORT,
+                "identity": storage.get_settings()["identity"],
+                "groups": [g.get("id") for g in collab.try_all_groups()],
+            })
+            return
+
+        q = parse_qs(urlparse(self.path).query)
+
+        m = _match(path, r"^/api/peer/groups/by-code/([^/]+)$")
+        if m:
+            group = next((g for g in collab.try_all_groups() if g.get("code") == m[0]), None)
+            if group is None:
+                self._send_json({"error": "配对码不存在或已失效"}, status=404)
+                return
+            self._send_json(group)
+            return
+
+        m = _match(path, r"^/api/peer/groups/([^/]+)/snapshot$")
+        if m:
+            device = (q.get("device_code") or [""])[0]
+            try:
+                self._send_json(peers.snapshot_group(m[0], device))
+            except collab.CollabError as e:
+                self._send_json({"error": str(e)}, status=e.status)
+            return
+
+        m = _match(path, r"^/api/peer/projects$")
+        if m:
+            if not self._peer_identity_ok(q):
+                self._send_json({"error": "仅同人设备可同步"}, status=403)
+                return
+            projects = []
+            for project in storage.list_projects():
+                projects.append({**project, "recordings": storage.list_recordings(project["id"])})
+            self._send_json({"projects": projects})
+            return
+
+        m = _match(path, r"^/api/peer/projects/([^/]+)/recordings/([^/]+)/bundle$")
+        if m:
+            if not self._peer_identity_ok(q):
+                self._send_json({"error": "仅同人设备可同步"}, status=403)
+                return
+            project_id, recording_id = m
+            project = storage.get_project(project_id)
+            recording = storage.get_recording(project_id, recording_id)
+            if project is None or recording is None:
+                self._send_json({"error": "recording not found"}, status=404)
+                return
+            self._send_json({
+                "project": project,
+                "recording": recording,
+                "sentences": storage.load_sentences(project_id, recording_id),
+                "redactions": storage.get_redactions(project_id, recording_id),
+                "categories": storage.get_redaction_categories(project_id),
+                "versions": storage.list_versions(project_id, recording_id),
+            })
+            return
+
+        m = _match(path, r"^/api/peer/projects/([^/]+)/recordings/([^/]+)/audio$")
+        if m:
+            if not self._peer_identity_ok(q):
+                self._send_json({"error": "仅同人设备可同步"}, status=403)
+                return
+            recording = storage.get_recording(*m)
+            if recording is None:
+                self._send_json({"error": "recording not found"}, status=404)
+                return
+            audio = Path(recording.get("audio_path") or "")
+            if not audio.is_file():
+                self._send_json({"error": "audio file missing"}, status=404)
+                return
+            self._stream_file(audio, AUDIO_MIME.get(recording.get("format", ""), "application/octet-stream"))
+            return
+
         if path == "/api/projects":
             self._send_json({"projects": storage.list_projects()})
             return
@@ -244,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
                 "settings": storage.get_settings(),
                 # 选项表由后端唯一定义（transcriber.ASR_MODELS / llm.LLM_MODELS），
                 # 前端只负责渲染，避免两端各写一份标签后逐渐漂移。
-                "options": {"asr": list(ASR_MODELS.values()), "llm": llm.options()},
+                "options": {"asr": asr_options(), "llm": llm.options()},
             })
             return
 
@@ -274,6 +388,7 @@ class Handler(BaseHTTPRequestHandler):
             (r"^/api/groups/([^/]+)/materials$", lambda g: collab.list_materials(g, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)$", lambda g, mid: collab.get_material(g, mid, device)),
             (r"^/api/groups/([^/]+)/members$", lambda g: collab.members(g, device)),
+            (r"^/api/groups/([^/]+)/grants$", lambda g: collab.list_grants(g, device)),
             (r"^/api/groups/([^/]+)/proposals$", lambda g: collab.list_proposals(g, device)),
             (r"^/api/groups/([^/]+)/approvals$", lambda g: collab.list_approvals(g, device)),
             (r"^/api/groups/([^/]+)/access$", lambda g: collab.access_log(g, device)),
@@ -379,6 +494,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         path = urlparse(self.path).path
+        if not self._guard_lan(path):
+            return
+        if peers.maybe_forward(self):
+            return
 
         if path == "/api/settings":
             self._update_settings()
@@ -1024,6 +1143,58 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if not self._guard_lan(path):
+            return
+        if peers.maybe_forward(self):
+            return
+
+        if path == "/api/peers":
+            data = self._read_json_body()
+            if data is None:
+                return
+            try:
+                peer = peers.register_peer(
+                    str(data.get("url") or ""),
+                    str(data.get("device_code") or ""),
+                    str(data.get("nick") or ""),
+                )
+            except Exception as e:
+                self._send_json({"error": f"连接节点失败：{e}"}, status=502)
+                return
+            self._send_json({"peer": peer or {}, "peers": peers.peers()})
+            return
+
+        m = _match(path, r"^/api/peer/groups/([^/]+)/snapshot$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            q = parse_qs(urlparse(self.path).query)
+            device = (q.get("device_code") or [""])[0]
+            try:
+                self._send_json(peers.merge_snapshot(m[0], data, device))
+            except collab.CollabError as e:
+                self._send_json({"error": str(e)}, status=e.status)
+            return
+
+        m = _match(path, r"^/api/peer/groups/([^/]+)/join$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            try:
+                group = collab.load_group(m[0])
+                if str(data.get("code") or "") != group.get("code"):
+                    raise collab.CollabError("配对码不匹配", status=403)
+                self._send_json(collab.join_group(
+                    str(data.get("code") or ""),
+                    str(data.get("device_code") or ""),
+                    str(data.get("nick") or ""),
+                    str(data.get("role") or "reader"),
+                ))
+            except collab.CollabError as e:
+                self._send_json({"error": str(e)}, status=e.status)
+            return
 
         if path == "/api/projects":
             self._create_project()
@@ -1050,11 +1221,29 @@ class Handler(BaseHTTPRequestHandler):
                 return
             device = self._collab_device(data)
             nick = self._collab_nick(data)
-            self._collab_call(lambda: collab.join_group(
-                str(data.get("code") or ""),
+            role = str(data.get("role") or "reader")
+            code = str(data.get("code") or "")
+            # 跨机协作：本机没有这个配对码时，先向发现到的节点要一份群组快照。
+            peers.import_group_by_code(code)
+            self._collab_call(lambda: self._join_and_announce(code, device, nick, role))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/grants$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.create_grant(
+                m[0],
                 device,
-                nick,
-                str(data.get("role") or "reader"),
+                str(data.get("target") or ""),
+                data.get("caps") or [],
+                str(data.get("scope") or "material"),
+                data.get("material_ids") or [],
+                data.get("uses"),
+                data.get("days"),
+                str(data.get("note") or ""),
             ))
             return
 
@@ -1201,6 +1390,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         path = urlparse(self.path).path
+        if not self._guard_lan(path):
+            return
+        if peers.maybe_forward(self):
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/grants/([^/]+)$")
+        if m:
+            # 跨机时请求由群主节点代执行，身份仍取请求里带的 device_code。
+            data = self._read_json_body()
+            if data is None:
+                return
+            self._collab_call(lambda: collab.revoke_grant(m[0], m[1], self._collab_device(data)))
+            return
+
+        m = _match(path, r"^/api/peers/([^/]+)$")
+        if m:
+            peers.remove_peer(unquote(m[0]))
+            self._send_json({"peers": peers.peers()})
+            return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions/([^/]+)$")
         if m:
@@ -1278,10 +1486,14 @@ def _format_from_filename(filename: str) -> str | None:
 def _match(path: str, pattern: str):
     import re
     m = re.match(pattern, path)
-    return m.groups() if m else None
+    if m is None:
+        return None
+    # 无捕获组的正则只用于判存在；空元组是假值，必须返回真值，否则整条路由永远命中不了。
+    return m.groups() if m.groups() else True
 
 
 if __name__ == "__main__":
+    peers.start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"listen_writing backend listening on http://{HOST}:{PORT}")
     server.serve_forever()

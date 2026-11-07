@@ -77,6 +77,17 @@ def load_group(group_id: str) -> dict:
     return data
 
 
+def try_load_group(group_id: str) -> dict | None:
+    """跨机同步用：群组不存在时返回 None，而不是抛业务异常。"""
+    return storage._read_json(group_path(group_id))
+
+
+def import_group(group: dict) -> dict:
+    """把从别的节点拿到的群组快照落到本机（加入跨机群组的落地步骤）。"""
+    storage._write_json(group_path(group["id"]), group)
+    return group
+
+
 def _save(group: dict) -> dict:
     _write_json(group_path(group["id"]), group)
     return group
@@ -94,6 +105,10 @@ def _all_groups() -> list[dict]:
                 out.append(g)
     out.sort(key=lambda g: g.get("created_at", ""), reverse=True)
     return out
+
+
+def try_all_groups() -> list[dict]:
+    return _all_groups()
 
 
 def _unique_code() -> str:
@@ -128,12 +143,74 @@ def _caps(group: dict, member: dict) -> list[str]:
     return list(_role(group, member).get("caps") or [])
 
 
-def _require(group: dict, device_code: str, cap: str) -> dict:
+VALID_GRANT_CAPS = ("view", "edit", "submit", "material")
+
+
+def _active_grants(group: dict, member: dict, material_id: str | None = None) -> list[dict]:
+    """该成员当前有效的授权（长期角色之外的「单次 / 单材料」）。
+
+    过期、撤销、次数用完的一律不返回；material_id 给定时只返回覆盖该材料的授权。
+    """
+    now = _now_dt()
+    out = []
+    for grant in group.get("grants", []):
+        if grant.get("revoked") or grant.get("device_code") != member.get("device_code"):
+            continue
+        if grant.get("expires_at"):
+            try:
+                if now > datetime.fromisoformat(grant["expires_at"]):
+                    continue
+            except ValueError:
+                continue
+        limit = grant.get("uses")
+        if limit is not None and int(grant.get("used", 0)) >= int(limit):
+            continue
+        scope = grant.get("scope") or "group"
+        if scope == "material":
+            materials = grant.get("material_ids") or []
+            if material_id is not None and material_id not in materials:
+                continue
+            if material_id is None:
+                continue
+        out.append(grant)
+    return out
+
+
+def _grant_caps(group: dict, member: dict, material_id: str | None = None) -> list[str]:
+    caps: list[str] = []
+    for grant in _active_grants(group, member, material_id):
+        caps.extend(grant.get("caps") or [])
+    return caps
+
+
+def _can(group: dict, member: dict, cap: str, material_id: str | None = None) -> bool:
+    if cap in _caps(group, member):
+        return True
+    return cap in _grant_caps(group, member, material_id)
+
+
+def _grant_for(group: dict, member: dict, cap: str, material_id: str | None) -> dict | None:
+    """找出让这次操作成立的授权；单次授权在这里消耗一次。"""
+    if cap in _caps(group, member):
+        return None
+    for grant in _active_grants(group, member, material_id):
+        if cap not in (grant.get("caps") or []):
+            continue
+        if grant.get("uses") is not None:
+            grant["used"] = int(grant.get("used", 0)) + 1
+            if grant["used"] >= int(grant["uses"]):
+                grant["exhausted_at"] = _now()
+        return grant
+    return None
+
+
+def _require(group: dict, device_code: str, cap: str, material_id: str | None = None) -> dict:
     member = _member(group, device_code)
     if member is None:
         raise CollabError("你还没有加入这个群组", status=403)
-    if cap not in _caps(group, member):
+    if not _can(group, member, cap, material_id):
         raise CollabError(f"当前权限（{_role(group, member).get('name')}）不允许此操作", status=403)
+    _grant_for(group, member, cap, material_id)
     return member
 
 
@@ -161,6 +238,22 @@ def _version_next(version: str) -> str:
         return f"{int(stage)}.{int(seq) + 1}"
     except ValueError:
         return f"{stage}.1"
+
+
+def _bump_revision(material: dict) -> None:
+    """材料内容每变一次就生成新修订号，并并入已知集合。
+
+    跨机同步用修订集合判断祖先关系：版本号会碰撞（两端各自 +1 后仍是同一个号），
+    修订号不会，所以「对方是否包含我当前修订」才是可靠的快进依据。
+    """
+    old = material.get("rev") or ""
+    revs = list(material.get("revs") or [])
+    if old and old not in revs:
+        revs.append(old)
+    new = storage.new_id()
+    revs.append(new)
+    material["rev"] = new
+    material["revs"] = revs[-200:]
 
 
 # ---------- 群组 CRUD ----------
@@ -191,6 +284,7 @@ def create_group(name: str, mode: str, device_code: str, nick: str) -> dict:
         "materials": [],
         "proposals": [],
         "approvals": [],
+        "grants": [],
         "access": [],
     }
     _save(group)
@@ -306,6 +400,7 @@ def update_member(group_id: str, target: str, role: str, device_code: str, nick:
             _save(group)
             return {"pending": req, "member_requests": group["member_requests"]}
     target_member["role"] = role
+    target_member["updated_at"] = _now()
     if nick:
         target_member["nick"] = nick
     _log(group, actor, "update_member", detail=f"{target_member.get('nick')} → {role}")
@@ -366,6 +461,7 @@ def update_roles(group_id: str, role: str, caps: list[str], name: str, device_co
     group.setdefault("roles", {})[role] = {
         "name": (name or current.get("name") or DEFAULT_ROLES[role]["name"]).strip(),
         "caps": caps,
+        "updated_at": _now(),
     }
     _log(group, actor, "update_roles", detail=f"{role}: {', '.join(caps)}")
     _save(group)
@@ -386,6 +482,7 @@ def add_material(group_id: str, project_id: str, recording_id: str, device_code:
         raise CollabError("该录音还没有转写内容", status=409)
     current = storage.ensure_current_version(project_id, recording_id) or {"current": "0.0", "stage": 0}
     version = str(current.get("current") or "0.0")
+    rev = storage.new_id()
     material = {
         "id": storage.new_id(),
         "name": recording.get("name", ""),
@@ -393,6 +490,8 @@ def add_material(group_id: str, project_id: str, recording_id: str, device_code:
         "recording_id": recording_id,
         "stage": int(current.get("stage", 0)),
         "version": version,
+        "rev": rev,
+        "revs": [rev],
         "sentences": sentences,
         # 三方合并的基线：最后一次灌入 / 合并时的快照
         "base_sentences": sentences,
@@ -400,7 +499,9 @@ def add_material(group_id: str, project_id: str, recording_id: str, device_code:
         "audio_path": recording.get("audio_path", ""),
         "format": recording.get("format", ""),
         "added_at": _now(),
+        "updated_at": _now(),
         "added_by": actor.get("nick", ""),
+        "source_device": actor.get("device_code", ""),
         "history": [{"version": version, "stage": int(current.get("stage", 0)), "at": _now(), "by": actor.get("nick", ""), "message": "灌入当前版本"}],
     }
     group.setdefault("materials", []).append(material)
@@ -424,6 +525,9 @@ def _material_meta(group: dict, material: dict, member: dict) -> dict:
 
 def _visible(group: dict, member: dict) -> list[dict]:
     materials = group.get("materials", [])
+    if "view" not in _caps(group, member):
+        # 没有长期 view 权限时，只能看到被单材料授权覆盖的材料。
+        materials = [m for m in materials if _can(group, member, "view", m.get("id"))]
     if _is_reviewer(group, member):
         # 审查可见范围从版本 2 之后开始（PRD 13）。
         materials = [m for m in materials if int(m.get("stage", 0)) >= 2]
@@ -432,13 +536,17 @@ def _visible(group: dict, member: dict) -> list[dict]:
 
 def list_materials(group_id: str, device_code: str) -> dict:
     group = load_group(group_id)
-    member = _require(group, device_code, "view")
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    if "view" not in _caps(group, member) and not _active_grants(group, member):
+        raise CollabError("当前权限不允许查看材料", status=403)
     return {"materials": [_material_meta(group, m, member) for m in _visible(group, member)]}
 
 
 def get_material(group_id: str, material_id: str, device_code: str) -> dict:
     group = load_group(group_id)
-    member = _require(group, device_code, "view")
+    member = _require(group, device_code, "view", material_id)
     material = next((m for m in _visible(group, member) if m.get("id") == material_id), None)
     if material is None:
         if _is_reviewer(group, member):
@@ -476,7 +584,7 @@ def get_material(group_id: str, material_id: str, device_code: str) -> dict:
 
 def create_proposal(group_id: str, material_id: str, sentence_id: str, after: str, device_code: str) -> dict:
     group = load_group(group_id)
-    actor = _require(group, device_code, "submit")
+    actor = _require(group, device_code, "submit", material_id)
     material = next((m for m in group.get("materials", []) if m.get("id") == material_id), None)
     if material is None:
         raise CollabError("材料不存在", status=404)
@@ -539,6 +647,8 @@ def decide_proposal(group_id: str, proposal_id: str, accept: bool, device_code: 
         raise CollabError("该句已被其他改动覆盖，请确认后再强制合并", status=409)
     target["text"] = proposal.get("after", "")
     material["version"] = _version_next(material.get("version", "2.0"))
+    material["updated_at"] = _now()
+    _bump_revision(material)
     material.setdefault("history", []).append({
         "version": material["version"],
         "stage": int(material.get("stage", 0)),
@@ -609,6 +719,8 @@ def merge_snapshot(group_id: str, material_id: str, parent: str, sentences: list
     material["sentences"] = ordered
     material["base_sentences"] = ordered
     material["version"] = _version_next(material.get("version", "2.0"))
+    material["updated_at"] = _now()
+    _bump_revision(material)
     material.setdefault("history", []).append({
         "version": material["version"],
         "stage": int(material.get("stage", 0)),
@@ -646,7 +758,7 @@ def _approval_usable(group: dict, approval: dict) -> bool:
 
 def _playback_state(group: dict, material: dict, member: dict) -> tuple[bool, dict | None]:
     """返回该成员对本材料的播放资格与最近一次审批。"""
-    if "view" not in _caps(group, member):
+    if "view" not in _caps(group, member) and not _can(group, member, "view", material.get("id")):
         return False, None
     mine = [
         a for a in group.get("approvals", [])
@@ -660,7 +772,7 @@ def _playback_state(group: dict, material: dict, member: dict) -> tuple[bool, di
 
 def request_playback(group_id: str, material_id: str, mode: str, days: int, device_code: str) -> dict:
     group = load_group(group_id)
-    actor = _require(group, device_code, "view")
+    actor = _require(group, device_code, "view", material_id)
     if mode not in PLAYBACK_MODES:
         raise CollabError("批准模式只能是 burn / permanent / timed")
     material = next((m for m in group.get("materials", []) if m.get("id") == material_id), None)
@@ -772,6 +884,107 @@ def consume_playback(group_id: str, approval_id: str, device_code: str) -> dict:
         _log(group, _member(group, device_code), "consume_playback", approval.get("material_id"), "烧毁")
         _save(group)
     return approval
+
+
+# ---------- 单次 / 单材料授权（PRD 12.4） ----------
+
+
+def create_grant(
+    group_id: str,
+    device_code: str,
+    target: str,
+    caps: list[str],
+    scope: str = "material",
+    material_ids: list[str] | None = None,
+    uses: int | None = None,
+    days: int | None = None,
+    note: str = "",
+) -> dict:
+    """在长期角色模板之外，给某个成员发一次性 / 单材料授权。
+
+    - scope=material 时，授权只对 material_ids 里的材料生效；
+    - uses=1 即「单次」，用掉一次自动失效；None 表示不限次数；
+    - days 给定时到期自动失效。
+    """
+    group = load_group(group_id)
+    actor = _require(group, device_code, "approve")
+    target_member = _member(group, target)
+    if target_member is None:
+        raise CollabError("成员不存在", status=404)
+    if target_member.get("role") == "owner":
+        raise CollabError("群主不需要额外授权", status=400)
+    if not isinstance(caps, list) or not caps or not all(c in VALID_GRANT_CAPS for c in caps):
+        raise CollabError(f"授权能力只能是 {', '.join(VALID_GRANT_CAPS)}")
+    if scope not in ("group", "material"):
+        raise CollabError("scope 只能是 group 或 material")
+    materials = group.get("materials", [])
+    material_ids = [str(m) for m in (material_ids or [])]
+    if scope == "material":
+        if not material_ids:
+            raise CollabError("单材料授权必须指定材料")
+        known = {m.get("id") for m in materials}
+        unknown = [m for m in material_ids if m not in known]
+        if unknown:
+            raise CollabError("指定的材料不存在", status=404)
+    else:
+        material_ids = []
+    if uses is not None:
+        try:
+            uses = int(uses)
+        except (TypeError, ValueError):
+            raise CollabError("uses 必须是整数")
+        if uses < 1 or uses > 999:
+            raise CollabError("uses 需在 1–999 之间")
+    if days is not None:
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise CollabError("days 必须是整数")
+        if days < 1 or days > 365:
+            raise CollabError("有效天数需在 1–365 之间")
+    now = _now()
+    grant = {
+        "id": storage.new_id(),
+        "device_code": target,
+        "nick": target_member.get("nick", ""),
+        "caps": list(caps),
+        "scope": scope,
+        "material_ids": material_ids,
+        "uses": uses,
+        "used": 0,
+        "expires_at": (_now_dt() + timedelta(days=days)).isoformat() if days else None,
+        "note": note.strip(),
+        "created_by": actor.get("nick", ""),
+        "created_at": now,
+        "revoked": False,
+    }
+    group.setdefault("grants", []).append(grant)
+    _log(group, actor, "create_grant", ",".join(material_ids), f"{target_member.get('nick')} ← {', '.join(caps)}")
+    _save(group)
+    return grant
+
+
+def list_grants(group_id: str, device_code: str) -> dict:
+    group = load_group(group_id)
+    member = _require(group, device_code, "view")
+    grants = group.get("grants", [])
+    if "approve" not in _caps(group, member):
+        grants = [g for g in grants if g.get("device_code") == device_code]
+    return {"grants": grants}
+
+
+def revoke_grant(group_id: str, grant_id: str, device_code: str) -> dict:
+    group = load_group(group_id)
+    actor = _require(group, device_code, "approve")
+    grant = next((g for g in group.get("grants", []) if g.get("id") == grant_id), None)
+    if grant is None:
+        raise CollabError("授权不存在", status=404)
+    grant["revoked"] = True
+    grant["revoked_by"] = actor.get("nick", "")
+    grant["revoked_at"] = _now()
+    _log(group, actor, "revoke_grant", ",".join(grant.get("material_ids") or []), grant.get("nick", ""))
+    _save(group)
+    return grant
 
 
 def access_log(group_id: str, device_code: str) -> dict:

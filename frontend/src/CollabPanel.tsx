@@ -3,12 +3,14 @@ import * as api from './api'
 import type {
   CollabAccess,
   CollabApproval,
+  CollabGrant,
   CollabGroupSummary,
   CollabMaterial,
   CollabMaterialDetail,
   CollabMember,
   CollabProposal,
   CollabRole,
+  PeerSnapshot,
   Project,
   Recording,
   Sentence,
@@ -35,6 +37,7 @@ const TABS = [
   ['proposals', '修改提案'],
   ['approvals', '播放审批'],
   ['access', '访问留痕'],
+  ['devices', '设备与节点'],
 ] as const
 
 type Tab = (typeof TABS)[number][0]
@@ -84,6 +87,20 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
   const [approvals, setApprovals] = useState<CollabApproval[]>([])
   const [access, setAccess] = useState<CollabAccess[]>([])
 
+  // 单次 / 单材料授权（长期角色之外的临时放权）
+  const [grants, setGrants] = useState<CollabGrant[]>([])
+  const [grantTarget, setGrantTarget] = useState('')
+  const [grantCaps, setGrantCaps] = useState<string[]>(['edit'])
+  const [grantScope, setGrantScope] = useState<'group' | 'material'>('material')
+  const [grantMaterials, setGrantMaterials] = useState<string[]>([])
+  const [grantUses, setGrantUses] = useState('1')
+  const [grantDays, setGrantDays] = useState('0')
+  const [grantNote, setGrantNote] = useState('')
+
+  // 局域网节点发现 / 手工登记
+  const [peers, setPeers] = useState<PeerSnapshot['peers']>([])
+  const [peerUrl, setPeerUrl] = useState('')
+
   const [addProject, setAddProject] = useState('')
   const [addRecording, setAddRecording] = useState('')
   const [recordings, setRecordings] = useState<Recording[]>([])
@@ -126,18 +143,33 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
     setIdentity(data.identity)
   }
 
+  async function loadPeers() {
+    try {
+      setPeers((await api.listPeers()).peers)
+    } catch {
+      setPeers([])
+    }
+  }
+
   useEffect(() => {
     void run(loadGroups)
+    void loadPeers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    if (tab === 'devices') void loadPeers()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab])
+
   async function loadGroup(id: string) {
-    const [g, m, mat, p, a] = await Promise.all([
+    const [g, m, mat, p, a, gr] = await Promise.all([
       api.groupDetail(id),
       api.groupMembers(id),
       api.listGroupMaterials(id),
       api.listProposals(id),
       api.listApprovals(id),
+      api.listGrants(id).catch(() => ({ grants: [] as CollabGrant[] })),
     ])
     setSelected(g)
     setRoles(m.roles)
@@ -146,6 +178,7 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
     setMaterials(mat)
     setProposals(p)
     setApprovals(a)
+    setGrants(gr.grants)
     const caps = (m.roles[g.my_role || '']?.caps || []) as string[]
     if (caps.includes('members')) {
       try {
@@ -316,6 +349,50 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
       await api.updateRole(selected.id, role, caps, name)
       setNotice('权限已保存')
       await loadGroup(selected.id)
+    })
+  }
+
+  async function onCreateGrant() {
+    if (!selected || !grantTarget) return
+    await run(async () => {
+      await api.createGrant(selected.id, {
+        target: grantTarget,
+        caps: grantCaps,
+        scope: grantScope,
+        material_ids: grantScope === 'material' ? grantMaterials : [],
+        uses: grantUses.trim() ? Number(grantUses) : null,
+        days: grantDays.trim() && Number(grantDays) > 0 ? Number(grantDays) : null,
+        note: grantNote,
+      })
+      setGrantNote('')
+      setGrants((await api.listGrants(selected.id)).grants)
+      setNotice('授权已发放')
+    })
+  }
+
+  async function onRevokeGrant(id: string) {
+    if (!selected) return
+    await run(async () => {
+      await api.revokeGrant(selected.id, id)
+      setGrants((await api.listGrants(selected.id)).grants)
+      setNotice('授权已撤销')
+    })
+  }
+
+  async function onAddPeer() {
+    if (!peerUrl.trim()) return
+    await run(async () => {
+      await api.addPeer(peerUrl.trim())
+      setPeerUrl('')
+      await loadPeers()
+      setNotice('节点已登记')
+    })
+  }
+
+  async function onRemovePeer(key: string) {
+    await run(async () => {
+      await api.removePeer(key)
+      await loadPeers()
     })
   }
 
@@ -850,6 +927,93 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
                     ))}
                   </div>
                 )}
+
+                {has('approve') && (
+                  <div style={{ marginTop: 18, borderTop: '1px solid #eee', paddingTop: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>单次 / 单材料授权</div>
+                    <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 8 }}>
+                      在长期角色之外临时放权：可限定某几份材料，或用一次就失效。授权用完、过期或被撤销后立即失效。
+                    </div>
+                    {grants.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
+                        {grants.map((g) => (
+                          <div key={g.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, border: '1px solid #eee', borderRadius: 6, padding: '5px 8px' }}>
+                            <span style={{ minWidth: 80 }}>{g.nick || g.device_code}</span>
+                            <span style={{ color: '#245c9c' }}>{g.caps.map((c) => CAP_LABELS[c] || c).join('、')}</span>
+                            <span style={{ color: '#6b7280', flex: 1 }}>
+                              {g.scope === 'material' ? `仅 ${g.material_ids.length} 份材料` : '群内全部材料'}
+                              {g.uses ? ` · ${g.used}/${g.uses} 次` : ' · 不限次数'}
+                              {g.expires_at ? ` · ${fmtTime(g.expires_at)} 到期` : ''}
+                            </span>
+                            <span style={{ color: g.revoked ? '#b00020' : g.uses && g.used >= g.uses ? '#a16207' : '#2e7d32' }}>
+                              {g.revoked ? '已撤销' : g.uses && g.used >= g.uses ? '已用完' : '生效中'}
+                            </span>
+                            {!g.revoked && (
+                              <button onClick={() => void onRevokeGrant(g.id)} style={{ fontSize: 10, padding: '1px 6px', color: '#b00020' }}>
+                                撤销
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', fontSize: 11 }}>
+                      <select value={grantTarget} onChange={(e) => setGrantTarget(e.target.value)}>
+                        <option value="">选择成员</option>
+                        {members.filter((m) => m.role !== 'owner' && m.device_code !== identity.device_code).map((m) => (
+                          <option key={m.device_code} value={m.device_code}>{m.nick || m.device_code}</option>
+                        ))}
+                      </select>
+                      <select value={grantScope} onChange={(e) => setGrantScope(e.target.value as 'group' | 'material')}>
+                        <option value="material">单材料</option>
+                        <option value="group">全部材料</option>
+                      </select>
+                      {(['view', 'edit', 'submit', 'material'] as const).map((cap) => (
+                        <label key={cap} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                          <input
+                            type="checkbox"
+                            checked={grantCaps.includes(cap)}
+                            onChange={(e) => setGrantCaps((prev) => e.target.checked ? [...prev, cap] : prev.filter((c) => c !== cap))}
+                          />
+                          {CAP_LABELS[cap] || cap}
+                        </label>
+                      ))}
+                      <label>
+                        次数
+                        <input value={grantUses} onChange={(e) => setGrantUses(e.target.value)} style={{ width: 44 }} placeholder="不限" />
+                      </label>
+                      <label>
+                        有效天数
+                        <input value={grantDays} onChange={(e) => setGrantDays(e.target.value)} style={{ width: 44 }} />
+                      </label>
+                    </div>
+                    {grantScope === 'material' && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6, fontSize: 11 }}>
+                        {materials.map((mat) => (
+                          <label key={mat.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                            <input
+                              type="checkbox"
+                              checked={grantMaterials.includes(mat.id)}
+                              onChange={(e) => setGrantMaterials((prev) => e.target.checked ? [...prev, mat.id] : prev.filter((x) => x !== mat.id))}
+                            />
+                            {mat.name || mat.id}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
+                      <input
+                        value={grantNote}
+                        onChange={(e) => setGrantNote(e.target.value)}
+                        placeholder="备注（可选）"
+                        style={{ flex: 1, fontSize: 11 }}
+                      />
+                      <button disabled={busy || !grantTarget} onClick={() => void onCreateGrant()} style={{ fontSize: 11 }}>
+                        发放授权
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -951,6 +1115,52 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
                           <span style={{ flex: 1 }}>{a.detail}</span>
                         </div>
                       ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ---- 设备与节点 ---- */}
+            {tab === 'devices' && (
+              <div>
+                <div style={{ fontSize: 12, color: '#8a8f98', marginBottom: 10 }}>
+                  节点只在局域网内互相发现（UDP 广播），不经过任何中心服务器。交换机拦截广播时，可在下面手工填对方
+                  IP:端口 完成登记；昵称与设备码完全相同的多台设备视为同一个人，项目与录音会自动同步。
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+                  <input
+                    value={peerUrl}
+                    onChange={(e) => setPeerUrl(e.target.value)}
+                    placeholder="http://192.168.1.20:7850"
+                    style={{ flex: 1, fontSize: 12 }}
+                  />
+                  <button disabled={busy || !peerUrl.trim()} onClick={() => void onAddPeer()} style={{ fontSize: 11 }}>
+                    登记节点
+                  </button>
+                  <button disabled={busy} onClick={() => void run(loadPeers)} style={{ fontSize: 11 }}>
+                    刷新
+                  </button>
+                </div>
+                {peers.length === 0 ? (
+                  <div style={{ fontSize: 12, color: '#999' }}>暂未发现在线节点。</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {peers.map((p) => (
+                      <div key={p.key} style={{ display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #eee', borderRadius: 6, padding: '7px 10px', fontSize: 12 }}>
+                        <span style={{ minWidth: 90 }}>{p.nick || '未命名'}</span>
+                        <span style={{ color: '#8a8f98', minWidth: 80 }}>{p.device_code}</span>
+                        <span style={{ color: '#245c9c', flex: 1 }}>{p.base_url}</span>
+                        <span style={{ fontSize: 11, color: p.same_identity ? '#2e7d32' : '#6b7280' }}>
+                          {p.same_identity ? '同一人多设备' : '协作节点'}
+                        </span>
+                        <span style={{ fontSize: 11, color: '#6b7280' }}>{p.groups.length} 个群组</span>
+                        <span style={{ fontSize: 11, color: p.online ? '#2e7d32' : '#b00020' }}>{p.online ? '在线' : '离线'}</span>
+                        <span style={{ fontSize: 10, color: '#9aa1ab' }}>{p.via === 'manual' ? '手工' : '发现'}</span>
+                        <button onClick={() => void onRemovePeer(p.key)} style={{ fontSize: 10, padding: '1px 6px', color: '#b00020' }}>
+                          移除
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

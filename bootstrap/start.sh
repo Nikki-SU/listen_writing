@@ -117,7 +117,7 @@ if [ ! -x "$PY" ]; then
 fi
 
 while :; do
-echo "[3/4] 首次安装组件（约 300MB，需要联网）……"
+echo "[3/4] 首次安装组件（约 600MB，需要联网）……"
 "$PY" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 \
   -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple || {
   echo "      国内镜像失败，改用官方源重试……"
@@ -136,6 +136,19 @@ if ! "$PY" -c "import llama_cpp" >/dev/null 2>&1; then
     llama-cpp-python==0.3.36 \
     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu >/dev/null 2>&1 || {
     echo "      AI 纠错运行时安装失败（不影响录音转写）；下次运行启动器会自动重试。"
+  }
+fi
+
+# Qwen3-ASR 需要 torch。PyPI 默认包在 Linux 上会拖入 CUDA/NVIDIA 依赖（数 GB），
+# 所以明确从 CPU wheel 源安装。失败不阻塞（Whisper / SenseVoice 照常可用），
+# 设置页会把该档如实标为「本机运行时未安装」。
+if ! "$PY" -c "import torch" >/dev/null 2>&1; then
+  echo "[3/4] 安装 Qwen3-ASR 运行时（可选，约 200MB）……"
+  "$PY" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 \
+    torch==2.15.0 \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple >/dev/null 2>&1 || {
+    echo "      Qwen3-ASR 运行时安装失败（不影响 Whisper / SenseVoice）；下次运行启动器会自动重试。"
   }
 fi
 

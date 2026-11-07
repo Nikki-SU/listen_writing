@@ -186,6 +186,47 @@ export type CollabApproval = {
   used_at?: string
 }
 
+export type CollabGrant = {
+  id: string
+  device_code: string
+  nick: string
+  caps: string[]
+  scope: 'group' | 'material'
+  material_ids: string[]
+  uses: number | null
+  used: number
+  expires_at: string | null
+  note: string
+  created_by: string
+  created_at: string
+  revoked: boolean
+  revoked_by?: string
+  revoked_at?: string
+}
+
+export type PeerNode = {
+  key: string
+  device_code: string
+  nick: string
+  host: string
+  port: number
+  instance: string
+  groups: string[]
+  via: 'broadcast' | 'manual'
+  last_seen: number
+  online: boolean
+  base_url: string
+  same_identity: boolean
+}
+
+export type PeerSnapshot = {
+  instance: string
+  http_port: number
+  discovery_port: number
+  identity: { nick: string; device_code: string }
+  peers: PeerNode[]
+}
+
 export type CollabAccess = {
   id: string
   at: string

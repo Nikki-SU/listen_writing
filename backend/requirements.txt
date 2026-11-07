@@ -10,7 +10,16 @@ av==17.1.0
 tokenizers==0.22.1
 huggingface-hub>=0.21,<2
 
-# 其余由 faster-whisper 自动带入（此处仅登记备查）
+# SenseVoice Small（PRD 第 7 节第二档）：sherpa-onnx int8 推理
+sherpa-onnx==2.0.1
+
+# Qwen3-ASR-0.6B（PRD 第 7 节第三档）：官方 Transformers 权重
+# torch 不写在这里：PyPI 默认包在 Linux 上会拖入 CUDA/NVIDIA 依赖（数 GB），
+# 由启动器单独从 CPU wheel 源安装；失败时该档在设置页如实标为未内置。
+transformers==5.22.2
+
+# 其余由 faster-whisper / sherpa-onnx 自动带入（此处仅登记备查）
+# numpy                # 音频解码与 VAD
 # onnxruntime          # VAD 可选依赖
 
 # AI 语义纠错（阶段 1，可选）：llama-cpp-python 不随本文件安装。
