@@ -97,6 +97,15 @@ export type VersionSummary = {
   changes: number
 }
 
+/** AI 整理断句结果：合并前后的句子数与预览正文。 */
+export type ResegmentResult = {
+  sentences: Sentence[]
+  before: number
+  after: number
+  current?: string
+  model?: string
+}
+
 /** AI 语义纠错建议：只描述建议，正文由用户逐条采纳后才改。 */
 export type PolishSuggestion = {
   sentence_id: string

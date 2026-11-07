@@ -53,6 +53,9 @@ AUDIO_MIME = {
 _transcribe_lock = threading.Lock()
 _transcribing: set[str] = set()  # "project_id/recording_id"
 
+# 转写线程与用户编辑都会读改写 sentences.csv：串行化，避免边出边改时互相覆盖。
+_sentence_io_lock = threading.Lock()
+
 # 引擎按设置里的模型档位缓存：换档才重建，重复转写不必反复加载模型。
 _engine_lock = threading.Lock()
 _engines: dict[str, object] = {}
@@ -306,19 +309,44 @@ def _run_transcribe(project_id: str, recording_id: str) -> None:
         def on_progress(p: int) -> None:
             storage.set_transcribe(project_id, recording_id, "transcribing", p)
 
-        segments = engine.transcribe(audio_path, on_progress)
+        # 边转边出：每识别一句就合入磁盘，最多等 2 秒；用户此刻的修改也会被保留。
+        pending: list[dict] = []
+        last_flush = [time.monotonic()]
 
-        sentences = []
-        for idx, seg in enumerate(segments):
-            sentences.append({
-                "id": storage.new_id(),
-                "recording_id": recording_id,
-                "index": idx,
-                "text": seg["text"],
-                "start_ms": seg["start_ms"],
-                "end_ms": seg["end_ms"],
-                "speaker": seg["speaker"],
-            })
+        def flush(force: bool = False) -> None:
+            if not pending:
+                return
+            if not force and len(pending) < 3 and time.monotonic() - last_flush[0] < 2.0:
+                return
+            batch = list(pending)
+            pending.clear()
+            last_flush[0] = time.monotonic()
+            with _sentence_io_lock:
+                merged = storage.load_sentences(project_id, recording_id)
+                for seg in batch:
+                    merged.append({
+                        "id": storage.new_id(),
+                        "recording_id": recording_id,
+                        "index": len(merged),
+                        "text": seg["text"],
+                        "start_ms": seg["start_ms"],
+                        "end_ms": seg["end_ms"],
+                        "speaker": seg.get("speaker", ""),
+                    })
+                storage.save_sentences(project_id, recording_id, merged)
+                storage.save_transcript_md(
+                    project_id, recording_id, _sentences_to_markdown(merged)
+                )
+
+        def on_sentence(seg: dict) -> None:
+            pending.append(seg)
+            flush()
+
+        engine.transcribe(audio_path, on_progress, on_sentence)
+        flush(force=True)
+
+        with _sentence_io_lock:
+            sentences = storage.load_sentences(project_id, recording_id)
 
         # 本地说话人聚类：失败不影响转写，只是不标发言人
         diarize.assign_speakers(audio_path, sentences)
@@ -1053,8 +1081,10 @@ class Handler(BaseHTTPRequestHandler):
         if recording is None:
             self._send_json({"error": "recording not found"}, status=404)
             return
-        if (recording.get("transcribe") or {}).get("status") != "done":
-            self._send_json({"error": "转写尚未完成，暂不能修改"}, status=409)
+        status = (recording.get("transcribe") or {}).get("status")
+        # 边出边改：转写中就允许改已出现的句子，不必等整段跑完。
+        if status not in ("done", "transcribing"):
+            self._send_json({"error": "转写尚未开始，暂不能修改"}, status=409)
             return
 
         data = self._read_json_body()
@@ -1081,23 +1111,29 @@ class Handler(BaseHTTPRequestHandler):
             return
         new_speaker = target_speaker = None
 
-        sentences = storage.load_sentences(project_id, recording_id)
-        target = next((s for s in sentences if s["id"] == sentence_id), None)
-        if target is None:
-            self._send_json({"error": "sentence not found"}, status=404)
-            return
-        target_speaker = target.get("speaker", "")
-        new_speaker = target_speaker if raw_speaker is None else raw_speaker.strip()
-        if target["text"] == text and target_speaker == new_speaker:
-            current = storage.ensure_current_version(project_id, recording_id)
-            self._send_json({"sentence": target, "version": current, "current": (current or {}).get("current", "")})
-            return
+        with _sentence_io_lock:
+            sentences = storage.load_sentences(project_id, recording_id)
+            target = next((s for s in sentences if s["id"] == sentence_id), None)
+            if target is None:
+                self._send_json({"error": "sentence not found"}, status=404)
+                return
+            target_speaker = target.get("speaker", "")
+            new_speaker = target_speaker if raw_speaker is None else raw_speaker.strip()
+            if target["text"] == text and target_speaker == new_speaker:
+                current = storage.ensure_current_version(project_id, recording_id)
+                self._send_json({"sentence": target, "version": current, "current": (current or {}).get("current", "")})
+                return
 
-        before = _sentence_snapshot(target)
-        target["text"] = text
-        target["speaker"] = new_speaker
-        storage.save_sentences(project_id, recording_id, sentences)
-        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+            before = _sentence_snapshot(target)
+            target["text"] = text
+            target["speaker"] = new_speaker
+            storage.save_sentences(project_id, recording_id, sentences)
+            storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+
+        # 转写还没跑完：先落盘让用户改，等整段结束再统一生成 0.1 版本。
+        if status == "transcribing":
+            self._send_json({"sentence": target, "version": None, "current": ""})
+            return
 
         parts = []
         if before["text"] != text:
@@ -1410,6 +1446,81 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json({"suggestions": suggestions, "model": model_key})
+
+    def _resegment_recording(self, project_id: str, recording_id: str):
+        """AI 整理断句：把按停顿切碎的片段合并成人类可读的句子。
+
+        默认只返回预览；`apply=true` 才写入新版本（阶段 1）。已有脱敏标记时拒绝，
+        因为合并会改变句 id 与字符坐标，旧标记会错位。
+        """
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if (recording.get("transcribe") or {}).get("status") != "done":
+            self._send_json({"error": "转写尚未完成，暂不能整理断句"}, status=409)
+            return
+        if storage.get_redactions(project_id, recording_id):
+            self._send_json({"error": "已有脱敏标记，整理断句会让标记错位；请先撤销标记再整理"}, status=409)
+            return
+
+        data = self._read_json_body()
+        if data is None:
+            return
+        model_key = str(
+            data.get("model")
+            or storage.get_settings().get("llm_model")
+            or llm.DEFAULT_LLM_MODEL
+        )
+        if model_key not in llm.LLM_MODELS:
+            self._send_json({"error": f"未知的 AI 模型：{model_key}"}, status=400)
+            return
+        if not llm.runtime_available():
+            self._send_json({"error": llm.RUNTIME_MISSING_MSG}, status=503)
+            return
+
+        sentences = storage.load_sentences(project_id, recording_id)
+        if not sentences:
+            self._send_json({"error": "没有可整理的句子"}, status=409)
+            return
+
+        try:
+            merged = llm.resegment(sentences, model_key)
+        except Exception as e:  # noqa: BLE001 - 下载/推理失败原因要原样告知用户
+            self._send_json({"error": f"AI 整理断句失败：{e}"}, status=503)
+            return
+
+        applied = bool(data.get("apply"))
+        if not applied:
+            self._send_json({
+                "sentences": merged,
+                "before": len(sentences),
+                "after": len(merged),
+                "model": model_key,
+            })
+            return
+
+        storage.save_sentences(project_id, recording_id, merged)
+        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(merged))
+        nick = storage.get_settings()["identity"]["nick"]
+        version = storage.commit_version(
+            project_id,
+            recording_id,
+            merged,
+            [],
+            message=f"AI 整理断句（{len(sentences)} 句 → {len(merged)} 句）",
+            author_nick=nick,
+            advance_to=1,
+            redactions=[],
+        )
+        self._send_json({
+            "sentences": merged,
+            "before": len(sentences),
+            "after": len(merged),
+            "version": version,
+            "current": (version or {}).get("current", ""),
+            "model": model_key,
+        })
 
     def _suggest_redactions(self, project_id: str, recording_id: str):
         """AI 智能脱敏：只返回带偏移的建议，用户确认后走既有 addRedactions 落盘。"""
@@ -1808,6 +1919,11 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/polish$")
         if m:
             self._polish_recording(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/resegment$")
+        if m:
+            self._resegment_recording(*m)
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions/suggest$")

@@ -23,6 +23,7 @@ import type {
   RedactionCategory,
   RedactionMark,
   RedactionSuggestion,
+  ResegmentResult,
   Sentence,
   Version,
   VersionDetail,
@@ -167,6 +168,22 @@ export async function polishRecording(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
+    }),
+  )
+}
+
+/** AI 整理断句：apply=false 只返回预览，apply=true 写入阶段 1 新版本。 */
+export async function resegmentRecording(
+  projectId: string,
+  recordingId: string,
+  apply: boolean,
+  model?: string,
+): Promise<ResegmentResult> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/resegment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apply, model }),
     }),
   )
 }

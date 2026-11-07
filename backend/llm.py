@@ -67,6 +67,8 @@ _infer_lock = threading.Lock()
 
 # 一次提示词塞多少句：太多会超出上下文、也更容易让模型漏句；16 句实测较稳。
 POLISH_BATCH = 16
+# 断句整理要看到上下文才判断得出“哪些碎片属于同一句”，一次给 60 句。
+RESEGMENT_BATCH = 60
 
 
 def runtime_available() -> bool:
@@ -310,6 +312,116 @@ def redact(
             kept.append(item)
         result.extend(kept)
     result.sort(key=lambda x: (x["index"], x["start"]))
+    return result
+
+
+_RESEGMENT_SYSTEM = (
+    "你是中文访谈转写稿的断句编辑。语音识别按停顿切出的碎片经常半句一断，"
+    "请把连续、语义完整的多条碎片合并成人类能读懂的句子。"
+    '只输出一个 JSON 数组，元素形如 {"ids": ["id1", "id2"], "text": "合并后的完整句子"}；'
+    "ids 必须是输入中连续、且按原顺序排列的 id，每个 id 只能出现一次，不能漏句、不能改顺序；"
+    "text 只做断句、补标点、去掉重复口癖，不增加原文没有的信息，不 summary、不改写事实。"
+    "不要输出解释，也不要包代码块。 /no_think"
+)
+
+
+def _resegment_messages(batch: list[dict]) -> list[dict]:
+    lines = "\n".join(f"{s['id']}\t{s.get('text', '')}" for s in batch)
+    return [
+        {"role": "system", "content": _RESEGMENT_SYSTEM},
+        {"role": "user", "content": "碎片列表（每行：id + 制表符 + 原文）：\n" + lines},
+    ]
+
+
+def _norm_text(text: str) -> str:
+    """只保留文字与数字，用于校验 AI 没有增删事实。"""
+    return re.sub(r"[\s\W_]+", "", text or "")
+
+
+def _merge_group(group: list[dict], text: str) -> dict:
+    origin = "".join(str(s.get("text") or "").strip() for s in group)
+    candidate = (text or "").strip()
+    # 只接受“只动标点/空格/口癖”的改写；一旦与原文实体不一致就退回逐字拼接，
+    # 宁可句子不好读，也不能让 AI 悄悄改掉访谈内容。
+    merged_text = candidate if candidate and _norm_text(candidate) == _norm_text(origin) else origin
+    if merged_text and merged_text[-1] not in "。！？!?…；;":
+        merged_text += "。"
+    speaker = next((s.get("speaker") for s in group if s.get("speaker")), "")
+    return {
+        "id": group[0]["id"],
+        "recording_id": group[0].get("recording_id", ""),
+        "text": merged_text,
+        "start_ms": group[0].get("start_ms", 0),
+        "end_ms": group[-1].get("end_ms", 0),
+        "speaker": speaker,
+    }
+
+
+def resegment(
+    sentences: list[dict],
+    model_key: str | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """AI 断句整理：把 ASR 的碎片合并成可读句子，返回整份新句子列表。
+
+    服务端校验每个 id 恰好用一次且顺序不变；模型只提议分组与标点，
+    文字内容仍以原文为准，避免长文整理时悄悄改写事实。
+    """
+    if not runtime_available():
+        raise RuntimeError(RUNTIME_MISSING_MSG)
+    key = model_key or DEFAULT_LLM_MODEL
+    if key not in LLM_MODELS:
+        raise ValueError(f"未知的 AI 模型：{key}")
+
+    items = [s for s in sentences if str(s.get("text") or "").strip()]
+    if len(items) <= 1:
+        return sentences
+
+    engine = _engine(key)
+    result: list[dict] = []
+    with _infer_lock:
+        for start in range(0, len(items), RESEGMENT_BATCH):
+            batch = items[start:start + RESEGMENT_BATCH]
+            if on_status:
+                on_status(f"正在整理第 {start + 1}–{start + len(batch)} 句…")
+            resp = engine.create_chat_completion(
+                messages=_resegment_messages(batch),
+                temperature=0.1,
+                top_p=0.9,
+                max_tokens=min(4096, max(512, len(batch) * 120)),
+            )
+            raw = split_think((resp["choices"][0]["message"]["content"] or ""))
+            groups = _parse_changes(raw) if raw else []
+
+            pos = {s["id"]: i for i, s in enumerate(batch)}
+            cursor = 0
+            for g in groups:
+                ids = [str(x) for x in (g.get("ids") or []) if str(x) in pos]
+                # 只接受从当前游标开始的连续片段，乱序/漏 id 的分组一律跳过。
+                if not ids:
+                    continue
+                first = pos[ids[0]]
+                if first < cursor:
+                    continue
+                while cursor < first:
+                    result.append(batch[cursor])
+                    cursor += 1
+                valid = True
+                for offset, sid in enumerate(ids):
+                    if pos[sid] != first + offset:
+                        valid = False
+                        break
+                if not valid:
+                    continue
+                group = batch[first:first + len(ids)]
+                result.append(_merge_group(group, str(g.get("text") or "")))
+                cursor = first + len(ids)
+            while cursor < len(batch):
+                result.append(batch[cursor])
+                cursor += 1
+
+    for i, s in enumerate(result):
+        s["index"] = i
     return result
 
 

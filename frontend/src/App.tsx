@@ -16,6 +16,7 @@ import type {
   RedactionCategory,
   RedactionMark,
   RedactionSuggestion,
+  ResegmentResult,
   Sentence,
   VersionDetail,
   VersionSummary,
@@ -653,6 +654,9 @@ function TranscriptPanel({
   const [suggestions, setSuggestions] = useState<PolishSuggestion[]>([])
   const [polishModel, setPolishModel] = useState('')
   const [llmReady, setLlmReady] = useState<boolean | null>(null)
+  // AI 整理断句：先出预览（合并前后句数 + 正文），用户确认后才落盘。
+  const [resegmenting, setResegmenting] = useState(false)
+  const [resegPreview, setResegPreview] = useState<ResegmentResult | null>(null)
   const [editOrigin, setEditOrigin] = useState<'ai_polish' | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
 
@@ -776,6 +780,37 @@ function TranscriptPanel({
       onError(`AI 纠错失败：${String(e)}`)
     } finally {
       setPolishing(false)
+    }
+  }
+
+  async function runResegment() {
+    if (resegmenting) return
+    setResegmenting(true)
+    setResegPreview(null)
+    try {
+      const res = await api.resegmentRecording(projectId, recordingId, false)
+      setResegPreview(res)
+      onError('')
+    } catch (e) {
+      onError(`AI 整理断句失败：${String(e)}`)
+    } finally {
+      setResegmenting(false)
+    }
+  }
+
+  async function applyResegment() {
+    if (!resegPreview || resegmenting) return
+    setResegmenting(true)
+    try {
+      const res = await api.resegmentRecording(projectId, recordingId, true)
+      setLocalSentences(res.sentences)
+      if (res.current) setVersion(res.current)
+      setResegPreview(null)
+      onError('')
+    } catch (e) {
+      onError(`应用整理结果失败：${String(e)}`)
+    } finally {
+      setResegmenting(false)
     }
   }
 
@@ -1001,7 +1036,8 @@ function TranscriptPanel({
     return nodes
   }
 
-  if (transcribe.status === 'transcribing' || transcribe.status === 'pending') {
+  // 排队阶段还没内容可看，只给进度；一旦开始出句就进入正文，允许边出边改。
+  if (transcribe.status === 'pending') {
     return (
       <div style={{ marginTop: 40, textAlign: 'center' }}>
         <div style={{ fontSize: 14, color: '#555', marginBottom: 12 }}>
@@ -1079,7 +1115,7 @@ function TranscriptPanel({
           </button>
           <button
             onClick={() => void runPolish()}
-            disabled={polishing || llmReady === false}
+            disabled={polishing || llmReady === false || transcribe.status !== 'done'}
             style={{
               fontSize: 12,
               padding: '4px 10px',
@@ -1099,6 +1135,25 @@ function TranscriptPanel({
             {polishing ? 'AI 分析中…' : 'AI 纠错'}
           </button>
           <button
+            onClick={() => void runResegment()}
+            disabled={resegmenting || llmReady === false || transcribe.status !== 'done'}
+            style={{
+              fontSize: 12,
+              padding: '4px 10px',
+              background: '#fff',
+              border: '1px solid #ddd',
+              color: llmReady === false ? '#999' : '#245c9c',
+              borderRadius: 4,
+              cursor:
+                resegmenting || llmReady === false || transcribe.status !== 'done'
+                  ? 'not-allowed'
+                  : 'pointer',
+            }}
+            title="把按停顿切碎的片段交给本地 AI，合并成人类能读懂的句子；只给预览，确认后才写入"
+          >
+            {resegmenting ? 'AI 整理中…' : 'AI 整理断句'}
+          </button>
+          <button
             onClick={() => setRedactMode((v) => !v)}
             style={{
               fontSize: 12,
@@ -1114,6 +1169,22 @@ function TranscriptPanel({
           </button>
         </div>
 
+        {transcribe.status === 'transcribing' && (
+          <div
+            style={{
+              fontSize: 12,
+              color: '#245c9c',
+              background: '#eef5ff',
+              border: '1px solid #d5e5fb',
+              borderRadius: 6,
+              padding: '6px 10px',
+              marginBottom: 8,
+            }}
+          >
+            正在转写 {transcribe.progress}% · 已出 {localSentences.length} 句。现在就能先改，后面的句子会继续追加，不会覆盖你的修改。
+          </div>
+        )}
+
         <audio
           ref={audioRef}
           src={api.audioUrl(projectId, recordingId)}
@@ -1122,6 +1193,74 @@ function TranscriptPanel({
           onTimeUpdate={onTimeUpdate}
           style={{ width: '100%', height: 36, marginBottom: 10 }}
         />
+
+        {resegPreview && (
+          <div
+            onClick={() => !resegmenting && setResegPreview(null)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 60,
+              background: 'rgba(16, 24, 40, 0.32)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 24,
+              boxSizing: 'border-box',
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="scroll-hidden"
+              style={{
+                width: 640,
+                maxWidth: '100%',
+                maxHeight: '82vh',
+                overflowY: 'auto',
+                background: '#fff',
+                borderRadius: 12,
+                padding: 20,
+                boxShadow: '0 12px 40px rgba(16, 24, 40, 0.18)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                <h3 style={{ margin: 0, fontSize: 16, flex: 1 }}>AI 整理断句预览</h3>
+                <span style={{ fontSize: 12, color: '#7a869a' }}>
+                  {resegPreview.before} 句 → {resegPreview.after} 句
+                </span>
+              </div>
+              <p style={{ fontSize: 12, color: '#8a8f98', lineHeight: 1.7, margin: '8px 0 12px' }}>
+                只合并停顿碎片、补标点，不增删内容。应用后写入新版本，可在版本历史里回退。
+              </p>
+              <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8, color: '#333' }}>
+                {resegPreview.sentences.slice(0, 8).map((s) => (
+                  <li key={s.id} style={{ marginBottom: 4 }}>{s.text}</li>
+                ))}
+              </ol>
+              {resegPreview.sentences.length > 8 && (
+                <p style={{ fontSize: 12, color: '#9aa0a6', margin: '8px 0 0' }}>
+                  仅预览前 8 句，共 {resegPreview.after} 句。
+                </p>
+              )}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+                <button
+                  onClick={() => setResegPreview(null)}
+                  disabled={resegmenting}
+                  style={{ fontSize: 13, padding: '6px 14px' }}
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => void applyResegment()}
+                  disabled={resegmenting}
+                  style={{ fontSize: 13, padding: '6px 14px', background: '#245c9c', color: '#fff', border: 'none', borderRadius: 4 }}
+                >
+                  {resegmenting ? '应用中…' : '应用并生成新版本'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {polishOpen && (
           <div

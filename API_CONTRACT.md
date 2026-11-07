@@ -25,7 +25,7 @@
 | R-4 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/audio` | 可选 `Range: bytes=...` | 音频字节流（`200` / `206`） | `<audio>` 播放与按句跳转；支持 Range 才能任意 seek |
 | R-5 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/versions` | 无 | `{"versions":[{version,stage,seq,parent,author_nick,timestamp,message,changes}],"current":{...}}` | 版本历史（元数据，不含句子快照） |
 | R-6 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/versions/{stage}.{seq}` | 无 | `{"version":{...version, diff, sentences:[...]}}` | 单个版本：完整句子快照 + 本次 diff，可复刻 |
-| R-7 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/sentences/{sentence_id}` | `{"text":"修改后的单句","speaker":"可选，发言人","advance_to":"可选，0/1/2","source":"可选，仅 ai_polish"}` | `{"sentence":{...},"version":{...},"current":"1.2"}` | 单句文字/发言人修改；成功后自动提交新版本（阶段内序号 +1）。带 `advance_to` 时把版本推进到该阶段（只增不减）；`source=ai_polish` 时版本说明标注「AI 纠错采纳」 |
+| R-7 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/sentences/{sentence_id}` | `{"text":"修改后的单句","speaker":"可选，发言人","advance_to":"可选，0/1/2","source":"可选，仅 ai_polish"}` | `{"sentence":{...},"version":{...},"current":"1.2"}` | 单句文字/发言人修改；成功后自动提交新版本（阶段内序号 +1）。带 `advance_to` 时把版本推进到该阶段（只增不减）；`source=ai_polish` 时版本说明标注「AI 纠错采纳」。**转写中（transcribing）也可修改已出现的句子**：直接落盘、返回 `version:null`，不逐句生成版本，整段结束后统一提交 0.1；转写线程每 2 秒/每 3 句合并一次新句子，不会覆盖用户已改内容 |
 | R-8 | 后端 | `PATCH /api/projects/{project_id}/recordings/{recording_id}/speakers` | `{"action":"rename","from","to"}` 或 `{"action":"merge","from","into"}` 或 `{"action":"assign","sentence_ids":[...],"speaker"}` | `{"sentences":[...],"version":{...},"current":"0.3"}` | 发言人改名 / 合并 / 单句拆分；每次操作提交一个版本 |
 | R-9 | 后端 | `GET /api/projects/{project_id}/redaction` | 无 | `{"categories":[RedactionCategory…]}` | 项目级脱敏类别模板（首次访问写入 4 个建议起点标签） |
 | R-10 | 后端 | `POST /api/projects/{project_id}/redaction` | `{"categories":[{id,name,placeholder,color,enabled}…]}` | `{"categories":[...]}` | 保存类别模板（增删/改名/占位符/颜色/启停）；类别名不能为空、id 不能重复 |
@@ -43,6 +43,7 @@
 | R-17 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/live/stop` | `{"force?":bool}` | `{"recording":{...},"sentences":[…]}` | 收尾：把剩余 PCM 落成 `audio.wav`、跑最后一段识别；一句都没识别到则 `transcribe.status=error` |
 | R-18 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/transcribe` | 无 | `{"recording":{...}}`（202） | 重新转写（转写失败/换了模型后重试）；已在转写中直接返回当前状态 |
 | R-19 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/redactions/suggest` | `{"model?":""}` | `{"suggestions":[{sentence_id,index,start,end,quote,category_id,placeholder}…],"model":"qwen3-4b"}` | AI 智能脱敏：只返回候选片段，**不落盘**；由用户逐条/全部确认后走 R-12。运行时未安装 503，无句子 409 |
+| R-20 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/resegment` | `{"apply":false,"model?":""}` | `{"sentences":[…],"before":320,"after":140,"current?":"1.1","model":"qwen3-4b"}` | AI 整理断句：把按停顿切碎的片段合并成可读句子。`apply=false` 只预览；`apply=true` 写入阶段 1 新版本。模型只提议分组与标点，服务端校验 id 恰好用一次且不增删文字；转写未完成或有脱敏标记 409，运行时未安装 503 |
 | G-27 | 后端 | `GET /api/groups/{gid}/materials/{mid}/versions/{stage}.{seq}` | `device_code?` | `{"version":{...sentences,diff}}` | 群组材料的历史版本快照；只读/审查者仅能看阶段 ≥2 的脱敏版本 |
 
 ### 局域网协作（G 系列）
@@ -155,7 +156,7 @@ data/
 - 模型查找顺序：`LISTEN_WRITING_MODEL` 环境变量 → `data/models/whisper-{size}/` 本地目录 → 联网下载（官方 HuggingFace，失败降级 hf-mirror.com），缓存落在项目文件夹 `data/models/hf-cache/`（不写系统盘的用户目录）。SenseVoice 在 `data/models/sensevoice/`（只留 int8），Qwen3-ASR 在 `data/models/qwen3-asr-0.6b/`。
 - 项目版本号 `stage.seq`（阶段.阶段内序号）：阶段 0 初始转写落 `versions/0.1.json`；每次单句修改在同一阶段内 `seq+1`（如 `0.2`）；阶段升级时 `seq` 重置为 1（如 `1.1`）。
 - 版本 JSON 必含：`version/stage/seq/parent/author_nick/timestamp/message/diff/sentences`。`diff` 形如 `[{sentence_id,index,op:"replace",before:{...},after:{...}}]`；`sentences` 为该版本完整快照，用于任意两版复刻。
-- 转写状态对象 `transcribe`：`{"status":"pending|transcribing|done|error","progress":0~100,"error":""}`，随 `recording.json` 持久化；`transcribing` 期间进度实时更新。
+- 转写状态对象 `transcribe`：`{"status":"pending|transcribing|done|error","progress":0~100,"error":""}`，随 `recording.json` 持久化；`transcribing` 期间进度实时更新，且**已识别的句子会持续写入 `sentences.csv` 并随 R-2 返回**：前端每秒轮询即可边转边看、边看边改，不必等整段结束。
 
 ## 字段与命名约定
 

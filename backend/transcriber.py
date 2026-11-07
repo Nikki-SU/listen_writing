@@ -253,7 +253,13 @@ def _ensure_qwen_asr(on_status: Callable[[str], None] | None = None) -> bool:
 class Transcriber:
     """转写抽象：返回句子列表，每句含 start_ms / end_ms / text / speaker。"""
 
-    def transcribe(self, audio_path: str, on_progress: Callable[[int], None] | None = None) -> list[dict]:
+    def transcribe(
+        self,
+        audio_path: str,
+        on_progress: Callable[[int], None] | None = None,
+        on_sentence: Callable[[dict], None] | None = None,
+    ) -> list[dict]:
+        """返回完整句子列表；`on_sentence` 在每识别出一句时立即回调，供边转边出。"""
         raise NotImplementedError
 
     def needs_download(self) -> bool:
@@ -327,18 +333,26 @@ class FasterWhisperTranscriber(Transcriber):
         self._model = WhisperModel(self.model_ref, device=self.device, compute_type=self.compute_type)
         return self._model
 
-    def transcribe(self, audio_path: str, on_progress: Callable[[int], None] | None = None) -> list[dict]:
+    def transcribe(
+        self,
+        audio_path: str,
+        on_progress: Callable[[int], None] | None = None,
+        on_sentence: Callable[[dict], None] | None = None,
+    ) -> list[dict]:
         model = self._load_model()
         segments, info = model.transcribe(audio_path, beam_size=5)
         duration = float(info.duration or 1.0)
         sentences: list[dict] = []
         for seg in segments:
-            sentences.append({
+            sentence = {
                 "start_ms": int(round(seg.start * 1000)),
                 "end_ms": int(round(seg.end * 1000)),
                 "text": seg.text.strip(),
                 "speaker": "",
-            })
+            }
+            sentences.append(sentence)
+            if on_sentence:
+                on_sentence(sentence)
             if on_progress:
                 on_progress(min(100, int(seg.end / duration * 100)))
         if on_progress:
@@ -388,7 +402,12 @@ class SenseVoiceTranscriber(Transcriber):
             )
             return self._recognizer
 
-    def transcribe(self, audio_path: str, on_progress: Callable[[int], None] | None = None) -> list[dict]:
+    def transcribe(
+        self,
+        audio_path: str,
+        on_progress: Callable[[int], None] | None = None,
+        on_sentence: Callable[[dict], None] | None = None,
+    ) -> list[dict]:
         from audio import decode_audio, split_speech
 
         recognizer = self._load()
@@ -404,12 +423,15 @@ class SenseVoiceTranscriber(Transcriber):
             recognizer.decode_stream(stream)
             text = (stream.result.text or "").strip()
             if text:
-                sentences.append({
+                sentence = {
                     "start_ms": int(start / 16000 * 1000),
                     "end_ms": int(end / 16000 * 1000),
                     "text": text,
                     "speaker": "",
-                })
+                }
+                sentences.append(sentence)
+                if on_sentence:
+                    on_sentence(sentence)
             if on_progress:
                 on_progress(min(99, int(end / total * 100)))
         if on_progress:
@@ -472,7 +494,12 @@ class Qwen3AsrTranscriber(Transcriber):
             return str(decoded[0] if decoded else "").strip()
         return str(decoded or "").strip()
 
-    def transcribe(self, audio_path: str, on_progress: Callable[[int], None] | None = None) -> list[dict]:
+    def transcribe(
+        self,
+        audio_path: str,
+        on_progress: Callable[[int], None] | None = None,
+        on_sentence: Callable[[dict], None] | None = None,
+    ) -> list[dict]:
         from audio import decode_audio, split_speech
 
         samples = decode_audio(audio_path)
@@ -484,12 +511,15 @@ class Qwen3AsrTranscriber(Transcriber):
         for start, end in regions:
             text = self._transcribe_chunk(samples[start:end])
             if text:
-                sentences.append({
+                sentence = {
                     "start_ms": int(start / 16000 * 1000),
                     "end_ms": int(end / 16000 * 1000),
                     "text": text,
                     "speaker": "",
-                })
+                }
+                sentences.append(sentence)
+                if on_sentence:
+                    on_sentence(sentence)
             if on_progress:
                 on_progress(min(99, int(end / total * 100)))
         if on_progress:
