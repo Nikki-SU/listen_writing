@@ -14,7 +14,8 @@
 | huggingface-hub | `>=0.21,<2` | 模型下载，支持 `HF_ENDPOINT` 镜像 | 下载源默认官方、失败降级 hf-mirror.com（见 `transcriber.py`）；2.0 起接口可能变，故封顶 |
 | onnxruntime | — | VAD 可选依赖 | faster-whisper 传递依赖 |
 | sherpa-onnx | 2.0.1 | SenseVoice Small 的离线推理（PRD §7 第二档） | `transcriber.SenseVoiceTranscriber`；int8 模型峰值 <800MB；升级必须重跑真实转写 |
-| transformers | 5.22.2 | Qwen3-ASR-0.6B 的处理器与模型加载（PRD §7 第三档） | 只用 `AutoProcessor` / `AutoModelForMultimodalLM`；接口变动会直接影响 `Qwen3AsrTranscriber._load` |
+| transformers | 5.13.1 | Qwen3-ASR-0.6B 的处理器与模型加载（PRD §7 第三档） | 只用 `AutoProcessor` / `AutoModelForMultimodalLM`。**必须停在 5.13.1**：5.14+ 要求 `tokenizers>=0.23.1`，而公开 PyPI / 清华镜像最高只有 0.22.1，用户机器会 `ResolutionImpossible`（与网络、代理无关）；5.13.1 要求 `tokenizers<=0.23.0,>=0.22.0`，且已含 `qwen3_asr` |
+| jinja2 | 3.1.6 | Qwen3-ASR 的 `apply_chat_template` | transformers 把 jinja2 放在 `chat-template` extra 里，默认不装；缺它会在**转写时**才报错，所以必须显式写进 `requirements.txt` |
 | torch（CPU） | 2.15.0+cpu | Qwen3-ASR CPU 推理 | **不写进 `requirements.txt`**：PyPI 默认包在 Linux 会拖 CUDA/NVIDIA（数 GB），由启动器从 `download.pytorch.org/whl/cpu` 单独装；失败只让该档标为不可用 |
 | numpy | 由 av / sherpa-onnx 带入 | 音频波形与 VAD 计算 | `audio.py`、`diarize.py` 直接用；升级 ASR 依赖后要复查 `to_ndarray` 接口 |
 
@@ -70,6 +71,10 @@
 
 - 实测教训：只锁 `faster-whisper==1.2.1` 时 pip 装了 `av 19`，而 av 19 移除了 `open(metadata_errors=...)`，转写全部报 `open() got an unexpected keyword argument 'metadata_errors'`。
 - 升级任何一条前，必须重新跑一遍**真实转写**（上传音频 → 拿到分句），不能只看 `pip install` 成功。
+- **依赖组合必须在公开源上验证，不能在沙箱内部镜像里验证**：沙箱的 Volcengine 镜像曾提供 `transformers 5.22.2` / `tokenizers 0.23.3`，但公开 PyPI 与清华镜像最高只有 `transformers 5.17.0` / `tokenizers 0.22.1`。在沙箱里“装成功”的组合，用户机器会直接 `ResolutionImpossible`。验证命令：
+  `pip download --only-binary=:all: --platform win_amd64 --python-version 312 --implementation cp --abi cp312 -r backend/requirements.txt -i https://pypi.org/simple -d /tmp/winresolve`
+  必须完整下载成功，且 `tokenizers` 落在 0.22.x。
+- 2026-11-08 实测教训：`transformers 5.14+` 与公开源的 `tokenizers 0.22.1` 死锁，已回退到 `5.13.1`；另外 `transformers` 默认不装 `jinja2`（放在 `chat-template` extra），Qwen3-ASR 会在转写时才报错，已显式锁 `jinja2==3.1.6`。
 
 > 2026-11-05 实测修正：沙箱里官方 `huggingface.co` 不可达、`hf-mirror.com` 可用。已实测「导入时探测官方 → 自动改用镜像 → tiny 模型 75MB 下载成功 → 缓存落在 `data/models/hf-cache/`」整条链路，以及缓存命中后 `preload.py` 跳过下载、模型可加载并转写。
 

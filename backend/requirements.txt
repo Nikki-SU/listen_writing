@@ -16,7 +16,17 @@ sherpa-onnx==2.0.1
 # Qwen3-ASR-0.6B（PRD 第 7 节第三档）：官方 Transformers 权重
 # torch 不写在这里：PyPI 默认包在 Linux 上会拖入 CUDA/NVIDIA 依赖（数 GB），
 # 由启动器单独从 CPU wheel 源安装；失败时该档在设置页如实标为未内置。
-transformers==5.22.2
+#
+# 必须停在 5.13.1：5.14+ 要求 tokenizers>=0.23.1，而公开 PyPI / 清华镜像
+# 目前最高只有 tokenizers 0.22.1，装到用户机器上会直接 ResolutionImpossible
+# （与网络、代理无关，是版本约束死锁）。5.13.1 要求 tokenizers<=0.23.0,>=0.22.0，
+# 且已包含 qwen3_asr 与 apply_transcription_request，三档可同时安装。
+transformers==5.13.1
+
+# Qwen3-ASR 的 apply_transcription_request 内部走 apply_chat_template，
+# transformers 把 jinja2 放在 chat-template extra 里，不装就会在转写时
+# 报 "apply_chat_template requires jinja2 to be installed"。
+jinja2==3.1.6
 
 # 其余由 faster-whisper / sherpa-onnx 自动带入（此处仅登记备查）
 # numpy                # 音频解码与 VAD
