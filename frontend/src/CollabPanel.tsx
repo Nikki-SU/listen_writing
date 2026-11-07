@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
 import type {
   CollabAccess,
@@ -123,6 +123,16 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
   const myRole = selected?.my_role || ''
   const myCaps = (roles[myRole]?.caps || []) as string[]
   const has = (cap: string) => myCaps.includes(cap)
+  // 提案只对能提交/合并的人生效；只读与审查者连 tab 都不显示，避免拿到他人原文。
+  const visibleTabs = TABS.filter(
+    ([key]) => key !== 'proposals' || has('submit') || has('merge'),
+  )
+  const burnApproval = useMemo(() => {
+    const a = materialView?.approval
+    if (!selected || !a || a.mode !== 'burn' || a.status !== 'approved') return null
+    return { groupId: selected.id, approvalId: a.id }
+  }, [selected, materialView])
+  const burnStarted = useRef(false)
 
   async function run(fn: () => Promise<void>) {
     if (busy) return
@@ -162,12 +172,36 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab])
 
+  // 权限变化后把不可见的提案 tab 收回到“材料”。
+  useEffect(() => {
+    if (tab === 'proposals' && !has('submit') && !has('merge')) setTab('material')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, myCaps])
+
+  useEffect(() => {
+    burnStarted.current = false
+  }, [burnApproval?.approvalId])
+
+  // 烧毁模式：播到一半直接关页面也算消费，不能靠关标签页绕过“听完即毁”。
+  useEffect(() => {
+    if (!burnApproval) return
+    const consume = () => {
+      if (!burnStarted.current) return
+      burnStarted.current = false
+      const blob = new Blob(['{}'], { type: 'application/json' })
+      navigator.sendBeacon?.(api.playbackConsumeUrl(burnApproval.groupId, burnApproval.approvalId), blob)
+    }
+    window.addEventListener('pagehide', consume)
+    return () => window.removeEventListener('pagehide', consume)
+  }, [burnApproval])
+
   async function loadGroup(id: string) {
     const [g, m, mat, p, a, gr] = await Promise.all([
       api.groupDetail(id),
       api.groupMembers(id),
       api.listGroupMaterials(id),
-      api.listProposals(id),
+      // 无 submit/merge 权限的后端会 403；提案本来就不该给只读/审查者看。
+      api.listProposals(id).catch(() => [] as CollabProposal[]),
       api.listApprovals(id),
       api.listGrants(id).catch(() => ({ grants: [] as CollabGrant[] })),
     ])
@@ -535,6 +569,7 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
                 title="点击复制配对码"
               >
                 配对码 {selected.code}
+                {selected.code_expires_at ? ` · ${fmtTime(selected.code_expires_at)} 前有效` : ''}
               </span>
               {requests.filter((r) => r.status === 'pending').length > 0 && has('roles') && (
                 <span style={{ fontSize: 11, color: '#8a5a00' }}>
@@ -544,7 +579,7 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
             </div>
 
             <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #eee', marginBottom: 12 }}>
-              {TABS.map(([key, label]) => (
+              {visibleTabs.map(([key, label]) => (
                 <button
                   key={key}
                   onClick={() => { setTab(key); setMaterialView(null) }}
@@ -649,6 +684,12 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
                     </div>
                   )}
 
+                  {materialView.material.stale_redactions && (
+                    <div style={{ fontSize: 11, color: '#b00020', background: '#fdecea', borderRadius: 6, padding: '6px 8px', marginBottom: 8 }}>
+                      有句子被修改，原脱敏标记已失效。请在本机重新脱敏并刷新材料后再送审。
+                    </div>
+                  )}
+
                   {materialView.can_play && materialView.approval ? (
                     <div style={{ marginBottom: 12, border: '1px solid #dce6f2', background: '#f8fbff', borderRadius: 8, padding: 8 }}>
                       <div style={{ fontSize: 11, color: '#245c9c', marginBottom: 6 }}>
@@ -657,7 +698,13 @@ export default function CollabPanel({ projects, onClose }: { projects: Project[]
                       <audio
                         controls
                         src={api.groupAudioUrl(selected.id, materialView.material.id, materialView.approval.id)}
-                        onEnded={() => void onConsume(materialView.approval!.id)}
+                        onPlay={() => {
+                          burnStarted.current = true
+                        }}
+                        onEnded={() => {
+                          burnStarted.current = false
+                          void onConsume(materialView.approval!.id)
+                        }}
                         style={{ width: '100%', height: 36 }}
                       />
                     </div>

@@ -204,6 +204,115 @@ def _parse_changes(raw: str) -> list[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
+_REDACT_SYSTEM = (
+    "你是中文访谈转写稿的隐私审查员。根据给定的敏感类别，逐句找出需要脱敏的原文片段。"
+    "只标记真正属于该类别的连续原文（人名、电话、地址、单位、病情等），不要改写句子、不要合并片段、"
+    "不要标记普通词语。只输出一个 JSON 数组，元素形如 "
+    '{"id": "句子 id", "quote": "原文中连续出现的敏感片段", "category": "类别 id"}；'
+    "quote 必须与原文逐字一致（不要加省略号或空格）；没有敏感内容就输出 []。"
+    "不要输出解释，也不要包代码块。 /no_think"
+)
+
+
+def _redact_messages(batch: list[dict], categories: list[dict]) -> list[dict]:
+    cat_lines = "\n".join(
+        f"{c.get('id')}\t{c.get('label') or c.get('id')}" for c in categories
+    )
+    lines = "\n".join(f"{s['id']}\t{s.get('text', '')}" for s in batch)
+    return [
+        {"role": "system", "content": _REDACT_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                "敏感类别（每行：类别 id + 制表符 + 说明）：\n" + cat_lines
+                + "\n\n句子列表（每行：id + 制表符 + 原文）：\n" + lines
+            ),
+        },
+    ]
+
+
+def redact(
+    sentences: list[dict],
+    categories: list[dict],
+    model_key: str | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """AI 智能脱敏：返回带字符偏移的标记建议，不直接改正文。
+
+    模型只负责指出「哪段原文属于哪个类别」，字符偏移由服务端在原文里定位，
+    避免模型给出错误下标把无关文字涂掉。
+    """
+    if not runtime_available():
+        raise RuntimeError(RUNTIME_MISSING_MSG)
+    key = model_key or DEFAULT_LLM_MODEL
+    if key not in LLM_MODELS:
+        raise ValueError(f"未知的 AI 模型：{key}")
+    cats = [c for c in categories if c.get("id")]
+    if not cats:
+        return []
+    placeholders = {
+        str(c.get("id")): (c.get("placeholder") or f"[{c.get('label') or c.get('id')}]")
+        for c in cats
+    }
+    items = [s for s in sentences if str(s.get("text") or "").strip()]
+    if not items:
+        return []
+
+    engine = _engine(key)
+    suggestions: list[dict] = []
+    with _infer_lock:
+        for start in range(0, len(items), POLISH_BATCH):
+            batch = items[start:start + POLISH_BATCH]
+            if on_status:
+                on_status(f"正在扫描第 {start + 1}–{start + len(batch)} 句…")
+            resp = engine.create_chat_completion(
+                messages=_redact_messages(batch, cats),
+                temperature=0.1,
+                top_p=0.9,
+                max_tokens=min(2048, max(256, len(batch) * 120)),
+            )
+            raw = split_think((resp["choices"][0]["message"]["content"] or ""))
+            if not raw:
+                continue
+            known = {s["id"]: s for s in batch}
+            for item in _parse_changes(raw):
+                sid = str(item.get("id") or "")
+                quote = str(item.get("quote") or "").strip()
+                category = str(item.get("category") or "")
+                original = known.get(sid)
+                if original is None or not quote or category not in placeholders:
+                    continue
+                text = str(original.get("text") or "")
+                start_at = text.find(quote)
+                if start_at < 0:
+                    # 模型偶尔会补标点或截断，逐字定位失败就跳过，绝不猜下标。
+                    continue
+                suggestions.append({
+                    "sentence_id": sid,
+                    "index": int(original.get("index", 0)),
+                    "start": start_at,
+                    "end": start_at + len(quote),
+                    "quote": quote,
+                    "category_id": category,
+                    "placeholder": placeholders[category],
+                })
+    # 同一句里重叠的建议只保留最长的那条，避免前端生成嵌套标记。
+    by_sentence: dict[str, list[dict]] = {}
+    for s in suggestions:
+        by_sentence.setdefault(s["sentence_id"], []).append(s)
+    result: list[dict] = []
+    for items in by_sentence.values():
+        items.sort(key=lambda x: (x["start"], -(x["end"] - x["start"])))
+        kept: list[dict] = []
+        for item in items:
+            if any(item["start"] < k["end"] and k["start"] < item["end"] for k in kept):
+                continue
+            kept.append(item)
+        result.extend(kept)
+    result.sort(key=lambda x: (x["index"], x["start"]))
+    return result
+
+
 def polish(
     sentences: list[dict],
     model_key: str | None = None,

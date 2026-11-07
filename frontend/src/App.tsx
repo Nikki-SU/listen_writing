@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
 import CollabPanel from './CollabPanel'
+import LiveRecorder from './LiveRecorder'
+import ModelSetup from './ModelSetup'
 import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { BOOTSTRAP_FILES } from './bootstrapFiles'
@@ -13,6 +15,7 @@ import type {
   PolishSuggestion,
   RedactionCategory,
   RedactionMark,
+  RedactionSuggestion,
   Sentence,
   VersionDetail,
   VersionSummary,
@@ -83,7 +86,16 @@ export default function App() {
   const [guideOpen, setGuideOpen] = useState(false)
   const [collabOpen, setCollabOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [liveOpen, setLiveOpen] = useState(false)
   const [restarting, setRestarting] = useState(false)
+  const [detailNonce, setDetailNonce] = useState(0)
+  const [modelSetupDone, setModelSetupDone] = useState(() => {
+    try {
+      return localStorage.getItem('lw_model_setup_done_v1') === '1'
+    } catch {
+      return false
+    }
+  })
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // 启动：检查后端 + 版本 + 项目列表；后端离线时进入引导部署
@@ -157,7 +169,7 @@ export default function App() {
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [projectId, recordingId])
+  }, [projectId, recordingId, detailNonce])
 
   // 写操作一律乐观更新 + 回滚（工程纪律三.3）：先立刻显示结果，失败再撤掉。
   // 不切到临时 id，否则会触发对不存在对象的 GET（404）而闪错误。
@@ -203,6 +215,12 @@ export default function App() {
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
+  }
+
+  function onLiveFinished(recordingId: string) {
+    setLiveOpen(false)
+    if (projectId) void refreshRecordings(projectId)
+    setRecordingId(recordingId)
   }
 
   async function onUpdate() {
@@ -411,8 +429,14 @@ export default function App() {
                 }}
               />
               <button
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => setLiveOpen(true)}
                 style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}
+              >
+                实时录音
+              </button>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                style={{ fontSize: 12, padding: '4px 10px' }}
               >
                 上传录音
               </button>
@@ -443,6 +467,7 @@ export default function App() {
             recordingId={recordingId!}
             detail={detail}
             onError={setError}
+            onRetry={() => setDetailNonce((n) => n + 1)}
           />
         ) : (
           <div style={{ color: '#aaa', fontSize: 14, marginTop: 40, textAlign: 'center' }}>
@@ -454,6 +479,25 @@ export default function App() {
 
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
       {collabOpen && <CollabPanel projects={projects} onClose={() => setCollabOpen(false)} />}
+      {liveOpen && projectId && (
+        <LiveRecorder
+          projectId={projectId}
+          onClose={() => setLiveOpen(false)}
+          onFinished={onLiveFinished}
+        />
+      )}
+      {!modelSetupDone && (
+        <ModelSetup
+          onClose={() => {
+            try {
+              localStorage.setItem('lw_model_setup_done_v1', '1')
+            } catch {
+              // 隐私模式下 localStorage 不可写，忽略即可，下次仍会提示
+            }
+            setModelSetupDone(true)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -575,11 +619,13 @@ function TranscriptPanel({
   recordingId,
   detail,
   onError,
+  onRetry,
 }: {
   projectId: string
   recordingId: string
   detail: RecordingDetail
   onError: (msg: string) => void
+  onRetry: () => void
 }) {
   const { transcribe, sentences, recording } = detail
   const [localSentences, setLocalSentences] = useState<Sentence[]>(sentences)
@@ -597,6 +643,10 @@ function TranscriptPanel({
   const [activeCat, setActiveCat] = useState('')
   const [catPanel, setCatPanel] = useState(false)
   const [catDraft, setCatDraft] = useState<RedactionCategory[]>([])
+  // AI 智能脱敏：只给带偏移的建议，采纳仍走人工确认的 addRedactions。
+  const [aiSuggesting, setAiSuggesting] = useState(false)
+  const [aiSuggestions, setAiSuggestions] = useState<RedactionSuggestion[]>([])
+  const [aiError, setAiError] = useState('')
   // AI 语义纠错：建议列表、运行时的可用性、模型名；运行不可用时按钮置灰。
   const [polishOpen, setPolishOpen] = useState(false)
   const [polishing, setPolishing] = useState(false)
@@ -858,6 +908,43 @@ function TranscriptPanel({
     }
   }
 
+  async function suggestAiRedactions() {
+    setAiSuggesting(true)
+    setAiError('')
+    try {
+      const res = await api.suggestRedactions(projectId, recordingId)
+      setAiSuggestions(res.suggestions)
+      if (res.suggestions.length === 0) setAiError('没有发现匹配已启用类别的敏感片段。')
+    } catch (e) {
+      setAiError(String(e))
+    } finally {
+      setAiSuggesting(false)
+    }
+  }
+
+  async function acceptAiRedactions(items: RedactionSuggestion[]) {
+    if (items.length === 0) return
+    try {
+      const res = await api.addRedactions(
+        projectId,
+        recordingId,
+        items.map((x) => ({
+          sentence_id: x.sentence_id,
+          start: x.start,
+          end: x.end,
+          category_id: x.category_id,
+        })),
+      )
+      setMarks(res.marks)
+      setVersion(res.current || version)
+      const done = new Set(items.map((x) => `${x.sentence_id}:${x.start}:${x.end}`))
+      setAiSuggestions((list) => list.filter((x) => !done.has(`${x.sentence_id}:${x.start}:${x.end}`)))
+      onError('')
+    } catch (e) {
+      onError(`采纳 AI 建议失败：${String(e)}`)
+    }
+  }
+
   function openCategoryPanel() {
     setCatDraft(categories.map((c) => ({ ...c })))
     setCatPanel((v) => !v)
@@ -937,7 +1024,23 @@ function TranscriptPanel({
   if (transcribe.status === 'error') {
     return (
       <div style={{ marginTop: 40, textAlign: 'center', color: '#b00020', fontSize: 14 }}>
-        转写失败：{transcribe.error}
+        <div style={{ marginBottom: 12 }}>转写失败：{transcribe.error}</div>
+        <button
+          onClick={async () => {
+            try {
+              await api.retryTranscribe(projectId, recordingId)
+              onRetry()
+            } catch (e) {
+              onError(`重新转写失败：${String(e)}`)
+            }
+          }}
+          style={{ fontSize: 13, padding: '6px 14px' }}
+        >
+          重新转写
+        </button>
+        <p style={{ fontSize: 12, color: '#8a8f98', marginTop: 10 }}>
+          如果是模型缺失或下载失败，可先在「设置」里下载对应模型再重试。
+        </p>
       </div>
     )
   }
@@ -1126,8 +1229,102 @@ function TranscriptPanel({
               <button onClick={openCategoryPanel} style={{ fontSize: 12, padding: '2px 10px', color: '#666' }}>
                 {catPanel ? '收起类别管理' : '管理类别'}
               </button>
+              <button
+                onClick={() => void suggestAiRedactions()}
+                disabled={aiSuggesting || llmReady === false}
+                title={
+                  llmReady === false
+                    ? 'AI 运行时未安装，请先运行启动器安装组件'
+                    : '用本地 AI 找出敏感片段，确认后才写入'
+                }
+                style={{ fontSize: 12, padding: '2px 10px', color: llmReady === false ? '#aaa' : '#1f6feb' }}
+              >
+                {aiSuggesting ? 'AI 识别中…' : 'AI 识别敏感信息'}
+              </button>
               <span style={{ color: '#9aa0a6' }}>选中文字即标记；点彩色文字移除</span>
             </div>
+
+            {llmReady === false && (
+              <div style={{ marginTop: 6, fontSize: 11, color: '#b36b00' }}>
+                AI 智能脱敏需要本地 AI 运行时（llama-cpp-python）：请重新运行一次启动器安装组件。
+              </div>
+            )}
+
+            {aiError && (
+              <div style={{ marginTop: 6, fontSize: 11, color: aiSuggestions.length ? '#8a8f98' : '#b00020' }}>
+                {aiError}
+              </div>
+            )}
+
+            {aiSuggestions.length > 0 && (
+              <div
+                style={{
+                  marginTop: 8,
+                  border: '1px solid #f0d9a8',
+                  background: '#fffdf6',
+                  borderRadius: 8,
+                  padding: 10,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, color: '#8a5a00', fontWeight: 600 }}>
+                    AI 找到 {aiSuggestions.length} 处敏感信息
+                  </span>
+                  <span style={{ fontSize: 11, color: '#a08a5a' }}>逐条确认后才会写入</span>
+                  <button
+                    onClick={() => void acceptAiRedactions(aiSuggestions)}
+                    style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px' }}
+                  >
+                    全部采纳
+                  </button>
+                  <button
+                    onClick={() => setAiSuggestions([])}
+                    style={{ fontSize: 11, padding: '2px 8px' }}
+                  >
+                    清空
+                  </button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {aiSuggestions.map((item) => (
+                    <div
+                      key={`${item.sentence_id}:${item.start}:${item.end}`}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}
+                    >
+                      <span style={{ color: '#8a94a6', fontSize: 11, flexShrink: 0 }}>
+                        第 {item.index + 1} 句
+                      </span>
+                      <span style={{ color: '#b00020', background: '#fdecea', borderRadius: 3, padding: '0 4px' }}>
+                        {item.quote}
+                      </span>
+                      <span style={{ color: '#8a8f98', fontSize: 11 }}>→ {item.placeholder}</span>
+                      <button
+                        onClick={() => void acceptAiRedactions([item])}
+                        style={{ marginLeft: 'auto', fontSize: 11, padding: '1px 8px' }}
+                      >
+                        采纳
+                      </button>
+                      <button
+                        onClick={() =>
+                          setAiSuggestions((list) =>
+                            list.filter(
+                              (x) =>
+                                !(
+                                  x.sentence_id === item.sentence_id &&
+                                  x.start === item.start &&
+                                  x.end === item.end
+                                ),
+                            ),
+                          )
+                        }
+                        style={{ fontSize: 11, padding: '1px 8px' }}
+                      >
+                        忽略
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {catPanel && (
               <div style={{ marginTop: 8, padding: 10, border: '1px solid #eceef1', borderRadius: 8, background: '#fafbfc' }}>

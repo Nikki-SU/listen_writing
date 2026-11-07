@@ -197,7 +197,7 @@ def _download_with_mirrors(url: str, dest: Path) -> None:
     raise RuntimeError(f"模型下载失败：{last_error}")
 
 
-def _ensure_sensevoice() -> bool:
+def _ensure_sensevoice(on_status: Callable[[str], None] | None = None) -> bool:
     model = SENSEVOICE_DIR / "model.int8.onnx"
     tokens = SENSEVOICE_DIR / "tokens.txt"
     if model.is_file() and tokens.is_file():
@@ -205,10 +205,14 @@ def _ensure_sensevoice() -> bool:
     with _MODEL_LOCK:
         if model.is_file() and tokens.is_file():
             return True
+        if on_status:
+            on_status("正在下载 SenseVoice Small（约 1GB 发布包，解压后仅保留 229MB int8 模型）…")
         print("[模型] 正在下载 SenseVoice Small（约 1GB 发布包，解压后仅保留 229MB int8 模型）……")
         with tempfile.TemporaryDirectory() as tmpdir:
             archive = Path(tmpdir) / f"{SENSEVOICE_PACKAGE}.tar.bz2"
             _download_with_mirrors(SENSEVOICE_URL, archive)
+            if on_status:
+                on_status("正在解压 SenseVoice Small…")
             print("[模型] 正在解压 SenseVoice Small……")
             with tarfile.open(archive, "r:bz2") as tar:
                 try:
@@ -227,7 +231,7 @@ def _ensure_sensevoice() -> bool:
     return model.is_file()
 
 
-def _ensure_qwen_asr() -> bool:
+def _ensure_qwen_asr(on_status: Callable[[str], None] | None = None) -> bool:
     if (QWEN_ASR_DIR / "model.safetensors").is_file():
         return True
     with _MODEL_LOCK:
@@ -235,6 +239,8 @@ def _ensure_qwen_asr() -> bool:
             return True
         from huggingface_hub import snapshot_download
 
+        if on_status:
+            on_status("正在下载 Qwen3-ASR-0.6B（约 1.2GB，首次较慢）…")
         print("[模型] 正在下载 Qwen3-ASR-0.6B（约 1.2GB，首次较慢）……")
         snapshot_download(
             repo_id=QWEN_ASR_REPO,

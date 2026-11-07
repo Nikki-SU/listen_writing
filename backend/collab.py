@@ -6,6 +6,7 @@
 
 import json
 import secrets
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -204,13 +205,15 @@ def _grant_for(group: dict, member: dict, cap: str, material_id: str | None) -> 
     return None
 
 
-def _require(group: dict, device_code: str, cap: str, material_id: str | None = None) -> dict:
+def _require(group: dict, device_code: str, cap: str, material_id: str | None = None, consume: bool = True) -> dict:
     member = _member(group, device_code)
     if member is None:
         raise CollabError("你还没有加入这个群组", status=403)
     if not _can(group, member, cap, material_id):
         raise CollabError(f"当前权限（{_role(group, member).get('name')}）不允许此操作", status=403)
-    _grant_for(group, member, cap, material_id)
+    # 单次授权必须在业务校验全部通过后才消耗；否则一次失败请求会把授权烧掉。
+    if consume:
+        _grant_for(group, member, cap, material_id)
     return member
 
 
@@ -218,12 +221,24 @@ def _is_reviewer(group: dict, member: dict) -> bool:
     return "review" in _caps(group, member) and "edit" not in _caps(group, member)
 
 
-def _log(group: dict, member: dict | None, action: str, material_id: str = "", detail: str = "") -> None:
+def _log(group: dict, member: dict | None, action: str, material_id: str = "", detail: str = "", dedupe_sec: float = 0) -> None:
     logs = group.setdefault("access", [])
+    device = (member or {}).get("device_code", "")
+    if dedupe_sec and logs:
+        last = logs[-1]
+        # <audio> 播放会连续发多个 Range 请求；同一材料 60 秒内只记一条，避免日志被刷屏。
+        if (
+            last.get("action") == action
+            and last.get("material_id") == material_id
+            and last.get("device_code") == device
+            and time.time() - float(last.get("ts") or 0) < dedupe_sec
+        ):
+            return
     logs.append({
         "id": storage.new_id(),
         "at": _now(),
-        "device_code": (member or {}).get("device_code", ""),
+        "ts": time.time(),
+        "device_code": device,
         "nick": (member or {}).get("nick", ""),
         "action": action,
         "material_id": material_id,
@@ -259,17 +274,26 @@ def _bump_revision(material: dict) -> None:
 # ---------- 群组 CRUD ----------
 
 
-def create_group(name: str, mode: str, device_code: str, nick: str) -> dict:
+def create_group(name: str, mode: str, device_code: str, nick: str, code_days: int = 30) -> dict:
     name = name.strip()
     if not name:
         raise CollabError("群组名称不能为空")
     if mode not in ("authoritative", "replica"):
         raise CollabError("mode 只能是 authoritative 或 replica")
+    try:
+        code_days = int(code_days or 30)
+    except (TypeError, ValueError):
+        raise CollabError("配对码有效天数必须是整数")
+    if code_days < 1 or code_days > 365:
+        raise CollabError("配对码有效天数需在 1–365 之间")
     now = _now()
     group = {
         "id": storage.new_id(),
         "name": name,
         "code": _unique_code(),
+        "code_days": code_days,
+        # 配对码默认 30 天有效；过期后拒绝新成员加入，群主可重新生成。
+        "code_expires_at": (_now_dt() + timedelta(days=code_days)).isoformat(),
         "mode": mode,  # authoritative=无副本（群主权威）；replica=有副本（节点合并）
         "created_at": now,
         "owner_device": device_code,
@@ -316,6 +340,7 @@ def _summary(group: dict) -> dict:
         "id": group.get("id"),
         "name": group.get("name"),
         "code": group.get("code"),
+        "code_expires_at": group.get("code_expires_at"),
         "mode": group.get("mode"),
         "created_at": group.get("created_at"),
         "owner_device": group.get("owner_device"),
@@ -336,11 +361,23 @@ def delete_group(group_id: str, device_code: str) -> None:
     shutil.rmtree(group_dir(group_id), ignore_errors=True)
 
 
+def code_expired(group: dict) -> bool:
+    expiry = group.get("code_expires_at")
+    if not expiry:
+        return False
+    try:
+        return _now_dt() > datetime.fromisoformat(expiry)
+    except (TypeError, ValueError):
+        return False
+
+
 def join_group(code: str, device_code: str, nick: str, role: str) -> dict:
     code = code.strip()
     group = next((g for g in _all_groups() if g.get("code") == code), None)
     if group is None:
         raise CollabError("配对码不存在或已失效", status=404)
+    if code_expired(group):
+        raise CollabError("配对码已过期，请让群主重新生成", status=410)
     if role == "owner" or role == "admin":
         raise CollabError("加入时只能是只读或审查者，管理员需群主任命", status=400)
     if role not in ("reader", "reviewer"):
@@ -482,6 +519,43 @@ def add_material(group_id: str, project_id: str, recording_id: str, device_code:
         raise CollabError("该录音还没有转写内容", status=409)
     current = storage.ensure_current_version(project_id, recording_id) or {"current": "0.0", "stage": 0}
     version = str(current.get("current") or "0.0")
+    redactions = storage.get_redactions(project_id, recording_id)
+    existing = next(
+        (m for m in group.get("materials", [])
+         if m.get("project_id") == project_id and m.get("recording_id") == recording_id),
+        None,
+    )
+    if existing is not None:
+        # 同一录音再次灌入时刷新既有材料，而不是堆出多个同名副本。
+        before_map = {str(s.get("id")): s.get("text", "") for s in existing.get("sentences", [])}
+        diff = []
+        for s in sentences:
+            old = before_map.get(str(s.get("id")), "")
+            if old != s.get("text", ""):
+                diff.append({
+                    "sentence_id": s.get("id", ""),
+                    "index": int(s.get("index", 0)),
+                    "before": old,
+                    "after": s.get("text", ""),
+                })
+        existing.update({
+            "name": recording.get("name", existing.get("name", "")),
+            "stage": int(current.get("stage", 0)),
+            "version": version,
+            "sentences": sentences,
+            "base_sentences": sentences,
+            "redactions": redactions,
+            "audio_path": recording.get("audio_path", ""),
+            "format": recording.get("format", ""),
+            "updated_at": _now(),
+            # 重新灌入后偏移已按新文本重算，陈旧标记可以清除。
+            "stale_redactions": False,
+        })
+        _bump_revision(existing)
+        _snapshot_history(existing, "刷新为当前版本", actor.get("nick", ""), diff)
+        _log(group, actor, "refresh_material", existing["id"], existing.get("name", ""))
+        _save(group)
+        return _material_meta(group, existing, actor)
     rev = storage.new_id()
     material = {
         "id": storage.new_id(),
@@ -495,15 +569,16 @@ def add_material(group_id: str, project_id: str, recording_id: str, device_code:
         "sentences": sentences,
         # 三方合并的基线：最后一次灌入 / 合并时的快照
         "base_sentences": sentences,
-        "redactions": storage.get_redactions(project_id, recording_id),
+        "redactions": redactions,
         "audio_path": recording.get("audio_path", ""),
         "format": recording.get("format", ""),
         "added_at": _now(),
         "updated_at": _now(),
         "added_by": actor.get("nick", ""),
         "source_device": actor.get("device_code", ""),
-        "history": [{"version": version, "stage": int(current.get("stage", 0)), "at": _now(), "by": actor.get("nick", ""), "message": "灌入当前版本"}],
+        "history": [],
     }
+    _snapshot_history(material, "灌入当前版本", actor.get("nick", ""), [])
     group.setdefault("materials", []).append(material)
     _log(group, actor, "add_material", material["id"], material["name"])
     _save(group)
@@ -523,14 +598,115 @@ def _material_meta(group: dict, material: dict, member: dict) -> dict:
     }
 
 
+def _restricted(group: dict, member: dict, material_id: str | None = None) -> bool:
+    """只读 / 审查者（以及没有编辑类授权的成员）只能看到脱敏后的阶段 2 内容。"""
+    caps = _caps(group, member)
+    if "edit" in caps or "merge" in caps:
+        return False
+    if material_id is not None:
+        grant_caps = _grant_caps(group, member, material_id)
+        if "edit" in grant_caps or "merge" in grant_caps:
+            return False
+    return True
+
+
+def can_edit(group: dict, device_code: str) -> bool:
+    """本机身份在这个群组里是否有编辑权；副本节点据此决定要不要拉原始媒体。"""
+    member = _member(group, device_code)
+    return member is not None and not _restricted(group, member)
+
+
+def _apply_marks(sentences: list[dict], marks: list[dict]) -> list[dict]:
+    """把脱敏标记替换为占位符（与 main._apply_redactions 同规则，避免循环导入）。"""
+    grouped: dict[str, list[dict]] = {}
+    for m in marks:
+        grouped.setdefault(m.get("sentence_id", ""), []).append(m)
+    out = []
+    for s in sentences:
+        text = str(s.get("text", ""))
+        for m in sorted(grouped.get(s.get("id", ""), []), key=lambda x: x.get("start", 0), reverse=True):
+            start, end = int(m.get("start", 0)), int(m.get("end", 0))
+            if 0 <= start < end <= len(text):
+                text = text[:start] + str(m.get("placeholder") or "[已脱敏]") + text[end:]
+        out.append({**s, "text": text})
+    return out
+
+
+def _safe_redactions(marks: list[dict]) -> list[dict]:
+    return [{k: v for k, v in m.items() if k not in ("original", "text")} for m in marks]
+
+
+def _sanitized_material(material: dict, member: dict) -> dict:
+    """给只读 / 审查者的材料快照：不包含原始句子、音频路径、项目坐标与提案。"""
+    sentences = _apply_marks(material.get("sentences", []), material.get("redactions", []))
+    history = [
+        {k: v for k, v in h.items() if k not in ("sentences", "diff")}
+        for h in material.get("history", [])
+        if int(h.get("stage", 0)) >= 2
+    ]
+    return {
+        "id": material.get("id"),
+        "name": material.get("name"),
+        "stage": material.get("stage", 0),
+        "version": material.get("version"),
+        "rev": material.get("rev"),
+        "revs": material.get("revs") or [],
+        "sentences": sentences,
+        # 三方合并基线也不能泄露原文：用脱敏后的句子作为基线。
+        "base_sentences": sentences,
+        "redactions": _safe_redactions(material.get("redactions", [])),
+        "stale_redactions": bool(material.get("stale_redactions")),
+        "format": material.get("format", ""),
+        "added_at": material.get("added_at"),
+        "updated_at": material.get("updated_at"),
+        "added_by": material.get("added_by"),
+        "history": history,
+    }
+
+
+def sanitized_group(group: dict, device_code: str) -> dict:
+    """按请求者身份返回群组快照。
+
+    有编辑权的成员拿完整数据；只读 / 审查者只拿阶段 2 之后、已脱敏的内容，
+    并且不包含提案、授权、访问日志与任何媒体坐标。非成员的预览连材料都不返回。
+    """
+    member = _member(group, device_code)
+    if member is None:
+        return {
+            **_summary(group),
+            "roles": group.get("roles", {}),
+            "members": group.get("members", []),
+            "materials": [],
+            "proposals": [],
+            "approvals": [],
+            "grants": [],
+            "access": [],
+            "member_requests": [],
+        }
+    if not _restricted(group, member):
+        return group
+    out = json.loads(json.dumps(group))
+    local_member = _member(out, device_code)
+    out["materials"] = [_sanitized_material(m, local_member) for m in _visible(out, local_member)]
+    out["proposals"] = []
+    out["grants"] = [g for g in out.get("grants", []) if g.get("device_code") == device_code]
+    out["approvals"] = [a for a in out.get("approvals", []) if a.get("device_code") == device_code]
+    out["access"] = []
+    out["member_requests"] = []
+    return out
+
+
 def _visible(group: dict, member: dict) -> list[dict]:
     materials = group.get("materials", [])
     if "view" not in _caps(group, member):
         # 没有长期 view 权限时，只能看到被单材料授权覆盖的材料。
         materials = [m for m in materials if _can(group, member, "view", m.get("id"))]
-    if _is_reviewer(group, member):
-        # 审查可见范围从版本 2 之后开始（PRD 13）。
-        materials = [m for m in materials if int(m.get("stage", 0)) >= 2]
+    if _restricted(group, member):
+        # 审查 / 只读可见范围从阶段 2 之后开始（PRD 13）；拿到编辑类单材料授权的除外。
+        materials = [
+            m for m in materials
+            if int(m.get("stage", 0)) >= 2 or not _restricted(group, member, m.get("id"))
+        ]
     return materials
 
 
@@ -553,15 +729,20 @@ def get_material(group_id: str, material_id: str, device_code: str) -> dict:
             raise CollabError("审查模式仅可查看阶段 2 之后的版本", status=403)
         raise CollabError("材料不存在", status=404)
 
-    sentences = material.get("sentences", [])
-    if _is_reviewer(group, member):
-        # 审查者只看脱敏后的正文，且历史被截断到阶段 2 之后。
-        from main import _apply_redactions  # 延迟导入，避免循环依赖
-
-        sentences = _apply_redactions(sentences, material.get("redactions", []))
-        history = [h for h in material.get("history", []) if int(h.get("stage", 0)) >= 2]
+    restricted = _restricted(group, member, material_id)
+    if restricted:
+        # 审查者 / 只读成员只看脱敏后的正文，历史截断到阶段 2，且不暴露任何原文。
+        sentences = _apply_marks(material.get("sentences", []), material.get("redactions", []))
+        history = [
+            {k: v for k, v in h.items() if k not in ("sentences", "diff")}
+            for h in material.get("history", [])
+            if int(h.get("stage", 0)) >= 2
+        ]
+        redactions = _safe_redactions(material.get("redactions", []))
     else:
+        sentences = material.get("sentences", [])
         history = material.get("history", [])
+        redactions = material.get("redactions", [])
 
     playback, approval = _playback_state(group, material, member)
     _log(group, member, "view_material", material_id, "审查模式" if _is_reviewer(group, member) else "")
@@ -571,7 +752,8 @@ def get_material(group_id: str, material_id: str, device_code: str) -> dict:
             **_material_meta(group, material, member),
             "sentences": sentences,
             "history": history,
-            "redactions": material.get("redactions", []) if not _is_reviewer(group, member) else [],
+            "redactions": redactions,
+            "stale_redactions": bool(material.get("stale_redactions")),
         },
         "can_play": playback,
         "approval": approval,
@@ -579,12 +761,37 @@ def get_material(group_id: str, material_id: str, device_code: str) -> dict:
     }
 
 
+def get_material_version(group_id: str, material_id: str, version: str, device_code: str) -> dict:
+    """群组材料的任意历史版本：自带句子快照与 diff，审查端按权限脱敏。"""
+    group = load_group(group_id)
+    member = _require(group, device_code, "view", material_id, consume=False)
+    material = next((m for m in group.get("materials", []) if m.get("id") == material_id), None)
+    if material is None:
+        raise CollabError("材料不存在", status=404)
+    entry = next(
+        (h for h in material.get("history", []) if str(h.get("version")) == str(version)),
+        None,
+    )
+    if entry is None:
+        raise CollabError("版本不存在", status=404)
+    if _restricted(group, member, material_id):
+        if int(entry.get("stage", 0)) < 2:
+            raise CollabError("审查模式仅可查看阶段 2 之后的版本", status=403)
+        entry = {
+            **{k: v for k, v in entry.items() if k not in ("sentences", "diff")},
+            "sentences": _apply_marks(material.get("sentences", []), material.get("redactions", [])),
+            "diff": [],
+        }
+    return {"version": entry}
+
+
 # ---------- 提案（PR 式逐条合并） ----------
 
 
 def create_proposal(group_id: str, material_id: str, sentence_id: str, after: str, device_code: str) -> dict:
     group = load_group(group_id)
-    actor = _require(group, device_code, "submit", material_id)
+    # 先不消耗单次授权：等句子、内容都校验通过后再消耗，避免失败请求烧掉授权。
+    actor = _require(group, device_code, "submit", material_id, consume=False)
     material = next((m for m in group.get("materials", []) if m.get("id") == material_id), None)
     if material is None:
         raise CollabError("材料不存在", status=404)
@@ -596,6 +803,7 @@ def create_proposal(group_id: str, material_id: str, sentence_id: str, after: st
         raise CollabError("修改后的句子不能为空")
     if after == target.get("text"):
         raise CollabError("内容没有变化", status=409)
+    _grant_for(group, actor, "submit", material_id)
     proposal = {
         "id": storage.new_id(),
         "material_id": material_id,
@@ -616,8 +824,80 @@ def create_proposal(group_id: str, material_id: str, sentence_id: str, after: st
 
 def list_proposals(group_id: str, device_code: str) -> dict:
     group = load_group(group_id)
-    _require(group, device_code, "view")
-    return {"proposals": group.get("proposals", [])}
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    # 提案里带 before/after 原文，只读 / 审查者一律不可见（PRD 13）。
+    if not (
+        "submit" in _caps(group, member)
+        or "merge" in _caps(group, member)
+        or {"submit", "merge"} & set(_grant_caps(group, member))
+    ):
+        raise CollabError("当前权限不可查看修改提案", status=403)
+    visible = {
+        m.get("id") for m in group.get("materials", [])
+        if _can(group, member, "submit", m.get("id")) or _can(group, member, "merge", m.get("id"))
+    }
+    return {
+        "proposals": [
+            p for p in group.get("proposals", [])
+            if p.get("material_id") in visible
+        ]
+    }
+
+
+def _drop_stale_marks(material: dict, sentence_id: str) -> None:
+    """句子正文变了，旧的脱敏偏移就失效；删掉该句标记并让审查者看到占位提示。"""
+    marks = material.get("redactions", [])
+    kept = [m for m in marks if m.get("sentence_id") != sentence_id]
+    if len(kept) != len(marks):
+        material["redactions"] = kept
+        material["stale_redactions"] = True
+
+
+def _snapshot_history(material: dict, message: str, by: str, diff: list[dict]) -> dict:
+    """群组历史必须自带句子快照与 diff，否则跨机 / 审查端无法复刻任意版本。"""
+    entry = {
+        "version": material.get("version"),
+        "stage": int(material.get("stage", 0)),
+        "at": _now(),
+        "by": by,
+        "message": message,
+        "sentences": json.loads(json.dumps(material.get("sentences", []))),
+        "diff": diff,
+    }
+    material.setdefault("history", []).append(entry)
+    return entry
+
+
+def _writeback(material: dict, message: str, diff: list[dict]) -> None:
+    """群组里的显式合并要写回本机项目，否则本地版本与群组版本会长期分叉。"""
+    project_id = material.get("project_id")
+    recording_id = material.get("recording_id")
+    if not project_id or not recording_id:
+        return
+    if storage.get_recording(project_id, recording_id) is None:
+        return
+    try:
+        sentences = json.loads(json.dumps(material.get("sentences", [])))
+        storage.save_sentences(project_id, recording_id, sentences)
+        from main import _sentences_to_markdown  # 延迟导入，避免循环依赖
+
+        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+        stage = int(str(material.get("version", "0.0")).partition(".")[0] or 0)
+        storage.commit_version(
+            project_id,
+            recording_id,
+            sentences,
+            diff,
+            message,
+            storage.get_settings()["identity"]["nick"],
+            advance_to=stage,
+            redactions=material.get("redactions", []),
+        )
+    except Exception:
+        # 写回失败不能影响群组合并本身：补同步会在下次打开材料时重试。
+        pass
 
 
 def decide_proposal(group_id: str, proposal_id: str, accept: bool, device_code: str) -> dict:
@@ -645,17 +925,21 @@ def decide_proposal(group_id: str, proposal_id: str, accept: bool, device_code: 
         proposal["conflict_text"] = target.get("text", "")
         _save(group)
         raise CollabError("该句已被其他改动覆盖，请确认后再强制合并", status=409)
+    before = target.get("text", "")
+    _drop_stale_marks(material, target.get("id", ""))
     target["text"] = proposal.get("after", "")
     material["version"] = _version_next(material.get("version", "2.0"))
     material["updated_at"] = _now()
     _bump_revision(material)
-    material.setdefault("history", []).append({
-        "version": material["version"],
-        "stage": int(material.get("stage", 0)),
-        "at": _now(),
-        "by": actor.get("nick", ""),
-        "message": f"合并第 {proposal['index'] + 1} 句（{proposal.get('by', '')} 提交）",
-    })
+    message = f"合并第 {proposal['index'] + 1} 句（{proposal.get('by', '')} 提交）"
+    diff = [{
+        "sentence_id": target.get("id", ""),
+        "index": int(target.get("index", 0)),
+        "before": before,
+        "after": target.get("text", ""),
+    }]
+    _snapshot_history(material, message, actor.get("nick", ""), diff)
+    _writeback(material, message, diff)
     proposal.update({
         "status": "accepted",
         "decided_by": actor.get("nick", ""),
@@ -716,18 +1000,26 @@ def merge_snapshot(group_id: str, material_id: str, parent: str, sentences: list
             merged[sid] = {**cur, "text": inc.get("text", cur.get("text", "")), "speaker": inc.get("speaker", cur.get("speaker", ""))}
 
     ordered = sorted(merged.values(), key=lambda s: int(s.get("index", 0)))
+    before_map = {str(s.get("id")): s.get("text", "") for s in material.get("sentences", [])}
+    diff = []
+    for s in ordered:
+        old = before_map.get(str(s.get("id")), "")
+        if old != s.get("text", ""):
+            diff.append({
+                "sentence_id": s.get("id", ""),
+                "index": int(s.get("index", 0)),
+                "before": old,
+                "after": s.get("text", ""),
+            })
+            _drop_stale_marks(material, str(s.get("id")))
     material["sentences"] = ordered
     material["base_sentences"] = ordered
     material["version"] = _version_next(material.get("version", "2.0"))
     material["updated_at"] = _now()
     _bump_revision(material)
-    material.setdefault("history", []).append({
-        "version": material["version"],
-        "stage": int(material.get("stage", 0)),
-        "at": _now(),
-        "by": actor.get("nick", ""),
-        "message": "节点合并（三方自动合并）" if not conflicts else "节点合并（冲突句强制采用本地版本）",
-    })
+    message = "节点合并（三方自动合并）" if not conflicts else "节点合并（冲突句强制采用本地版本）"
+    _snapshot_history(material, message, actor.get("nick", ""), diff)
+    _writeback(material, message, diff)
     _log(group, actor, "merge_snapshot", material_id, material["version"])
     _save(group)
     return {"status": "merged", "material": _material_meta(group, material, actor), "version": material["version"]}
@@ -858,11 +1150,18 @@ def playback_target(group_id: str, material_id: str, approval_id: str, device_co
         raise CollabError("材料不存在", status=404)
     path = Path(material.get("audio_path") or "")
     if not path.is_file():
+        # 副本节点的材料坐标可能来自别的机器，或本地项目已移动音乐文件；回退到本机录音路径。
+        recording = storage.get_recording(material.get("project_id") or "", material.get("recording_id") or "")
+        if recording and recording.get("audio_path"):
+            path = Path(recording["audio_path"])
+            if path.is_file():
+                material["audio_path"] = str(path)
+    if not path.is_file():
         raise CollabError("音频文件不在本机", status=404)
     member = _member(group, device_code)
     # 烧毁模式在客户端「播完/离开」时调用 consume 才真正烧掉，避免 <audio> 的多次 Range
     # 请求把授权瞬间用光、导致播放中途 403。
-    _log(group, member, "play_audio", material_id, approval.get("mode", ""))
+    _log(group, member, "play_audio", material_id, approval.get("mode", ""), dedupe_sec=60)
     _save(group)
     return path, material.get("format", ""), approval
 

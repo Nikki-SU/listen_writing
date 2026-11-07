@@ -9,12 +9,18 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-from pathlib import Path
+import re
+import tempfile
 import threading
+import time
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import av
+import numpy as np
 
+import audio
+import transcriber
 import collab
 import diarize
 import llm
@@ -57,6 +63,212 @@ def _get_transcriber(model_key: str):
         if model_key not in _engines:
             _engines[model_key] = transcriber_for(model_key)
         return _engines[model_key]
+
+
+# ---------- 实时录音（边说边转写） ----------
+#
+# 浏览器用 getUserMedia 采集 16kHz/mono/s16le PCM，按约 1 秒一批 POST 过来；
+# 后端把 PCM 追加到 live.pcm，够 2 秒就切一次静音并只识别新增片段，界面因此
+# 能边录边看到句子，而不是录完再干等整段转写。
+_live_lock = threading.Lock()
+_live_sessions: dict[str, dict] = {}
+
+
+def _live_asr_key() -> str:
+    """实时优先 SenseVoice（轻、快），其次 Whisper small。
+
+    必须选“模型已下载”的档位：否则第一块 PCM 会在请求线程里同步下载
+    几百 MB 模型，浏览器看起来就是一直转圈，正是要避免的“干等”。
+    """
+    for key in ("sensevoice-small", "whisper-small"):
+        if not _asr_downloaded(key):
+            continue
+        try:
+            transcriber_for(key)
+            return key
+        except Exception:
+            continue
+    raise RuntimeError(
+        "实时转写模型还没下载完：请等首启引导/设置页下载 SenseVoice 或 Whisper small 后再录"
+    )
+
+
+def _live_flush(session: dict, force: bool = False) -> list[dict]:
+    with session["lock"]:
+        path: Path = session["pcm_path"]
+        if not path.is_file():
+            return []
+        raw = path.read_bytes()
+        total = len(raw) // 2
+        start = int(session.get("processed") or 0)
+        if total <= start:
+            return []
+        if not force and total - start < 16000 * 2:
+            return []
+
+        samples = np.frombuffer(raw[start * 2:], dtype="<i2").astype(np.float32) / 32768.0
+        engine = _get_transcriber(session["engine"])
+        regions = audio.split_speech(samples)
+        new_sentences: list[dict] = []
+        consumed = 0
+        for idx, (begin, end) in enumerate(regions):
+            last = idx == len(regions) - 1
+            # 最后一段可能还在说话，留 0.6 秒尾巴到下一批，避免把词切成两半。
+            if last and not force and len(samples) - end < int(16000 * 0.6):
+                break
+            seg = samples[begin:end]
+            if seg.size < 1600:
+                consumed = end
+                continue
+            fd, tmp_name = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            tmp = Path(tmp_name)
+            try:
+                tmp.write_bytes(audio.wav_bytes(seg))
+                parts = engine.transcribe(str(tmp))
+            finally:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            text = " ".join(str(p.get("text") or "").strip() for p in parts).strip()
+            if text:
+                sentence = {
+                    "id": storage.new_id(),
+                    "recording_id": session["recording_id"],
+                    "index": len(session["sentences"]),
+                    "text": text,
+                    "start_ms": int((start + begin) / 16000 * 1000),
+                    "end_ms": int((start + end) / 16000 * 1000),
+                    "speaker": "",
+                }
+                session["sentences"].append(sentence)
+                new_sentences.append(sentence)
+            consumed = end
+
+        if consumed:
+            session["processed"] = start + consumed
+        if new_sentences:
+            pid, rid = session["project_id"], session["recording_id"]
+            storage.save_sentences(pid, rid, session["sentences"])
+            storage.update_recording(pid, rid, duration_sec=round(session["processed"] / 16000, 2))
+        return new_sentences
+
+
+# ---------- 模型管理器（引导配置里自动下载千问等模型） ----------
+
+_model_jobs: dict[str, dict] = {}
+_model_jobs_lock = threading.Lock()
+
+
+def _asr_downloaded(key: str) -> bool:
+    spec = ASR_MODELS.get(key)
+    if spec is None:
+        return False
+    engine = spec.get("engine")
+    try:
+        if engine == "faster-whisper":
+            return not transcriber.FasterWhisperTranscriber(size=spec.get("size")).needs_download()
+        if engine == "sensevoice":
+            return (transcriber.SENSEVOICE_DIR / "model.int8.onnx").is_file()
+        if engine == "qwen3-asr":
+            return (transcriber.QWEN_ASR_DIR / "model.safetensors").is_file()
+    except Exception:
+        return False
+    return False
+
+
+def models_state() -> dict:
+    """设置 / 首启引导用的模型清单：是否已下载、运行时是否可用、下载任务进度。"""
+    asr = []
+    for key, spec in ASR_MODELS.items():
+        try:
+            transcriber_for(key)
+            available = True
+        except Exception:
+            available = False
+        asr.append({
+            **spec,
+            "kind": "asr",
+            "available": available,
+            "downloaded": _asr_downloaded(key),
+        })
+    llm_ready = llm.runtime_available()
+    llm_items = []
+    for key, spec in llm.LLM_MODELS.items():
+        llm_items.append({
+            **spec,
+            "kind": "llm",
+            "available": llm_ready,
+            "downloaded": llm.model_file(key) is not None,
+        })
+    with _model_jobs_lock:
+        jobs = sorted(
+            _model_jobs.values(), key=lambda j: j.get("started_at", ""), reverse=True
+        )[:20]
+    return {
+        "asr": asr,
+        "llm": llm_items,
+        "jobs": jobs,
+        "runtime": {"llm": llm_ready},
+    }
+
+
+def _set_job(job: dict, **fields) -> None:
+    with _model_jobs_lock:
+        job.update(fields)
+
+
+def _run_model_job(job: dict) -> None:
+    try:
+        key = job["key"]
+        if job["kind"] == "asr":
+            spec = ASR_MODELS[key]
+            engine = spec.get("engine")
+            if engine == "sensevoice":
+                ok = transcriber._ensure_sensevoice(
+                    lambda msg: _set_job(job, message=msg, progress=25)
+                )
+            elif engine == "qwen3-asr":
+                ok = transcriber._ensure_qwen_asr(
+                    lambda msg: _set_job(job, message=msg, progress=25)
+                )
+            else:
+                _set_job(job, message=f"正在下载 {job['label']}（首次约数百 MB，请保持网络畅通）…", progress=25)
+                ok = transcriber.FasterWhisperTranscriber(size=spec.get("size")).ensure_model()
+            if not ok:
+                raise RuntimeError("下载失败，请检查网络后重试")
+        else:
+            llm.ensure_model(key, on_status=lambda msg: _set_job(job, message=msg, progress=25))
+        _set_job(job, status="done", progress=100, message="已就绪")
+    except Exception as e:  # noqa: BLE001 - 下载失败原因要原样告诉用户
+        _set_job(job, status="error", error=str(e), message=f"下载失败：{e}")
+
+
+def start_model_job(kind: str, key: str) -> dict:
+    catalog = ASR_MODELS if kind == "asr" else llm.LLM_MODELS if kind == "llm" else None
+    if catalog is None:
+        raise ValueError("kind 只能是 asr 或 llm")
+    if key not in catalog:
+        raise ValueError(f"未知模型：{key}")
+    with _model_jobs_lock:
+        for job in _model_jobs.values():
+            if job.get("kind") == kind and job.get("key") == key and job.get("status") == "running":
+                return job
+        job = {
+            "id": storage.new_id(),
+            "kind": kind,
+            "key": key,
+            "label": catalog[key].get("label", key),
+            "status": "running",
+            "message": "准备下载…",
+            "progress": 5,
+            "error": "",
+            "started_at": storage.now_iso(),
+        }
+        _model_jobs[job["id"]] = job
+    threading.Thread(target=_run_model_job, args=(job,), daemon=True).start()
+    return job
 
 
 def _probe_duration_sec(audio_path: str) -> float:
@@ -290,7 +502,12 @@ class Handler(BaseHTTPRequestHandler):
             if group is None:
                 self._send_json({"error": "配对码不存在或已失效"}, status=404)
                 return
-            self._send_json(group)
+            if collab.code_expired(group):
+                self._send_json({"error": "配对码已过期，请让群主重新生成"}, status=410)
+                return
+            device = (q.get("device_code") or [""])[0]
+            # 加入前还不是成员：只返回群组预览，绝不把材料原文交给未加入的节点。
+            self._send_json(collab.sanitized_group(group, device))
             return
 
         m = _match(path, r"^/api/peer/groups/([^/]+)/snapshot$")
@@ -361,6 +578,9 @@ class Handler(BaseHTTPRequestHandler):
                 "options": {"asr": asr_options(), "llm": llm.options()},
             })
             return
+        if path == "/api/models":
+            self._send_json(models_state())
+            return
 
         q = parse_qs(urlparse(self.path).query)
         device = self._collab_device()
@@ -386,6 +606,7 @@ class Handler(BaseHTTPRequestHandler):
 
         for pattern, fn in (
             (r"^/api/groups/([^/]+)/materials$", lambda g: collab.list_materials(g, device)),
+            (r"^/api/groups/([^/]+)/materials/([^/]+)/versions/([^/]+)$", lambda g, mid, v: collab.get_material_version(g, mid, v, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)$", lambda g, mid: collab.get_material(g, mid, device)),
             (r"^/api/groups/([^/]+)/members$", lambda g: collab.members(g, device)),
             (r"^/api/groups/([^/]+)/grants$", lambda g: collab.list_grants(g, device)),
@@ -667,7 +888,154 @@ class Handler(BaseHTTPRequestHandler):
         if llm_key is not None and llm_key not in llm.LLM_MODELS:
             self._send_json({"error": f"未知的 AI 模型：{llm_key}"}, status=400)
             return
+        identity = data.get("identity")
+        if isinstance(identity, dict) and "device_code" in identity:
+            code = str(identity.get("device_code") or "").strip()
+            # 设备码会出现在配对与同步请求里：限制长度与字符，避免空码或 URL 特殊字符。
+            if len(code) < 4 or len(code) > 64:
+                self._send_json({"error": "设备码需为 4–64 个字符"}, status=400)
+                return
+            if not re.fullmatch(r"[A-Za-z0-9._:-]+", code):
+                self._send_json({"error": "设备码只能包含字母、数字与 . _ : -"}, status=400)
+                return
+            data["identity"] = {**identity, "device_code": code}
         self._send_json({"settings": storage.update_settings(data)})
+
+    def _live_start(self, project_id: str):
+        if storage.get_project(project_id) is None:
+            self._send_json({"error": "project not found"}, status=404)
+            return
+        data = self._read_json_body() or {}
+        name = str(data.get("name") or "").strip() or f"实时录音 {time.strftime('%m-%d %H:%M')}"
+        # 先确认模型可用，避免失败时在列表里留下一条空录音。
+        try:
+            engine_key = _live_asr_key()
+        except Exception as e:  # noqa: BLE001 - 运行时缺失要明确告知
+            self._send_json({"error": str(e)}, status=503)
+            return
+        recording = storage.create_recording(project_id, name, "wav")
+        rid = recording["id"]
+        pcm_path = storage.recording_dir(project_id, rid) / "live.pcm"
+        pcm_path.write_bytes(b"")
+        storage.set_transcribe(project_id, rid, "transcribing", 0)
+        session = {
+            "project_id": project_id,
+            "recording_id": rid,
+            "pcm_path": pcm_path,
+            "engine": engine_key,
+            "sentences": [],
+            "processed": 0,
+            "lock": threading.RLock(),
+        }
+        with _live_lock:
+            _live_sessions[f"{project_id}/{rid}"] = session
+        self._send_json(
+            {"recording": storage.get_recording(project_id, rid), "asr_model": engine_key},
+            status=201,
+        )
+
+    def _live_chunk(self, project_id: str, recording_id: str):
+        with _live_lock:
+            session = _live_sessions.get(f"{project_id}/{recording_id}")
+        if session is None:
+            self._send_json({"error": "实时录音会话不存在或已结束"}, status=404)
+            return
+        body = self._read_body()
+        if not body:
+            self._send_json({"sentences": [], "duration_sec": 0})
+            return
+        if len(body) > 4 * 1024 * 1024:
+            self._send_json({"error": "单个音频块过大"}, status=413)
+            return
+        with session["lock"]:
+            with open(session["pcm_path"], "ab") as fh:
+                fh.write(body)
+        try:
+            new_sentences = _live_flush(session)
+        except Exception as e:  # noqa: BLE001 - 模型下载 / 推理失败返回给界面提示
+            self._send_json({"sentences": [], "error": str(e)}, status=503)
+            return
+        duration = round(
+            (session["pcm_path"].stat().st_size // 2) / 16000, 2
+        )
+        self._send_json({"sentences": new_sentences, "duration_sec": duration})
+
+    def _live_stop(self, project_id: str, recording_id: str):
+        with _live_lock:
+            session = _live_sessions.pop(f"{project_id}/{recording_id}", None)
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if session is None:
+            self._send_json({"error": "实时录音会话不存在或已结束"}, status=404)
+            return
+        try:
+            _live_flush(session, force=True)
+        except Exception:
+            pass
+        raw = session["pcm_path"].read_bytes()
+        samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+        wav_path = storage.save_audio(project_id, recording_id, "wav", audio.wav_bytes(samples))
+        duration = round(len(samples) / 16000, 2)
+        sentences = session["sentences"]
+        if not sentences:
+            storage.update_recording(
+                project_id, recording_id, audio_path=wav_path, duration_sec=duration
+            )
+            storage.set_transcribe(project_id, recording_id, "error", 0, "没有识别到语音，请检查麦克风音量")
+            self._send_json({"recording": storage.get_recording(project_id, recording_id), "sentences": []})
+            return
+        storage.save_sentences(project_id, recording_id, sentences)
+        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+        storage.save_version(project_id, recording_id, 0, 1, {
+            "recording_id": recording_id,
+            "version": "0.1",
+            "stage": 0,
+            "seq": 1,
+            "parent": "",
+            "author_nick": storage.get_settings()["identity"]["nick"],
+            "timestamp": storage.now_iso(),
+            "message": "实时录音初始转写",
+            "diff": [],
+            "sentences": sentences,
+            "redactions": [],
+        })
+        storage.update_recording(
+            project_id,
+            recording_id,
+            audio_path=wav_path,
+            duration_sec=duration,
+            version={"stage": 0, "seq": 1, "current": "0.1"},
+        )
+        storage.set_transcribe(project_id, recording_id, "done", 100)
+        try:
+            session["pcm_path"].unlink()
+        except OSError:
+            pass
+        self._send_json({
+            "recording": storage.get_recording(project_id, recording_id),
+            "sentences": sentences,
+        })
+
+    def _retry_transcribe(self, project_id: str, recording_id: str):
+        """转写失败 / 用户想重跑时手动重试；旧状态先复位，避免界面卡在 error。"""
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if not Path(recording.get("audio_path") or "").is_file():
+            self._send_json({"error": "音频文件不在本机，无法重转写"}, status=409)
+            return
+        with _transcribe_lock:
+            if f"{project_id}/{recording_id}" in _transcribing:
+                self._send_json({"error": "该录音正在转写中"}, status=409)
+                return
+        storage.set_transcribe(project_id, recording_id, "transcribing", 0)
+        threading.Thread(
+            target=_run_transcribe, args=(project_id, recording_id), daemon=True
+        ).start()
+        self._send_json({"ok": True, "status": "transcribing"})
 
     def _read_json_body(self):
         try:
@@ -1043,6 +1411,54 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_json({"suggestions": suggestions, "model": model_key})
 
+    def _suggest_redactions(self, project_id: str, recording_id: str):
+        """AI 智能脱敏：只返回带偏移的建议，用户确认后走既有 addRedactions 落盘。"""
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if (recording.get("transcribe") or {}).get("status") != "done":
+            self._send_json({"error": "转写尚未完成，暂不能进行 AI 脱敏"}, status=409)
+            return
+
+        data = self._read_json_body()
+        if data is None:
+            return
+        model_key = str(
+            data.get("model")
+            or storage.get_settings().get("llm_model")
+            or llm.DEFAULT_LLM_MODEL
+        )
+        if model_key not in llm.LLM_MODELS:
+            self._send_json({"error": f"未知的 AI 模型：{model_key}"}, status=400)
+            return
+        if not llm.runtime_available():
+            self._send_json({"error": llm.RUNTIME_MISSING_MSG}, status=503)
+            return
+
+        categories = storage.get_redaction_categories(project_id)
+        asked = data.get("categories")
+        if isinstance(asked, list) and asked:
+            wanted = {str(c) for c in asked}
+            categories = [c for c in categories if str(c.get("id")) in wanted]
+        categories = [c for c in categories if c.get("enabled", True) is not False]
+        if not categories:
+            self._send_json({"error": "请先在脱敏面板启用至少一个类别"}, status=409)
+            return
+
+        sentences = storage.load_sentences(project_id, recording_id)
+        if not sentences:
+            self._send_json({"error": "没有可检查的句子"}, status=409)
+            return
+
+        try:
+            suggestions = llm.redact(sentences, categories, model_key)
+        except Exception as e:  # noqa: BLE001 - 下载/推理失败原因要原样告知用户
+            self._send_json({"error": f"AI 脱敏失败：{e}"}, status=503)
+            return
+
+        self._send_json({"suggestions": suggestions, "model": model_key})
+
     def _update_redaction_categories(self, project_id: str):
         """项目级脱敏类别模板：增删、改名、改占位符、启停。"""
         if storage.get_project(project_id) is None:
@@ -1148,6 +1564,18 @@ class Handler(BaseHTTPRequestHandler):
         if peers.maybe_forward(self):
             return
 
+        if path == "/api/models/download":
+            data = self._read_json_body()
+            if data is None:
+                return
+            try:
+                job = start_model_job(str(data.get("kind") or "asr"), str(data.get("key") or ""))
+            except ValueError as e:
+                self._send_json({"error": str(e)}, status=400)
+                return
+            self._send_json({"job": job}, status=202)
+            return
+
         if path == "/api/peers":
             data = self._read_json_body()
             if data is None:
@@ -1212,6 +1640,7 @@ class Handler(BaseHTTPRequestHandler):
                 str(data.get("mode") or "authoritative"),
                 device,
                 nick,
+                data.get("code_days") or 30,
             ))
             return
 
@@ -1379,6 +1808,31 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/polish$")
         if m:
             self._polish_recording(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions/suggest$")
+        if m:
+            self._suggest_redactions(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/transcribe$")
+        if m:
+            self._retry_transcribe(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/live$")
+        if m:
+            self._live_start(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/live/chunk$")
+        if m:
+            self._live_chunk(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/live/stop$")
+        if m:
+            self._live_stop(*m)
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings$")

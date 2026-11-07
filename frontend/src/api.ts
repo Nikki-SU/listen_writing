@@ -12,6 +12,8 @@ import type {
   CollabMember,
   CollabProposal,
   CollabRole,
+  ModelJob,
+  ModelsPayload,
   PeerSnapshot,
   SettingsPayload,
   Project,
@@ -20,6 +22,7 @@ import type {
   PolishSuggestion,
   RedactionCategory,
   RedactionMark,
+  RedactionSuggestion,
   Sentence,
   Version,
   VersionDetail,
@@ -581,6 +584,11 @@ export function groupAudioUrl(groupId: string, materialId: string, approvalId: s
   return `${BACKEND}/api/groups/${groupId}/materials/${materialId}/audio?approval_id=${encodeURIComponent(approvalId)}`
 }
 
+/** 页面关闭时用 sendBeacon 上报消费，避免绕过“听完即毁”的 onEnded。 */
+export function playbackConsumeUrl(groupId: string, approvalId: string): string {
+  return `${BACKEND}/api/groups/${groupId}/approvals/${approvalId}/consume`
+}
+
 /** 烧毁模式播放结束上报；服务端据此把这条审批标记为已用。 */
 export async function consumePlayback(
   groupId: string,
@@ -592,5 +600,97 @@ export async function consumePlayback(
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
     }),
+  )
+}
+
+// ---- 模型管理 / 首启下载 ----
+
+export async function fetchModels(): Promise<ModelsPayload> {
+  return json(await fetch(`${BACKEND}/api/models`))
+}
+
+export async function downloadModel(kind: 'asr' | 'llm', key: string): Promise<ModelJob> {
+  const data = await json<{ job: ModelJob }>(
+    await fetch(`${BACKEND}/api/models/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, key }),
+    }),
+  )
+  return data.job
+}
+
+/** 转写失败后的重试；后端会复位状态并重新排队。 */
+export async function retryTranscribe(
+  projectId: string,
+  recordingId: string,
+): Promise<{ ok: boolean }> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/transcribe`, {
+      method: 'POST',
+    }),
+  )
+}
+
+/** AI 智能脱敏建议（不直接改正文）。 */
+export async function suggestRedactions(
+  projectId: string,
+  recordingId: string,
+  model?: string,
+): Promise<{ suggestions: RedactionSuggestion[]; model: string }> {
+  return json(
+    await fetch(
+      `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/redactions/suggest`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      },
+    ),
+  )
+}
+
+// ---- 实时录音 ----
+
+export async function startLive(
+  projectId: string,
+  name: string,
+): Promise<{ recording: Recording; asr_model: string }> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/live`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }),
+  )
+}
+
+/** 发送一段 16kHz mono s16le PCM；返回这一批新识别出的句子。 */
+export async function sendLiveChunk(
+  projectId: string,
+  recordingId: string,
+  chunk: ArrayBuffer,
+): Promise<{ sentences: Sentence[]; duration_sec: number; error?: string }> {
+  return json(
+    await fetch(
+      `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/live/chunk`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: chunk,
+      },
+    ),
+  )
+}
+
+export async function stopLive(
+  projectId: string,
+  recordingId: string,
+): Promise<{ recording: Recording; sentences: Sentence[] }> {
+  return json(
+    await fetch(
+      `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/live/stop`,
+      { method: 'POST' },
+    ),
   )
 }

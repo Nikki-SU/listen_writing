@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import * as api from './api'
-import type { AppSettings, ModelOption, SettingsPayload } from './types'
+import { jobFor, useModels } from './useModels'
+import type { AppSettings, ModelJob, ModelOption, ModelStatus, SettingsPayload } from './types'
 
-// 设置弹层：身份 + 两档模型。模型选项由后端 S-1 返回（唯一权威），
+// 设置弹层：身份 + 模型。模型选项由后端 S-1 返回（唯一权威），
 // 前端只渲染，不重复维护标签与最低配置。切换模型对“之后的转写/AI 任务”生效，
 // 已完成的录音不会被追溯改动——这是用户的预期，也避免悄悄重跑长任务。
 export default function SettingsPanel({
@@ -15,8 +16,10 @@ export default function SettingsPanel({
 }) {
   const [payload, setPayload] = useState<SettingsPayload | null>(null)
   const [nick, setNick] = useState('')
+  const [deviceCode, setDeviceCode] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const { models, error: modelError, download } = useModels(1500)
 
   useEffect(() => {
     let cancelled = false
@@ -26,6 +29,7 @@ export default function SettingsPanel({
         if (cancelled) return
         setPayload(p)
         setNick(p.settings.identity.nick)
+        setDeviceCode(p.settings.identity.device_code)
       })
       .catch((e) => !cancelled && setError(String(e)))
     return () => {
@@ -62,6 +66,26 @@ export default function SettingsPanel({
     void patch({ identity: { ...payload.settings.identity, nick: trimmed } }, {
       identity: { ...payload.settings.identity, nick: trimmed },
     })
+  }
+
+  function saveDeviceCode() {
+    if (!payload) return
+    const current = payload.settings.identity.device_code
+    const code = deviceCode.trim()
+    if (code === current) return
+    if (code.length < 4 || code.length > 64 || !/^[A-Za-z0-9._:-]+$/.test(code)) {
+      setDeviceCode(current)
+      setError('设备码需为 4–64 位，只能包含字母、数字和 . _ : -')
+      return
+    }
+    void patch({ identity: { ...payload.settings.identity, device_code: code } }, {
+      identity: { ...payload.settings.identity, device_code: code },
+    })
+  }
+
+  function statusOf(kind: 'asr' | 'llm', id: string): ModelStatus | undefined {
+    const list = kind === 'asr' ? models?.asr : models?.llm
+    return list?.find((m) => m.id === id)
   }
 
   return (
@@ -104,7 +128,9 @@ export default function SettingsPanel({
           模型负责“转得快不快、改得准不准”，这里改的是后续任务要用的引擎；已有录音不会被重跑。
         </p>
 
-        {error && <div style={{ color: '#b00020', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        {(error || modelError) && (
+          <div style={{ color: '#b00020', fontSize: 13, marginTop: 12 }}>{error || modelError}</div>
+        )}
         {!payload && !error && (
           <div style={{ color: '#8a8f98', fontSize: 13, marginTop: 24 }}>正在读取设置…</div>
         )}
@@ -119,9 +145,7 @@ export default function SettingsPanel({
                   onChange={(e) => setNick(e.target.value)}
                   onBlur={saveNick}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.currentTarget.blur()
-                    }
+                    if (e.key === 'Enter') e.currentTarget.blur()
                   }}
                   placeholder="用于版本记录里的作者"
                   style={{ flex: 1, fontSize: 13 }}
@@ -129,22 +153,20 @@ export default function SettingsPanel({
               </div>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                 <label style={{ fontSize: 13, color: '#6b7280', width: 70 }}>设备码</label>
-                <div
-                  style={{
-                    flex: 1,
-                    fontSize: 12,
-                    color: '#4b5563',
-                    background: '#f6f7f9',
-                    borderRadius: 6,
-                    padding: '6px 10px',
-                    letterSpacing: '0.08em',
+                <input
+                  value={deviceCode}
+                  onChange={(e) => setDeviceCode(e.target.value)}
+                  onBlur={saveDeviceCode}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur()
+                    if (e.key === 'Escape') setDeviceCode(payload.settings.identity.device_code)
                   }}
-                >
-                  {payload.settings.identity.device_code}
-                </div>
+                  spellCheck={false}
+                  style={{ flex: 1, fontSize: 12, letterSpacing: '0.06em' }}
+                />
               </div>
               <p style={{ margin: 0, fontSize: 11, color: '#9aa0a6' }}>
-                设备码在本机首次启动时生成，用来在协作时区分“谁改的”；不需要时可以不看它。
+                设备码用于协作时区分“谁改的”。可以改成你易记的标识（4–64 位字母数字），改完后本机旧授权仍按原码记录。
               </p>
             </Section>
 
@@ -155,21 +177,30 @@ export default function SettingsPanel({
                   option={m}
                   checked={payload.settings.asr_model === m.id}
                   onSelect={() => void patch({ asr_model: m.id }, { asr_model: m.id })}
+                  status={statusOf('asr', m.id)}
+                  job={jobFor(models, 'asr', m.id)}
+                  onDownload={() => void download('asr', m.id)}
                 />
               ))}
-              <Hint>换档后，下一段录音会用新模型；当前录音的转写结果不受影响。未就绪的档位置灰，避免选了之后才发现跑不起来。</Hint>
+              <Hint>换档后，下一段录音会用新模型；当前录音的转写结果不受影响。未下载的档位可以先下载，下完再选。</Hint>
             </Section>
 
-            <Section title="AI 模型（语义纠错 / 脱敏标记）">
+            <Section title="AI 模型（语义纠错 / 智能脱敏）">
               {payload.options.llm.map((m) => (
                 <ModelRow
                   key={m.id}
                   option={m}
                   checked={payload.settings.llm_model === m.id}
                   onSelect={() => void patch({ llm_model: m.id }, { llm_model: m.id })}
+                  status={statusOf('llm', m.id)}
+                  job={jobFor(models, 'llm', m.id)}
+                  onDownload={() => void download('llm', m.id)}
                 />
               ))}
-              <Hint>首次使用会自动下载模型（约 1–5GB），之后全程离线运行。</Hint>
+              <Hint>
+                首次使用会自动下载模型（约 1–5GB），之后全程离线运行。
+                {models && !models.runtime.llm && ' 当前 AI 运行时未安装，下载完成后仍需运行启动器安装组件。'}
+              </Hint>
             </Section>
           </>
         )}
@@ -195,16 +226,22 @@ function ModelRow({
   option,
   checked,
   onSelect,
+  status,
+  job,
+  onDownload,
 }: {
   option: ModelOption
   checked: boolean
   onSelect: () => void
+  status?: ModelStatus
+  job?: ModelJob
+  onDownload: () => void
 }) {
+  const running = job?.status === 'running'
+  const failed = job?.status === 'error'
+  const ready = status?.downloaded || job?.status === 'done'
   return (
     <div
-      onClick={() => {
-        if (option.available) onSelect()
-      }}
       style={{
         display: 'flex',
         gap: 10,
@@ -213,24 +250,69 @@ function ModelRow({
         borderRadius: 8,
         border: `1px solid ${checked ? '#1f6feb' : '#eceef1'}`,
         background: checked ? '#f3f7ff' : '#fff',
-        cursor: option.available ? 'pointer' : 'not-allowed',
-        opacity: option.available ? 1 : 0.62,
       }}
     >
-      <input type="radio" checked={checked} readOnly style={{ marginTop: 3 }} />
+      <input
+        type="radio"
+        checked={checked}
+        readOnly
+        onClick={() => {
+          if (option.available) onSelect()
+        }}
+        style={{ marginTop: 3, cursor: option.available ? 'pointer' : 'not-allowed' }}
+      />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13, fontWeight: 600 }}>{option.label}</span>
           {checked && <span style={{ fontSize: 11, color: '#1f6feb' }}>使用中</span>}
+          <span
+            style={{
+              fontSize: 11,
+              color: ready ? '#1e7e34' : running ? '#8a5a00' : failed ? '#b00020' : '#8a8f98',
+              background: ready ? '#e9f7ee' : running ? '#fff4e0' : failed ? '#fdecea' : '#f3f4f6',
+              borderRadius: 4,
+              padding: '1px 6px',
+            }}
+          >
+            {ready ? '已下载' : running ? `下载中 ${job?.progress ?? 0}%` : failed ? '下载失败' : '未下载'}
+          </span>
           {!option.available && (
             <span style={{ fontSize: 11, color: '#b36b00', background: '#fff4e0', borderRadius: 4, padding: '1px 6px' }}>
-              本机未内置
+              运行时未安装
             </span>
+          )}
+          {!ready && (
+            <button
+              onClick={onDownload}
+              disabled={running}
+              style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', cursor: running ? 'wait' : 'pointer' }}
+            >
+              {running ? '下载中…' : failed ? '重试' : '下载'}
+            </button>
           )}
         </div>
         <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
           {option.note} · 最低 {option.min_ram} · {option.speed}
         </div>
+        {running && (
+          <>
+            <div style={{ marginTop: 6, height: 4, background: '#eef0f3', borderRadius: 2 }}>
+              <div
+                style={{
+                  width: `${Math.max(4, job?.progress ?? 4)}%`,
+                  height: 4,
+                  background: '#4285f4',
+                  borderRadius: 2,
+                  transition: 'width .3s',
+                }}
+              />
+            </div>
+            <div style={{ marginTop: 3, fontSize: 11, color: '#8a8f98' }}>{job?.message}</div>
+          </>
+        )}
+        {failed && (
+          <div style={{ marginTop: 3, fontSize: 11, color: '#b00020' }}>{job?.error || job?.message}</div>
+        )}
       </div>
     </div>
   )

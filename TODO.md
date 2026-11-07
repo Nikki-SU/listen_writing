@@ -47,7 +47,8 @@
 - [x] **三档 ASR 全部内置**（2026-11-08）：Whisper（faster-whisper）、SenseVoice Small（sherpa-onnx int8）、Qwen3-ASR-0.6B（transformers + torch CPU）都已接入并通过真实音频转写。
   - SenseVoice：`data/models/sensevoice/` 只保留 `model.int8.onnx`，GitHub → gh-proxy → ghproxy 三源下载。
   - Qwen3-ASR：`AutoProcessor.apply_transcription_request` + `AutoModelForMultimodalLM`，直接吃内存 numpy 采样（不依赖 librosa），CPU 上 5 秒英文样本约 16 秒转完。
-  - 运行时：`sherpa-onnx==2.0.1` / `transformers==5.22.2` 写进 `requirements.txt`；torch 由启动器从 CPU wheel 源单独安装（避免 Linux 拖入数 GB CUDA 依赖），失败只让该档标为「本机运行时未安装」。
+  - 运行时：`sherpa-onnx==2.0.1` / `transformers==5.13.1` 写进 `requirements.txt`；torch 由启动器从 CPU wheel 源单独安装（避免 Linux 拖入数 GB CUDA 依赖），失败只让该档标为「本机运行时未安装」。
+  - **依赖锁版原因**：transformers 5.14+ 要求 `tokenizers>=0.23.1`，公开 PyPI / 清华镜像最高只有 0.22.1，装到用户机器会直接 `ResolutionImpossible`；5.13.1 已含 `qwen3_asr` 与 `apply_transcription_request`，因此锁 5.13.1 + tokenizers 0.22.1。装依赖失败时不要把版本“放宽”了事，必须先确认公开源存在满足所有约束的组合。
   - 设置页 `available` 改为运行时真实探测（`importlib.util.find_spec`），不再硬编码为可用。
   - 同时修复引导部署清单漏嵌 `audio.py` / `peers.py` 的致命问题（新装用户会 ImportError）。
 - [x] **AI 语义纠错（0→1 润色，修订模式，接受/拒绝/自改）**（2026-11-06）：详情页「AI 纠错」按钮调用本地 LLM，逐句返回「原文 → 建议」；只给建议不改正文，用户可接受 / 自己改 / 忽略，接受后才提交版本并推进到阶段 1（版本说明标注「AI 纠错采纳」）；写操作乐观更新 + 失败回滚；运行时未装时按钮置灰并说明原因。后端分批 16 句、只解析改动项、清理思考段，模型按档位进程内复用。**实测范围**：接口路由与错误语义（运行时缺失 503、模型非法 400、转写未完成 409）已用真实 HTTP 验证；**真实推理已跑通**（2026-11-06，sandbox 内装 `llama-cpp-python==0.3.36` + Qwen3-4B Q4_K_M）：输入 4 句含「我们门 / 在逐句 / 呃那个 / 的的」错例，模型准确修成「我们 / 再逐句 / 去掉语气词 / 的」，未改动的句子不返回，40 秒完成 4 句。1.7B 档位质量明显偏弱（只修出部分错字），默认档保持 4B。
@@ -68,6 +69,10 @@
   - 同人多设备：昵称 + 设备码一致时自动同步项目、录音元数据、句子与音频本体。
   - 非回环地址只开放 `/api/peer/*`、`/api/groups*`、健康检查与版本接口。
 - [x] **单次 / 单材料授权**（2026-11-08，PRD §12.4）：长期角色模板之外的临时放权。`Grant` 记录 `caps/scope/material_ids/uses/used/expires_at/revoked`；`scope=material` 只对指定材料生效，`uses=1` 用一次后写 `exhausted_at`，过期 / 撤销 / 用完自动失效且保留审计。前端成员页可发放与撤销。真实 HTTP 验证：首次 200、第二次 403；单材料不覆盖其他材料；撤销后 403。
+- [x] **实时录音 + 增量转写**（2026-11-08）：录音页新增「实时录音」，浏览器采 16k/mono PCM、每约 1 秒发给本地后端；后端按静音切段只识别新增片段并把句子实时返回，停止时把整段 PCM 落成 `audio.wav`。所选实时引擎（SenseVoice 优先，其次 Whisper small）**模型未下载时直接 503**，不会创建空录音、也不会在请求线程里同步下载几百 MB 让用户干等。前端弹层显示计时、实时句子、保存/取消；失败可重试。
+- [x] **模型管理器 + 首启自动下载千问模型**（2026-11-08）：`GET /api/models` 返回已下载/运行时可用/下载任务进度，`POST /api/models/download` 后台线程下载；首启引导弹窗自动为缺失的 Whisper small、SenseVoice、Qwen3-ASR、Qwen3-4B 发起下载并显示进度，关窗不中断（后端继续跑），设置页可查看进度/重试。**验证**：真实 HTTP 验证清单字段、非法模型 400、未下载模型时实时录音 503 且不留空录音。
+- [x] **审计修复：协作隐私 / 授权 / 过期 / 陈旧脱敏**（2026-11-08）：提案仅对可提交/合并者可见且只读/审查者拿不到原文；副本不再拉取无编辑权限的媒体；单次授权失败请求不消耗；配对码 30 天过期（410）且界面显示有效期；材料修改后原脱敏标记失效并提示重新脱敏；副本播放回退本地录音路径；烧毁模式在 `pagehide` 时用 `sendBeacon` 上报消费，不能靠关标签页绕过。
+- [x] **设备码可编辑 + AI 智能脱敏前端**（2026-11-08）：设置页设备码改为可编辑（4–64 位 `A-Za-z0-9._:-`，后端同步校验）；脱敏模式新增「AI 识别敏感信息」，只给候选片段，逐条/全部确认后才写入，运行时缺失时按钮置灰并说明。
 - [ ] **结构化空壳（已声明）**：`models.Identity`、`models.VersionRef`、`models.DesensitizationCategory` 目前只是类型定义；Identity 已被 `storage.settings` 实际使用，VersionRef / DesensitizationCategory 待对应功能落地时接线。
 - [ ] **macOS / Linux 真机验证暂缓**（用户 2026-11-08 明确为取舍项）：组内无人使用这两个平台，暂不做真机验证；代码与启动器已同构，Linux sandbox 全链路跑通，macOS 仍未在真机执行。
 - [ ] 后续工作：PRD v1.0 的功能已全部落地；剩余仅为平台验证、发言人真实样本准确率与历史重构项（启动器薄壳化）。

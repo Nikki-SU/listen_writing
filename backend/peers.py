@@ -345,7 +345,8 @@ def snapshot_group(group_id: str, device_code: str) -> dict:
         raise collab.CollabError("群组不存在", status=404)
     if collab._member(group, device_code) is None:
         raise collab.CollabError("你还没有加入这个群组", status=403)
-    return group
+    # 有编辑权的节点拿完整副本；只读 / 审查者只拿阶段 2 之后、已脱敏的内容。
+    return collab.sanitized_group(group, device_code)
 
 
 def merge_snapshot(group_id: str, remote: dict, device_code: str) -> dict:
@@ -358,8 +359,14 @@ def merge_snapshot(group_id: str, remote: dict, device_code: str) -> dict:
         return remote
     if collab._member(local, device_code) is None:
         raise collab.CollabError("你还没有加入这个群组", status=403)
+    if not collab.can_edit(local, device_code):
+        # 只读 / 审查者不能把（脱敏的）副本反向覆盖完整数据。
+        raise collab.CollabError("当前权限不可推送群组快照", status=403)
     if local.get("mode") != "replica":
         # 无副本群组以群主为准，成员推来的快照不覆盖权威数据。
+        return local
+    # 本机若只是只读 / 审查者，绝不落地完整原文：保持脱敏副本，靠拉取更新。
+    if not collab.can_edit(local, _identity().get("device_code", "")):
         return local
     changed = _merge_group(local, remote)
     if changed:
@@ -410,6 +417,9 @@ def push_group(group_id: str) -> None:
     if group is None or group.get("mode") != "replica":
         return
     my_device = _identity().get("device_code", "")
+    if not collab.can_edit(group, my_device):
+        # 只读 / 审查者本地是脱敏副本，推给别的节点会污染完整数据。
+        return
     for peer in peers():
         try:
             _http_json(
@@ -808,7 +818,13 @@ def _pull_audio(peer: dict, project_id: str, recording_id: str, recording: dict)
 
 
 def _pull_media(group: dict, fallback_peer: dict) -> None:
-    """有副本群组：本机缺材料对应的录音时，从来源节点拉一份。"""
+    """有副本群组：本机缺材料对应的录音时，从来源节点拉一份。
+
+    只读 / 审查者永远不拉原始媒体：他们只应看到脱敏文本，拉媒体等于把原文交给他们。
+    """
+    if not collab.can_edit(group, _identity().get("device_code", "")):
+        return
+    changed = False
     for material in group.get("materials", []):
         pid, rid = material.get("project_id"), material.get("recording_id")
         if not pid or not rid:
@@ -840,3 +856,9 @@ def _pull_media(group: dict, fallback_peer: dict) -> None:
         _apply_bundle(bundle)
         fake_peer = {"base_url": source, "device_code": device, "nick": nick}
         _pull_audio(fake_peer, pid, rid, bundle.get("recording") or {})
+        rec = storage.get_recording(pid, rid)
+        if rec and rec.get("audio_path"):
+            material["audio_path"] = rec["audio_path"]
+            changed = True
+    if changed:
+        collab.import_group(group)

@@ -131,6 +131,7 @@ export type CollabGroupSummary = {
   my_role?: string
   my_role_name?: string
   roles?: Record<string, CollabRole>
+  code_expires_at?: string
 }
 
 export type CollabMaterial = {
@@ -149,6 +150,7 @@ export type CollabMaterialDetail = {
     sentences: Sentence[]
     history: { version: string; stage: number; at: string; by: string; message: string }[]
     redactions: unknown[]
+    stale_redactions?: boolean
   }
   can_play: boolean
   approval: CollabApproval | null
@@ -261,4 +263,42 @@ export type ModelOption = {
 export type SettingsPayload = {
   settings: AppSettings
   options: { asr: ModelOption[]; llm: ModelOption[] }
+}
+
+/** 模型下载状态：下载与运行时安装分开显示，避免“模型在但跑不起来”的误解。 */
+export type ModelStatus = ModelOption & {
+  kind: 'asr' | 'llm'
+  engine?: string
+  size?: string
+  downloaded: boolean
+}
+
+export type ModelJob = {
+  id: string
+  kind: 'asr' | 'llm'
+  key: string
+  label: string
+  status: 'running' | 'done' | 'error'
+  message: string
+  progress: number
+  error: string
+  started_at: string
+}
+
+export type ModelsPayload = {
+  asr: ModelStatus[]
+  llm: ModelStatus[]
+  jobs: ModelJob[]
+  runtime: { llm: boolean }
+}
+
+/** AI 智能脱敏建议：只给位置与类别，采纳后仍走人工确认的 addRedactions。 */
+export type RedactionSuggestion = {
+  sentence_id: string
+  index: number
+  start: number
+  end: number
+  quote: string
+  category_id: string
+  placeholder: string
 }

@@ -35,7 +35,15 @@
 | R-14 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/polish` | `{"model":"可选，缺省取设置里的 llm_model"}` | `{"suggestions":[{sentence_id,index,before,after}…],"model":"qwen3-4b"}` | AI 语义纠错：只返回建议、**不改正文**；用户逐条用 R-7（`advance_to=1,source=ai_polish`）采纳。运行时未安装返回 503（正文为可读原因），转写未完成/无句子 409，模型非法 400 |
 | E-1 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/export?format=md\|json&version={stage}.{seq}` | 无 | 文件流（`Content-Disposition: attachment`） | 默认导出当前版本；带 `version` 导出历史版本；MD 便于送审，JSON 保留发言人/时间戳/句子映射。**阶段 ≥2 且存在标记时，导出的句子已替换为占位符，JSON 不含 `original`** |
 | S-1 | 后端 | `GET /api/settings` | 无 | `{"settings":{"identity":{"nick","device_code"},"asr_model","llm_model"},"options":{"asr":[ModelOption…],"llm":[ModelOption…]}}` | 本机身份与模型选择；首次调用生成设备码。`options` 在 `transcriber.ASR_MODELS` / `llm.LLM_MODELS` 唯一定义，前端只渲染 |
-| S-2 | 后端 | `PATCH /api/settings` | 同 S-1 `settings` 的任意子集 | `{"settings":{...}}` | 修改昵称 / 设备码 / 模型选择；空昵称不生效。`asr_model` 不在 `ASR_MODELS`、`llm_model` 不在 `LLM_MODELS` 时返回 400 |
+| S-2 | 后端 | `PATCH /api/settings` | 同 S-1 `settings` 的任意子集 | `{"settings":{...}}` | 修改昵称 / 设备码 / 模型选择；空昵称不生效；设备码需 4–64 位且只含 `A-Za-z0-9._:-`。`asr_model` 不在 `ASR_MODELS`、`llm_model` 不在 `LLM_MODELS` 时返回 400 |
+| S-3 | 后端 | `GET /api/models` | 无 | `{"asr":[ModelStatus…],"llm":[ModelStatus…],"jobs":[ModelJob…],"runtime":{"llm":bool}}` | 模型清单：`downloaded` 是否已下到本机、`available` 运行时是否可构建、`jobs` 为最近 20 个下载任务（`running/done/error`、`progress`、`message`） |
+| S-4 | 后端 | `POST /api/models/download` | `{"kind":"asr\|llm","key":"whisper-small"}` | `{"job":ModelJob}`（202） | 后台线程下载模型；同 kind+key 已在跑时直接返回原任务。未知 key 返回 400。首启引导会自动为缺失的推荐模型调用本接口 |
+| R-15 | 后端 | `POST /api/projects/{project_id}/live` | `{"name?":"实时录音"}` | `{"recording":{...},"asr_model":"sensevoice-small"}`（201） | 开始实时录音：优先 SenseVoice，其次 Whisper small；**所选档位模型必须已下载**，否则 503 并给出可读原因（不会创建空录音） |
+| R-16 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/live/chunk` | **raw s16le 16kHz mono PCM 字节** | `{"sentences":[Sentence…],"duration_sec":12.3}` | 追加 PCM 并按静音切段增量识别；返回本次新增句子。会话不存在 404 |
+| R-17 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/live/stop` | `{"force?":bool}` | `{"recording":{...},"sentences":[…]}` | 收尾：把剩余 PCM 落成 `audio.wav`、跑最后一段识别；一句都没识别到则 `transcribe.status=error` |
+| R-18 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/transcribe` | 无 | `{"recording":{...}}`（202） | 重新转写（转写失败/换了模型后重试）；已在转写中直接返回当前状态 |
+| R-19 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/redactions/suggest` | `{"model?":""}` | `{"suggestions":[{sentence_id,index,start,end,quote,category_id,placeholder}…],"model":"qwen3-4b"}` | AI 智能脱敏：只返回候选片段，**不落盘**；由用户逐条/全部确认后走 R-12。运行时未安装 503，无句子 409 |
+| G-27 | 后端 | `GET /api/groups/{gid}/materials/{mid}/versions/{stage}.{seq}` | `device_code?` | `{"version":{...sentences,diff}}` | 群组材料的历史版本快照；只读/审查者仅能看阶段 ≥2 的脱敏版本 |
 
 ### 局域网协作（G 系列）
 
