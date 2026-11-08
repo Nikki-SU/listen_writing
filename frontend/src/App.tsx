@@ -766,6 +766,10 @@ function TranscriptPanel({
   const [resegPreview, setResegPreview] = useState<ResegmentResult | null>(null)
   const [editOrigin, setEditOrigin] = useState<'ai_polish' | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
+  // 点句播放的“只播这一句”上限；长按或点整行时清空，改为连播
+  const sentenceStopRef = useRef<number | null>(null)
+  const playPressTimer = useRef<number | null>(null)
+  const playLongPressed = useRef(false)
 
   const llmKey = polishModel || 'qwen3-4b'
   const llmModelInfo = modelState?.llm.find((m) => m.id === llmKey)
@@ -827,6 +831,11 @@ function TranscriptPanel({
     const audio = audioRef.current
     if (!audio) return
     const ms = audio.currentTime * 1000
+    const stopAt = sentenceStopRef.current
+    if (stopAt != null && ms >= stopAt) {
+      sentenceStopRef.current = null
+      audio.pause()
+    }
     const current = localSentences.find((s) => ms >= s.start_ms && ms < s.end_ms)
     if (current && current.id !== activeId) {
       setActiveId(current.id)
@@ -835,14 +844,42 @@ function TranscriptPanel({
     }
   }
 
-  function seek(s: Sentence) {
+  function seek(s: Sentence, onlyThis = false) {
     setActiveId(s.id)
     const audio = audioRef.current
     if (!audio) return
+    sentenceStopRef.current = onlyThis ? s.end_ms : null
     audio.currentTime = s.start_ms / 1000
     void audio.play().catch(() => {
       // 浏览器可能因权限/格式拒绝自动播放，用户可手点播放按钮
     })
+  }
+
+  // 句子前的 ▶：点一下只播这一句；长按从这一句开始连播
+  function playPressStart(s: Sentence) {
+    playLongPressed.current = false
+    if (playPressTimer.current != null) window.clearTimeout(playPressTimer.current)
+    playPressTimer.current = window.setTimeout(() => {
+      playLongPressed.current = true
+      seek(s)
+    }, 450)
+  }
+
+  function playPressEnd(s: Sentence) {
+    if (playPressTimer.current != null) {
+      window.clearTimeout(playPressTimer.current)
+      playPressTimer.current = null
+    }
+    if (!playLongPressed.current) seek(s, true)
+    playLongPressed.current = false
+  }
+
+  function playPressCancel() {
+    if (playPressTimer.current != null) {
+      window.clearTimeout(playPressTimer.current)
+      playPressTimer.current = null
+    }
+    playLongPressed.current = false
   }
 
   function startEdit(s: Sentence, prefill?: string, origin: 'ai_polish' | null = null) {
@@ -1964,6 +2001,38 @@ function TranscriptPanel({
                     : active ? '3px solid #4285f4' : '3px solid transparent',
                 }}
               >
+                <button
+                  type="button"
+                  title="点一下只播这一句；长按从这一句开始连播"
+                  onPointerDown={(e) => {
+                    e.stopPropagation()
+                    playPressStart(s)
+                  }}
+                  onPointerUp={(e) => {
+                    e.stopPropagation()
+                    playPressEnd(s)
+                  }}
+                  onPointerLeave={playPressCancel}
+                  onPointerCancel={playPressCancel}
+                  onContextMenu={(e) => e.preventDefault()}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 12,
+                    lineHeight: 1.2,
+                    padding: '3px 8px',
+                    alignSelf: 'flex-start',
+                    color: '#1d4ed8',
+                    background: '#eef4ff',
+                    border: 'none',
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    touchAction: 'manipulation',
+                    userSelect: 'none',
+                  }}
+                >
+                  ▶
+                </button>
                 <span style={{ color: '#999', fontSize: 12, flexShrink: 0, fontVariantNumeric: 'tabular-nums', paddingTop: 2 }}>
                   {fmtMs(s.start_ms)}
                 </span>
