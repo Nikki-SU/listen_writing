@@ -138,7 +138,7 @@ textarea{min-height:96px;resize:vertical}
 .pbtns{display:flex;gap:8px}
 .pbtns button{flex:1;padding:8px 6px;font-size:13px}
 .sentence.now{background:#eef6ff;box-shadow:inset 3px 0 0 var(--primary)}
-.mini{flex:0 0 auto;padding:4px 9px;font-size:12px;background:#eef4ff;color:#1d4ed8;border-radius:8px}
+.mini{flex:0 0 auto;padding:4px 9px;font-size:12px;background:#eef4ff;color:#1d4ed8;border-radius:8px;touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 </style>
 </head>
 <body>
@@ -182,8 +182,10 @@ function loadAudio(){
   if(au.dataset.src===src)return;
   au.dataset.src=src;au.src=src;seek.value=0;seek.max='0';curEl.textContent='0:00';durEl.textContent='0:00';
 }
-function seekTo(ms,autoplay){
+let stopAt=null;        // 只播一句时的时间上限（毫秒）；null 表示连续播放
+function seekTo(ms,autoplay,stopMs){
   const t=Math.max(0,(ms||0)/1000);
+  stopAt=(stopMs==null?null:stopMs);
   loadAudio();
   try{au.currentTime=t}catch(e){}
   seek.value=String(t);curEl.textContent=fmtTime(t);
@@ -210,13 +212,14 @@ function markNow(){
 }
 au.addEventListener('timeupdate',()=>{
   const t=au.currentTime;seek.value=String(t);curEl.textContent=fmtTime(t);markNow();
+  if(stopAt!=null&&t*1000>=stopAt){stopAt=null;au.pause()}
 });
 au.addEventListener('loadedmetadata',()=>{durEl.textContent=fmtTime(au.duration);seek.max=String(au.duration||0)});
 au.addEventListener('play',()=>{playBtn.textContent='⏸'});
 au.addEventListener('pause',()=>{playBtn.textContent='▶'});
 au.addEventListener('error',()=>{if(au.dataset.src)toast('音频加载失败，请重新配对')});
-playBtn.onclick=()=>{loadAudio();if(au.paused)au.play().catch(()=>toast('点一下播放键开始'));else au.pause()};
-seek.oninput=()=>{const t=Number(seek.value);try{au.currentTime=t}catch(e){}curEl.textContent=fmtTime(t)};
+playBtn.onclick=()=>{loadAudio();if(au.paused){stopAt=null;au.play().catch(()=>toast('点一下播放键开始'))}else au.pause()};
+seek.oninput=()=>{const t=Number(seek.value);stopAt=null;try{au.currentTime=t}catch(e){}curEl.textContent=fmtTime(t)};
 document.getElementById('prevS').onclick=()=>jump(-1);
 document.getElementById('nextS').onclick=()=>jump(1);
 
@@ -340,6 +343,7 @@ function drawTranscript(){
         <button id="toggleMerge">${mergeMode?'退出合并':'多句合并'}</button>
       </span>
     </div>
+    <div class="bar"><span style="font-size:12px;color:#6b7280">点 ▶ 只播这一句；长按 ▶ 从这一句开始连播</span></div>
     ${mergeBar}
     <div class="card" style="padding:0;overflow:hidden">
       ${list.map((s,si)=>{
@@ -410,11 +414,30 @@ function bindTranscript(list,roster){
   const ce=document.getElementById('cancelEdit');
   if(ce)ce.onclick=()=>{editing=null;drawTranscript()};
   app.querySelectorAll('[data-play]').forEach(b=>{
-    b.onclick=(ev)=>{
+    let timer=null,fired=false;
+    const find=()=>list.find(x=>x.id===b.dataset.play);
+    const down=(ev)=>{
       ev.stopPropagation();
-      const s=list.find(x=>x.id===b.dataset.play);
-      if(s)seekTo(s.start_ms,true);
+      fired=false;
+      if(timer)clearTimeout(timer);
+      timer=setTimeout(()=>{
+        timer=null;fired=true;
+        const s=find();if(s)seekTo(s.start_ms,true,null);
+      },450);
     };
+    const up=(ev)=>{
+      if(ev)ev.stopPropagation();
+      if(timer){clearTimeout(timer);timer=null}
+      if(!fired){const s=find();if(s)seekTo(s.start_ms,true,(s.end_ms&&s.end_ms>s.start_ms)?s.end_ms:null)}
+      fired=false;
+    };
+    const cancel=()=>{if(timer){clearTimeout(timer);timer=null}fired=false};
+    b.onpointerdown=down;
+    b.onpointerup=up;
+    b.onpointercancel=cancel;
+    b.onpointerleave=cancel;
+    b.oncontextmenu=(ev)=>ev.preventDefault();
+    b.onclick=(ev)=>ev.stopPropagation();
   });
 }
 
