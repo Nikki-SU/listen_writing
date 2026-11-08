@@ -393,6 +393,24 @@ def _sentence_snapshot(s: dict) -> dict:
     }
 
 
+def _speaker_roster(recording: dict, sentences: list[dict]) -> list[str]:
+    """发言人花名册：已登记的名字 + 句子里实际用到的名字，去重保序。
+
+    花名册单独存在 recording.json 的 `speakers` 字段里，这样即使一条录音只有
+    一个发言人，用户也能先新增“发言人2”，再逐句指派。
+    """
+    roster: list[str] = []
+    for name in list(recording.get("speakers") or []):
+        name = str(name or "").strip()
+        if name and name not in roster:
+            roster.append(name)
+    for s in sentences:
+        name = str(s.get("speaker") or "").strip()
+        if name and name not in roster:
+            roster.append(name)
+    return roster
+
+
 def _apply_redactions(sentences: list[dict], marks: list[dict]) -> list[dict]:
     """把脱敏标记替换成占位符（从后往前替换，避免坐标偏移）。"""
     grouped: dict[str, list[dict]] = {}
@@ -731,11 +749,13 @@ class Handler(BaseHTTPRequestHandler):
             current = storage.ensure_current_version(project_id, recording_id)
             if current and not recording.get("version"):
                 recording["version"] = current
+            sentences = storage.load_sentences(project_id, recording_id)
             self._send_json({
                 "recording": recording,
                 "transcribe": recording.get("transcribe", {"status": "pending", "progress": 0, "error": ""}),
-                "sentences": storage.load_sentences(project_id, recording_id),
+                "sentences": sentences,
                 "redactions": storage.get_redactions(project_id, recording_id),
+                "speakers": _speaker_roster(recording, sentences),
             })
             return
 
@@ -1191,8 +1211,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         action = data.get("action")
         sentences = storage.load_sentences(project_id, recording_id)
+        roster = _speaker_roster(recording, sentences)
         changed = []
 
+        if action == "create":
+            # 先登记名字，再逐句指派。否则一条录音只有 1 个发言人时，
+            # 界面上没有第二个名字可选，用户就无法拆分说话人。
+            name = str(data.get("name") or "").strip()
+            if not name:
+                self._send_json({"error": "name 不能为空"}, status=400)
+                return
+            if len(name) > 40:
+                self._send_json({"error": "发言人名称最多 40 个字"}, status=400)
+                return
+            if name in roster:
+                self._send_json({"error": "该发言人已存在"}, status=409)
+                return
+            roster.append(name)
+            storage.update_recording(project_id, recording_id, speakers=roster)
+            current = storage.ensure_current_version(project_id, recording_id) or {}
+            self._send_json({
+                "sentences": sentences,
+                "speakers": roster,
+                "version": None,
+                "current": current.get("current", ""),
+            })
+            return
         if action == "rename":
             old = str(data.get("from") or "").strip()
             new = str(data.get("to") or "").strip()
@@ -1202,7 +1246,7 @@ class Handler(BaseHTTPRequestHandler):
             if old == new:
                 self._send_json({"error": "新旧名称相同"}, status=400)
                 return
-            if any(s.get("speaker") == new for s in sentences):
+            if any(s.get("speaker") == new for s in sentences) or new in roster:
                 self._send_json({"error": "该名称已存在，如需合并请使用 merge"}, status=409)
                 return
             for s in sentences:
@@ -1210,6 +1254,7 @@ class Handler(BaseHTTPRequestHandler):
                     before = _sentence_snapshot(s)
                     s["speaker"] = new
                     changed.append((before, _sentence_snapshot(s)))
+            roster = [new if x == old else x for x in roster]
             message = f"发言人「{old}」改名为「{new}」"
         elif action == "merge":
             source = str(data.get("from") or "").strip()
@@ -1225,6 +1270,9 @@ class Handler(BaseHTTPRequestHandler):
                     before = _sentence_snapshot(s)
                     s["speaker"] = into
                     changed.append((before, _sentence_snapshot(s)))
+            roster = [x for x in roster if x != source]
+            if into not in roster:
+                roster.append(into)
             message = f"发言人「{source}」并入「{into}」"
         elif action == "assign":
             speaker = str(data.get("speaker") or "").strip()
@@ -1244,9 +1292,11 @@ class Handler(BaseHTTPRequestHandler):
             if not changed:
                 self._send_json({"error": "所选句子已经是该发言人"}, status=409)
                 return
+            if speaker not in roster:
+                roster.append(speaker)
             message = f"第 {'、'.join(str(s['index'] + 1) for s in sentences if s['id'] in id_set)} 句改标为「{speaker}」"
         else:
-            self._send_json({"error": "action must be rename / merge / assign"}, status=400)
+            self._send_json({"error": "action must be create / rename / merge / assign"}, status=400)
             return
 
         if not changed:
@@ -1255,6 +1305,7 @@ class Handler(BaseHTTPRequestHandler):
 
         storage.save_sentences(project_id, recording_id, sentences)
         storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+        storage.update_recording(project_id, recording_id, speakers=roster)
         diff = [
             {
                 "sentence_id": after["id"],
@@ -1272,6 +1323,93 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send_json({
             "sentences": sentences,
+            "speakers": roster,
+            "version": version,
+            "current": version["version"],
+        })
+
+    def _merge_sentences(self, project_id: str, recording_id: str):
+        """手动合并相邻句子：ASR 常按逗号/停顿切句，用户批量勾选后合成一句。"""
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if (recording.get("transcribe") or {}).get("status") != "done":
+            self._send_json({"error": "转写尚未完成，暂不能合并句子"}, status=409)
+            return
+
+        data = self._read_json_body()
+        if data is None:
+            return
+        ids = data.get("sentence_ids")
+        if not isinstance(ids, list) or len(ids) < 2:
+            self._send_json({"error": "请至少选择两句"}, status=400)
+            return
+        id_set = {str(x) for x in ids}
+
+        with _sentence_io_lock:
+            sentences = storage.load_sentences(project_id, recording_id)
+            positions = [i for i, s in enumerate(sentences) if s["id"] in id_set]
+            if len(positions) < 2:
+                self._send_json({"error": "所选句子不存在或少于两句"}, status=400)
+                return
+            first, last = positions[0], positions[-1]
+            # 只能合并相邻句子：跳过中间句会让文字顺序错乱。
+            if last - first + 1 != len(positions):
+                self._send_json({"error": "只能合并相邻的句子，请连续选择"}, status=400)
+                return
+            group = sentences[first:last + 1]
+            merged_text = "".join(str(s.get("text") or "") for s in group)
+            speaker = next((s.get("speaker") for s in group if s.get("speaker")), "")
+            merged = {
+                **group[0],
+                "text": merged_text,
+                "speaker": speaker,
+                "end_ms": group[-1].get("end_ms", group[0].get("end_ms", 0)),
+            }
+            removed_ids = {s["id"] for s in group[1:]}
+            sentences = sentences[:first] + [merged] + sentences[last + 1:]
+            for i, s in enumerate(sentences):
+                s["index"] = i
+
+            storage.save_sentences(project_id, recording_id, sentences)
+            storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+
+            # 被合并掉的句子其脱敏坐标已无意义；首句只是追加文字，标记仍然有效。
+            marks = storage.get_redactions(project_id, recording_id)
+            kept_marks = []
+            dropped = 0
+            for m in marks:
+                if str(m.get("sentence_id") or "") in removed_ids:
+                    dropped += 1
+                    continue
+                kept_marks.append(m)
+            if dropped:
+                storage.save_redactions(project_id, recording_id, kept_marks)
+
+        message = f"合并第 {first + 1}–{last + 1} 句（{len(group)} 句并 1 句）"
+        if dropped:
+            message += f"；清除被合并句的 {dropped} 处脱敏标记"
+        diff = [{
+            "sentence_id": merged["id"],
+            "index": merged["index"],
+            "op": "replace",
+            "before": _sentence_snapshot(group[0]),
+            "after": _sentence_snapshot(merged),
+        }]
+        nick = storage.get_settings()["identity"]["nick"]
+        version = storage.commit_version(
+            project_id,
+            recording_id,
+            sentences,
+            diff,
+            message=message,
+            author_nick=nick,
+            redactions=kept_marks,
+        )
+        self._send_json({
+            "sentences": sentences,
+            "redactions": kept_marks,
             "version": version,
             "current": version["version"],
         })
@@ -1407,6 +1545,21 @@ class Handler(BaseHTTPRequestHandler):
             redactions=remaining,
         )
         self._send_json({"marks": remaining, "version": version, "current": version["version"]})
+
+    def _delete_recording(self, project_id: str, recording_id: str):
+        """删除录音：音频、转写句子、所有版本与脱敏标记一起删掉。"""
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        status = (recording.get("transcribe") or {}).get("status")
+        if status == "transcribing":
+            self._send_json({"error": "这条录音正在转写，等转写结束（或失败）后再删除"}, status=409)
+            return
+        if not storage.delete_recording(project_id, recording_id):
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        self._send_json({"ok": True})
 
     def _polish_recording(self, project_id: str, recording_id: str):
         """AI 语义纠错：只给建议，不改正文；采纳由用户逐句 PATCH 完成。"""
@@ -1946,6 +2099,11 @@ class Handler(BaseHTTPRequestHandler):
             self._resegment_recording(*m)
             return
 
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/sentences/merge$")
+        if m:
+            self._merge_sentences(*m)
+            return
+
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions/suggest$")
         if m:
             self._suggest_redactions(*m)
@@ -2003,6 +2161,11 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions/([^/]+)$")
         if m:
             self._delete_redaction(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)$")
+        if m:
+            self._delete_recording(*m)
             return
 
         m = _match(path, r"^/api/groups/([^/]+)/members/([^/]+)$")

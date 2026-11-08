@@ -139,6 +139,29 @@ export default function App() {
     }
   }, [])
 
+  // 删除录音：音频、转写、版本、脱敏标记一起删，删前必须二次确认。
+  const handleDeleteRecording = useCallback(
+    async (id: string) => {
+      if (!projectId) return
+      const rec = recordings.find((r) => r.id === id)
+      if (!window.confirm(`删除录音「${rec?.name || '未命名'}」？音频、转写和所有历史版本都会一起删除，无法恢复。`)) {
+        return
+      }
+      try {
+        await api.deleteRecording(projectId, id)
+        setRecordings((prev) => prev.filter((r) => r.id !== id))
+        if (recordingId === id) {
+          setRecordingId(null)
+          setDetail(null)
+        }
+        setError('')
+      } catch (e) {
+        setError(String(e))
+      }
+    },
+    [projectId, recordings, recordingId],
+  )
+
   useEffect(() => {
     if (projectId) {
       refreshRecordings(projectId)
@@ -492,7 +515,7 @@ export default function App() {
                 上传录音
               </button>
             </div>
-            <RecordingList recordings={recordings} activeId={recordingId} onSelect={setRecordingId} />
+            <RecordingList recordings={recordings} activeId={recordingId} onSelect={setRecordingId} onDelete={handleDeleteRecording} />
           </div>
         )}
       </aside>
@@ -632,10 +655,12 @@ function RecordingList({
   recordings,
   activeId,
   onSelect,
+  onDelete,
 }: {
   recordings: Recording[]
   activeId: string | null
   onSelect: (id: string) => void
+  onDelete: (id: string) => void
 }) {
   if (recordings.length === 0) {
     return <div style={{ color: '#aaa', fontSize: 13 }}>暂无录音，上传以开始</div>
@@ -654,11 +679,31 @@ function RecordingList({
             background: r.id === activeId ? '#e8f0fe' : 'transparent',
             marginBottom: 2,
             display: 'flex',
-            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 8,
           }}
         >
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+          <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
           <span style={{ color: '#999', fontSize: 12, flexShrink: 0 }}>{statusLabel(r.transcribe.status)}</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete(r.id)
+            }}
+            title="删除这条录音"
+            style={{
+              fontSize: 11,
+              padding: '1px 6px',
+              border: '1px solid #f0d0d0',
+              borderRadius: 4,
+              background: '#fff',
+              color: '#b00020',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            删除
+          </button>
         </li>
       ))}
     </ul>
@@ -687,6 +732,14 @@ function TranscriptPanel({
   const [draftSpeaker, setDraftSpeaker] = useState('')
   const [speakerEdit, setSpeakerEdit] = useState<string | null>(null)
   const [speakerDraft, setSpeakerDraft] = useState('')
+  // 发言人花名册：单独登记名字，才能在“原本只有 1 个发言人”时先加人再拆分。
+  const [roster, setRoster] = useState<string[]>(detail.speakers ?? [])
+  const [newSpeakerOpen, setNewSpeakerOpen] = useState(false)
+  const [newSpeakerName, setNewSpeakerName] = useState('')
+  // 多句合并：勾选相邻句子后一次合成一句（ASR 常按逗号切碎）。
+  const [mergeMode, setMergeMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [merging, setMerging] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [marks, setMarks] = useState<RedactionMark[]>(detail.redactions ?? [])
   const [redactMode, setRedactMode] = useState(false)
@@ -729,6 +782,9 @@ function TranscriptPanel({
   useEffect(() => {
     setMarks(detail.redactions ?? [])
   }, [detail.redactions])
+  useEffect(() => {
+    setRoster(detail.speakers ?? [])
+  }, [detail.speakers])
 
   // 进入脱敏态才取类别模板：平时不打扰；模板是项目级，切换录音仍一致。
   useEffect(() => {
@@ -815,6 +871,7 @@ function TranscriptPanel({
         origin ? { advance_to: 1, source: origin } : undefined,
       )
       setVersion(res.current || version)
+      if (speaker) setRoster((list) => (list.includes(speaker) ? list : [...list, speaker]))
       if (origin === 'ai_polish') {
         setSuggestions((list) => list.filter((x) => x.sentence_id !== s.id))
       }
@@ -936,6 +993,7 @@ function TranscriptPanel({
     try {
       const res = await api.updateSpeakers(projectId, recordingId, { action: 'rename', from, to: name })
       setLocalSentences(res.sentences)
+      if (res.speakers) setRoster(res.speakers)
       setVersion(res.current || version)
       onError('')
     } catch (e) {
@@ -951,6 +1009,7 @@ function TranscriptPanel({
     try {
       const res = await api.updateSpeakers(projectId, recordingId, { action: 'merge', from, into })
       setLocalSentences(res.sentences)
+      if (res.speakers) setRoster(res.speakers)
       setVersion(res.current || version)
       onError('')
     } catch (e) {
@@ -959,7 +1018,45 @@ function TranscriptPanel({
     }
   }
 
-  const speakers = [...new Set(localSentences.map((s) => s.speaker).filter(Boolean))] as string[]
+  async function addSpeaker() {
+    const name = newSpeakerName.trim()
+    if (!name) return
+    try {
+      const res = await api.updateSpeakers(projectId, recordingId, { action: 'create', name })
+      if (res.speakers) setRoster(res.speakers)
+      setNewSpeakerOpen(false)
+      setNewSpeakerName('')
+      onError('')
+    } catch (e) {
+      onError(`新增发言人失败：${String(e)}`)
+    }
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]))
+  }
+
+  async function mergeSelected() {
+    if (selectedIds.length < 2 || merging) return
+    setMerging(true)
+    try {
+      const res = await api.mergeSentences(projectId, recordingId, selectedIds)
+      setLocalSentences(res.sentences)
+      setMarks(res.redactions ?? [])
+      if (res.current) setVersion(res.current)
+      setSelectedIds([])
+      setMergeMode(false)
+      onError('')
+    } catch (e) {
+      onError(`合并失败：${String(e)}`)
+    } finally {
+      setMerging(false)
+    }
+  }
+
+  const speakers = [
+    ...new Set([...roster, ...localSentences.map((s) => s.speaker).filter(Boolean)]),
+  ] as string[]
 
   /** 从当前选区取出句子内的字符区间（只统计文字，不含任何按钮）。 */
   function selectionRange(s: Sentence): { start: number; end: number } | null {
@@ -1655,9 +1752,10 @@ function TranscriptPanel({
           </div>
         )}
 
-        {speakers.length > 0 && (
+        {localSentences.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 10, fontSize: 12 }}>
             <span style={{ color: '#888' }}>发言人：</span>
+            {speakers.length === 0 && <span style={{ color: '#aaa' }}>尚未设置</span>}
             {speakers.map((sp) =>
               speakerEdit === sp ? (
                 <span key={sp} style={{ display: 'flex', gap: 4, alignItems: 'center', background: '#f5f8ff', padding: '2px 6px', borderRadius: 4 }}>
@@ -1710,7 +1808,81 @@ function TranscriptPanel({
                 </button>
               ),
             )}
-            <span style={{ color: '#aaa' }}>（点名字改名，改单句可拆分/合并）</span>
+            {newSpeakerOpen ? (
+              <span style={{ display: 'flex', gap: 4, alignItems: 'center', background: '#f5f8ff', padding: '2px 6px', borderRadius: 4 }}>
+                <input
+                  autoFocus
+                  value={newSpeakerName}
+                  onChange={(e) => setNewSpeakerName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setNewSpeakerOpen(false)
+                      setNewSpeakerName('')
+                    }
+                    if (e.key === 'Enter') void addSpeaker()
+                  }}
+                  placeholder="如：受访者"
+                  style={{ fontSize: 12, width: 100, padding: '1px 4px' }}
+                />
+                <button onClick={() => void addSpeaker()} style={{ fontSize: 11, padding: '1px 6px' }}>
+                  添加
+                </button>
+                <button
+                  onClick={() => {
+                    setNewSpeakerOpen(false)
+                    setNewSpeakerName('')
+                  }}
+                  style={{ fontSize: 11, padding: '1px 6px' }}
+                >
+                  取消
+                </button>
+              </span>
+            ) : (
+              <button
+                onClick={() => setNewSpeakerOpen(true)}
+                disabled={transcribe.status !== 'done'}
+                style={{ fontSize: 12, padding: '2px 10px', borderRadius: 12, background: '#fff', color: '#1a73e8', border: '1px dashed #9dbcf5', cursor: 'pointer' }}
+              >
+                + 新增发言人
+              </button>
+            )}
+            <span style={{ color: '#aaa' }}>（点名字改名；先加人，再逐句指派）</span>
+            <button
+              onClick={() => {
+                setMergeMode((v) => !v)
+                setSelectedIds([])
+              }}
+              disabled={transcribe.status !== 'done' || localSentences.length < 2}
+              style={{
+                marginLeft: 'auto',
+                fontSize: 12,
+                padding: '3px 12px',
+                borderRadius: 6,
+                border: '1px solid ' + (mergeMode ? '#1a73e8' : '#d6e4ff'),
+                background: mergeMode ? '#1a73e8' : '#fff',
+                color: mergeMode ? '#fff' : '#1a73e8',
+                cursor: 'pointer',
+              }}
+            >
+              {mergeMode ? '退出合并' : '多句合并'}
+            </button>
+          </div>
+        )}
+
+        {mergeMode && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '6px 10px', background: '#f5f8ff', border: '1px solid #d6e4ff', borderRadius: 6, fontSize: 12 }}>
+            <span style={{ color: '#1a73e8', fontWeight: 600 }}>已选 {selectedIds.length} 句</span>
+            <span style={{ color: '#888', fontSize: 11 }}>只能合并相邻的句子；勾选后点「合并所选」</span>
+            <button
+              onClick={() => void mergeSelected()}
+              disabled={selectedIds.length < 2 || merging}
+              style={{ marginLeft: 'auto', fontSize: 12, padding: '3px 12px' }}
+            >
+              {merging ? '合并中…' : '合并所选'}
+            </button>
+            <button onClick={() => setSelectedIds([])} disabled={selectedIds.length === 0} style={{ fontSize: 12, padding: '3px 10px' }}>
+              清空
+            </button>
           </div>
         )}
 
@@ -1732,6 +1904,16 @@ function TranscriptPanel({
                   borderLeft: active ? '3px solid #4285f4' : '3px solid transparent',
                 }}
               >
+                {mergeMode && (
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(s.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => toggleSelected(s.id)}
+                    style={{ marginTop: 4, flexShrink: 0, cursor: 'pointer' }}
+                    aria-label={`选择第 ${s.index + 1} 句`}
+                  />
+                )}
                 <span style={{ color: '#999', fontSize: 12, flexShrink: 0, fontVariantNumeric: 'tabular-nums', paddingTop: 2 }}>
                   {fmtMs(s.start_ms)}
                 </span>
@@ -1748,18 +1930,22 @@ function TranscriptPanel({
                       style={{ width: '100%', fontSize: 14, lineHeight: 1.6, minHeight: 58, boxSizing: 'border-box' }}
                     />
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <input
+                      <select
                         value={draftSpeaker}
                         onChange={(e) => setDraftSpeaker(e.target.value)}
-                        placeholder="发言人（留空=未标注，填新名字即拆分）"
-                        list="speaker-options"
                         style={{ fontSize: 12, padding: '2px 6px', width: 190 }}
-                      />
-                      <datalist id="speaker-options">
+                      >
+                        <option value="">未标注</option>
                         {speakers.map((sp) => (
-                          <option key={sp} value={sp} />
+                          <option key={sp} value={sp}>
+                            {sp}
+                          </option>
                         ))}
-                      </datalist>
+                        {draftSpeaker && !speakers.includes(draftSpeaker) && (
+                          <option value={draftSpeaker}>{draftSpeaker}</option>
+                        )}
+                      </select>
+                      <span style={{ fontSize: 11, color: '#aaa' }}>没有想要的？先在顶部「+ 新增发言人」</span>
                       <button onClick={() => void saveEdit(s)} style={{ fontSize: 12, padding: '3px 12px' }}>
                         保存
                       </button>

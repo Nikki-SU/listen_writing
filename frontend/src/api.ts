@@ -189,6 +189,7 @@ export async function resegmentRecording(
 }
 
 export type SpeakerAction =
+  | { action: 'create'; name: string }
   | { action: 'rename'; from: string; to: string }
   | { action: 'merge'; from: string; into: string }
   | { action: 'assign'; sentence_ids: string[]; speaker: string }
@@ -197,12 +198,36 @@ export async function updateSpeakers(
   projectId: string,
   recordingId: string,
   payload: SpeakerAction,
-): Promise<{ sentences: Sentence[]; current: string }> {
+): Promise<{ sentences: Sentence[]; speakers: string[]; current: string }> {
   return json(
     await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/speakers`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+    }),
+  )
+}
+
+/** 手动合并相邻句子（批量勾选后一次合成一句）。 */
+export async function mergeSentences(
+  projectId: string,
+  recordingId: string,
+  sentenceIds: string[],
+): Promise<{ sentences: Sentence[]; redactions: RedactionMark[]; current: string }> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/sentences/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sentence_ids: sentenceIds }),
+    }),
+  )
+}
+
+/** 删除一条录音（音频、句子、版本、脱敏标记一并删除）。 */
+export async function deleteRecording(projectId: string, recordingId: string): Promise<void> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}`, {
+      method: 'DELETE',
     }),
   )
 }

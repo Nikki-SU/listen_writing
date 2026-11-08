@@ -8,6 +8,7 @@
 import csv
 import json
 import os
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -162,6 +163,15 @@ def list_recordings(project_id: str) -> list[dict]:
                 recordings.append(r)
     recordings.sort(key=lambda r: r.get("created_at", ""), reverse=True)
     return recordings
+
+
+def delete_recording(project_id: str, recording_id: str) -> bool:
+    """删除一条录音及其音频、句子、版本、脱敏标记（整目录删除）。"""
+    d = recording_dir(project_id, recording_id)
+    if not d.is_dir():
+        return False
+    shutil.rmtree(d)
+    return True
 
 
 def update_recording(project_id: str, recording_id: str, **fields) -> dict | None:

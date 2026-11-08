@@ -36,6 +36,7 @@ export type Recording = {
   created_at: string
   transcribe: TranscribeStatus
   version?: RecordingVersion
+  speakers?: string[]
 }
 
 export type Sentence = {
@@ -53,6 +54,7 @@ export type RecordingDetail = {
   transcribe: TranscribeStatus
   sentences: Sentence[]
   redactions?: RedactionMark[]
+  speakers?: string[]
 }
 
 export type DiffEntry = {
