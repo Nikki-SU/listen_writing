@@ -71,6 +71,20 @@ POLISH_BATCH = 16
 # 断句整理要看到上下文才判断得出“哪些碎片属于同一句”，一次给 60 句。
 RESEGMENT_BATCH = 60
 
+# 首批刻意少跑几句：长录音上「整批 16 句」要等 40 秒以上才出现第一条结果，
+# 用户会以为软件卡死。首屏先出几条，之后恢复整批，总耗时几乎不变。
+POLISH_FIRST_BATCH = 4
+RESEGMENT_FIRST_BATCH = 15
+
+
+def _batches(items: list[dict], size: int, first: int):
+    """按批切分：首批更小，便于界面尽快看到第一条结果。"""
+    start = 0
+    while start < len(items):
+        take = min(first if start == 0 else size, len(items) - start)
+        yield start, items[start:start + take]
+        start += take
+
 
 def runtime_available() -> bool:
     """本地推理运行时是否可用（只看模块能否导入，不加载模型）。"""
@@ -486,8 +500,7 @@ def resegment(
     engine = _engine(key)
     result: list[dict] = []
     with _infer_lock:
-        for start in range(0, len(items), RESEGMENT_BATCH):
-            batch = items[start:start + RESEGMENT_BATCH]
+        for start, batch in _batches(items, RESEGMENT_BATCH, RESEGMENT_FIRST_BATCH):
             if on_status:
                 on_status(f"正在整理第 {start + 1}–{start + len(batch)} 句…")
             resp = engine.create_chat_completion(
@@ -593,8 +606,7 @@ def polish(
     batch_count = 0
     last_error = ""
     with _infer_lock:
-        for start in range(0, len(items), POLISH_BATCH):
-            batch = items[start:start + POLISH_BATCH]
+        for start, batch in _batches(items, POLISH_BATCH, POLISH_FIRST_BATCH):
             batch_count += 1
             if on_status:
                 on_status(f"正在校对第 {start + 1}–{start + len(batch)} 句…")
