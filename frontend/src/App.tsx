@@ -184,7 +184,8 @@ export default function App() {
         if (cancelled) return
         setDetail(d)
         if (d.transcribe.status === 'pending' || d.transcribe.status === 'transcribing') {
-          timer = setTimeout(poll, 1000)
+          // 转写中每 0.5 秒取一次：后端每 3 句或 2 秒落盘，轮询跟上就能尽快看到新句子。
+          timer = setTimeout(poll, 500)
         }
       } catch {
         // 轮询失败静默停止，避免抖动；用户可重新点选录音重新触发
