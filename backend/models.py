@@ -9,8 +9,8 @@ from dataclasses import dataclass
 
 # 软件版本号：四段独立整数。提交时只 bump 对应段（见《工程纪律.md》第二板块）。
 APP_VERSION = {
-    "frontend": 35,
-    "backend": 30,
+    "frontend": 36,
+    "backend": 31,
     "model": 2,
     "data": 6,
 }

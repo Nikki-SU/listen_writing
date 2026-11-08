@@ -285,6 +285,7 @@ async function loadDetail(pid,rid){
 let editing=null;      // {id,text,speaker}
 let mergeMode=false;
 let painted={};         // 句子 id → 1/2（两种颜色各代表一组）；白色 = 未涂色，不参与合并
+let paintBrush=1;       // 当前画笔：1 蓝 / 0 白（擦除） / 2 橙
 let detail=null;
 let lastSig='';
 
@@ -331,10 +332,14 @@ function drawTranscript(){
   const groups=mergeGroupsOf(list).filter(g=>g.length>1);
   const reducible=groups.reduce((n,g)=>n+g.length-1,0);
   const paintedCount=Object.keys(painted).length;
-  const mergeBar=mergeMode?`<div class="bar"><span class="pill">${paintedCount===0?'尚未分组':groups.length+' 组 · 可减少 '+reducible+' 句'}</span>
+  const mergeBar=mergeMode?`<div class="bar" style="flex-wrap:wrap"><span style="font-size:12px;color:#6b7280">画笔</span>
+      <button id="brush1" style="padding:2px 8px;border-radius:999px;font-size:12px;line-height:1.6;border:1px solid #1a73e8;background:#1a73e8;color:#fff;${paintBrush===1?'box-shadow:0 0 0 2px #111':''}">蓝</button>
+      <button id="brush0" style="padding:2px 8px;border-radius:999px;font-size:12px;line-height:1.6;border:1px solid #d1d5db;background:#fff;color:#6b7280;${paintBrush===0?'box-shadow:0 0 0 2px #111':''}">白</button>
+      <button id="brush2" style="padding:2px 8px;border-radius:999px;font-size:12px;line-height:1.6;border:1px solid #f59e0b;background:#f59e0b;color:#fff;${paintBrush===2?'box-shadow:0 0 0 2px #111':''}">橙</button>
+      <span class="pill">${paintedCount===0?'尚未分组':paintedCount+' 句已涂 · '+groups.length+' 组 · 可减少 '+reducible+' 句'}</span>
       <button class="primary" id="doMerge" ${paintedCount===0||reducible===0?'disabled':''}>合并全部</button>
       <button id="cancelMerge">退出合并</button></div>
-      <div class="bar"><span style="font-size:12px;color:#6b7280">${paintedCount?'再点一次换颜色（蓝 → 橙 → 白）；同色连续才成一组':'点句子循环上色：蓝色一组、橙色一组，白色不合并'}</span></div>`:'';
+      <div class="bar"><span style="font-size:12px;color:#6b7280">点句子涂当前画笔颜色；蓝、橙各成一组，白色不合并</span></div>`:'';
   app.innerHTML=header+`<main>
     <div class="bar" style="justify-content:space-between">
       <span class="pill">${list.length} 句 · ${roster.length} 位发言人</span>
@@ -376,7 +381,7 @@ function bindTranscript(list,roster){
   app.querySelectorAll('[data-sid]').forEach(row=>{
     const sid=row.dataset.sid;
     row.onclick=(ev)=>{
-      if(mergeMode){ev.stopPropagation();togglePaint(sid);return}
+      if(mergeMode){ev.stopPropagation();applyBrush(sid);return}
       if(ev.target.closest('button,select,textarea,input'))return;
       const s=list.find(x=>x.id===sid);
       if(!s)return;
@@ -394,6 +399,10 @@ function bindTranscript(list,roster){
   if(tm)tm.onclick=()=>{mergeMode=!mergeMode;painted={};editing=null;drawTranscript()};
   const cm=document.getElementById('cancelMerge');
   if(cm)cm.onclick=()=>{mergeMode=false;painted={};drawTranscript()};
+  [[1,'brush1'],[0,'brush0'],[2,'brush2']].forEach(([v,id])=>{
+    const b=document.getElementById(id);
+    if(b)b.onclick=()=>{paintBrush=v;drawTranscript()};
+  });
   const dm=document.getElementById('doMerge');
   if(dm)dm.onclick=async()=>{
     const groups=mergeGroupsOf(detail.sentences||[]).filter(g=>g.length>1);
@@ -441,11 +450,9 @@ function bindTranscript(list,roster){
   });
 }
 
-function togglePaint(sid){
-  const cur=painted[sid];
-  if(!cur)painted[sid]=1;
-  else if(cur===1)painted[sid]=2;
-  else delete painted[sid];
+function applyBrush(sid){
+  if(paintBrush===0)delete painted[sid];
+  else painted[sid]=paintBrush;
   drawTranscript();
 }
 

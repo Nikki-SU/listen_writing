@@ -738,8 +738,9 @@ function TranscriptPanel({
   const [newSpeakerName, setNewSpeakerName] = useState('')
   // 多句合并：点句子自行涂色分组（涂色且连续为一组），最后一次性合并所有组（ASR 常按逗号切碎）。
   const [mergeMode, setMergeMode] = useState(false)
-  // 间隔上色合并：点句子按 蓝 → 橙 → 白 循环；蓝/橙各代表一组，白色不参与合并，同色且连续才成组。
+  // 间隔上色合并：顶部选择画笔颜色（蓝 / 白 / 橙），点句子涂色；蓝、橙各代表一组，白色不参与合并，同色且连续才成组。
   const [paintColors, setPaintColors] = useState<Record<string, 1 | 2>>({})
+  const [paintBrush, setPaintBrush] = useState<0 | 1 | 2>(1)
   const [merging, setMerging] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [marks, setMarks] = useState<RedactionMark[]>(detail.redactions ?? [])
@@ -1070,12 +1071,11 @@ function TranscriptPanel({
     }
   }
 
-  function cyclePaint(id: string) {
+  function paintWithBrush(id: string) {
     setPaintColors((marks) => {
       const next = { ...marks }
-      if (!next[id]) next[id] = 1
-      else if (next[id] === 1) next[id] = 2
-      else delete next[id]
+      if (paintBrush === 0) delete next[id]
+      else next[id] = paintBrush
       return next
     })
   }
@@ -1964,13 +1964,40 @@ function TranscriptPanel({
         )}
 
         {mergeMode && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '6px 10px', background: '#f5f8ff', border: '1px solid #d6e4ff', borderRadius: 6, fontSize: 12 }}>
-            <span style={{ color: '#1a73e8', fontWeight: 600 }}>
-              {paintCount === 0 ? '尚未分组' : `${mergeableGroups.length} 组 · 可减少 ${mergeReducible} 句`}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '6px 10px', background: '#f5f8ff', border: '1px solid #d6e4ff', borderRadius: 6, fontSize: 12, flexWrap: 'wrap' }}>
+            <span style={{ color: '#666', fontSize: 11 }}>画笔</span>
+            {([
+              { value: 1, label: '蓝', bg: '#1a73e8', fg: '#fff' },
+              { value: 0, label: '白', bg: '#fff', fg: '#666' },
+              { value: 2, label: '橙', bg: '#f59e0b', fg: '#fff' },
+            ] as const).map((o) => (
+              <button
+                key={o.label}
+                onClick={() => setPaintBrush(o.value)}
+                title={o.value === 0 ? '白色：不参与合并' : `${o.label}色：合并为一组`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 11,
+                  padding: '2px 8px',
+                  borderRadius: 12,
+                  border: '1px solid #ddd',
+                  background: '#fff',
+                  color: '#333',
+                  cursor: 'pointer',
+                  boxShadow: paintBrush === o.value ? '0 0 0 2px #1a73e8' : 'none',
+                  fontWeight: paintBrush === o.value ? 600 : 400,
+                }}
+              >
+                <span style={{ width: 12, height: 12, borderRadius: 3, background: o.bg, border: o.value === 0 ? '1px solid #ccc' : 'none', color: o.fg }} />
+                {o.label}
+              </button>
+            ))}
+            <span style={{ color: '#1a73e8', fontWeight: 600, marginLeft: 6 }}>
+              {paintCount === 0 ? '尚未分组' : `${paintCount} 句已涂 · ${mergeableGroups.length} 组 · 可减少 ${mergeReducible} 句`}
             </span>
-            <span style={{ color: '#888', fontSize: 11 }}>
-              {paintCount === 0 ? '点句子循环上色：蓝色一组、橙色一组，白色不合并' : '再点一次换颜色（蓝 → 橙 → 白）；同色连续才成一组'}
-            </span>
+            <span style={{ color: '#888', fontSize: 11 }}>点句子涂当前画笔颜色；蓝、橙各成一组，白色不合并</span>
             <button
               onClick={() => void mergeAllGroups()}
               disabled={paintCount === 0 || mergeReducible === 0 || merging}
@@ -1994,7 +2021,7 @@ function TranscriptPanel({
                 id={`sentence-${s.id}`}
                 onClick={() => {
                   if (mergeMode) {
-                    cyclePaint(s.id)
+                    paintWithBrush(s.id)
                     return
                   }
                   seek(s)
