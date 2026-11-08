@@ -41,11 +41,11 @@
 | R-15 | 后端 | `POST /api/projects/{project_id}/live` | `{"name?":"实时录音"}` | `{"recording":{...},"asr_model":"sensevoice-small"}`（201） | 开始实时录音：优先 SenseVoice，其次 Whisper small；**所选档位模型必须已下载**，否则 503 并给出可读原因（不会创建空录音） |
 | R-16 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/live/chunk` | **raw s16le 16kHz mono PCM 字节** | `{"sentences":[Sentence…],"duration_sec":12.3}` | 追加 PCM 并按静音切段增量识别；返回本次新增句子。会话不存在 404 |
 | R-17 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/live/stop` | `{"force?":bool}` | `{"recording":{...},"sentences":[…]}` | 收尾：把剩余 PCM 落成 `audio.wav`、跑最后一段识别；一句都没识别到则 `transcribe.status=error` |
-| R-21 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/sentences/merge` | `{"sentence_ids":["s1","s2",…]}` | `{"sentences":[…],"redactions":[…],"version":{...},"current":"0.4"}` | 手动合并**相邻**句子：按列表顺序拼接文字、保留首句 id/起始时间与末句结束时间；跨句选择返回 400；被合并掉的句子的脱敏标记一并清除，并提交一个版本 |
-| R-22 | 后端 | `DELETE /api/projects/{project_id}/recordings/{recording_id}` | 无 | `{"ok":true}` | 删除整条录音（音频、句子、全部版本、脱敏标记）；转写中返回 409，等结束或失败后再删 |
+| R-21 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/sentences/merge` | `{"sentence_ids":["s1","s2",…]}` | `{"sentences":[…],"redactions":[…],"version":{...},"current":"0.4"}` | 手动合并**相邻**句子：按中文书写习惯拼接（中间碎片无标点补「，」，已有标点原样保留；末句无句末标点补「。」，以逗号/分号收尾换成「。」）；保留首句 id/起始时间与末句结束时间；跨句选择 400；被合并句的脱敏标记一并清除，并提交一个版本 |
+| R-22 | 后端 | `DELETE /api/projects/{project_id}/recordings/{recording_id}` | 无 | `{"ok":true}` | 删除整条录音（音频、句子、全部版本、脱敏标记）；**只有本进程确实在转写时**返回 409。上次进程被杀留下的 `transcribing` 状态会在启动时自动改成 error，不再永久拦住删除 |
 | R-18 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/transcribe` | 无 | `{"recording":{...}}`（202） | 重新转写（转写失败/换了模型后重试）；已在转写中直接返回当前状态 |
 | R-19 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/redactions/suggest` | `{"model?":""}` | `{"suggestions":[{sentence_id,index,start,end,quote,category_id,placeholder}…],"model":"qwen3-4b"}` | AI 智能脱敏：只返回候选片段，**不落盘**；由用户逐条/全部确认后走 R-12。运行时未安装 503，无句子 409 |
-| R-20 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/resegment` | `{"apply":false,"model?":""}` | `{"sentences":[…],"before":320,"after":140,"current?":"1.1","model":"qwen3-4b"}` | AI 整理断句：把按停顿切碎的片段合并成可读句子。`apply=false` 只预览；`apply=true` 写入阶段 1 新版本。模型只提议分组与标点，服务端校验 id 恰好用一次且不增删文字；转写未完成或有脱敏标记 409，运行时未安装 503 |
+| R-20 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/resegment` | `{"apply":false,"model?":""}` | `{"sentences":[…],"before":320,"after":140,"current?":"1.1","model":"qwen3-4b"}` | AI 整理断句：把按停顿切碎的片段合并成可读句子。`apply=false` 只预览，每条结果带 `source_ids`（由哪些原句合并而来，供左右对照，落盘前剔除）；`apply=true` 写入阶段 1 新版本。模型只提议分组与标点，服务端校验 id 恰好用一次且不增删文字；转写未完成或有脱敏标记 409，运行时未安装 503 |
 | G-27 | 后端 | `GET /api/groups/{gid}/materials/{mid}/versions/{stage}.{seq}` | `device_code?` | `{"version":{...sentences,diff}}` | 群组材料的历史版本快照；只读/审查者仅能看阶段 ≥2 的脱敏版本 |
 
 ### 局域网协作（G 系列）

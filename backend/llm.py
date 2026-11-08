@@ -185,8 +185,48 @@ def _polish_messages(batch: list[dict]) -> list[dict]:
     ]
 
 
+def _iter_json_objects(text: str):
+    """从可能被截断/带废话的文本里逐个抠出顶层对象。
+
+    小模型经常在 max_tokens 处被硬截断，最后一个对象不完整；此时整段 json.loads
+    必然失败，但前面完整的对象都是可用的，逐条解析能救回大部分建议。
+    """
+    i = 0
+    while True:
+        start = text.find("{", i)
+        if start < 0:
+            return
+        depth = 0
+        in_str = False
+        escaped = False
+        end = -1
+        for j in range(start, len(text)):
+            ch = text[j]
+            if in_str:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+        if end < 0:
+            return
+        yield text[start:end + 1]
+        i = end + 1
+
+
 def _parse_changes(raw: str) -> list[dict]:
-    """解析模型输出。容忍代码块、前后废话与 {"changes":[...]} 包裹。"""
+    """解析模型输出。容忍代码块、前后废话、{"changes":[...]} 包裹与输出被截断。"""
     text = raw.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text).strip()
@@ -203,7 +243,21 @@ def _parse_changes(raw: str) -> list[dict]:
     if isinstance(data, dict):
         data = data.get("changes") or data.get("sentences") or data.get("result")
     if not isinstance(data, list):
-        raise RuntimeError(f"AI 返回内容不是 JSON 数组：{text[:120]}")
+        # 逐对象抢救：只保留模型要求的结构（id/ids + text），乱码对象自然被丢弃。
+        salvaged = []
+        for chunk in _iter_json_objects(text):
+            try:
+                obj = json.loads(chunk)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict) and ("id" in obj or "ids" in obj):
+                salvaged.append(obj)
+        if salvaged:
+            return salvaged
+        raise RuntimeError(
+            "AI 返回的内容不是可解析的 JSON（可能被截断）。请重试一次；"
+            f"若反复出现，请在设置里换更大的模型。原始输出：{text[:120]}"
+        )
     return [item for item in data if isinstance(item, dict)]
 
 
@@ -352,16 +406,47 @@ _PUNCT_RE = re.compile(r"[，。！？；：、,.!?;:]")
 _STRONG_END = re.compile(r"[。！？!?…]+$")
 
 
+_SENTENCE_END = "。！？!?…"
+_ANY_END = "，。！？；：、,.!?;:…"
+
+
+def join_sentences(parts: list[str]) -> str:
+    """按中文书写习惯拼接碎片，而不是把字硬粘在一起。
+
+    - 中间碎片没有标点 → 补「，」；已有标点（ASR 常给逗号）→ 原样保留；
+    - 最后一片没有句末标点 → 补「。」；以逗号/分号收尾 → 换成「。」。
+    """
+    texts = [str(p or "").strip() for p in parts]
+    texts = [t for t in texts if t]
+    if not texts:
+        return ""
+    last = len(texts) - 1
+    joined: list[str] = []
+    for i, text in enumerate(texts):
+        if i < last:
+            if text[-1] not in _ANY_END:
+                text += "，"
+        else:
+            if text[-1] in "，、；：,;:":
+                text = text[:-1].rstrip() + "。"
+            elif text[-1] not in _SENTENCE_END:
+                text += "。"
+        joined.append(text)
+    return "".join(joined)
+
+
 def _merge_group(group: list[dict], text: str) -> dict:
-    origin = "".join(str(s.get("text") or "").strip() for s in group)
     content = [s for s in group if not _FILLER_ONLY.match(_norm_text(str(s.get("text") or "")))]
-    base = "".join(str(s.get("text") or "").strip() for s in content) or origin
+    source = content or group
+    base = join_sentences([str(s.get("text") or "") for s in source])
     candidate = (text or "").strip()
     # 只接受“只动标点/空格/语气词”的改写；一旦与原文实体不一致就退回逐字拼接，
     # 宁可句子不好读，也不能让 AI 悄悄改掉访谈内容。退回时用去掉语气词的 base，
     # 避免「呃那个」这类独立语气词一直粘在句首。
     merged_text = candidate if candidate and _norm_text(candidate) == _norm_text(base) else base
-    if merged_text and merged_text[-1] not in "。！？!?…；;":
+    if merged_text and merged_text[-1] in "，、；：,;:":
+        merged_text = merged_text[:-1].rstrip()
+    if merged_text and merged_text[-1] not in _SENTENCE_END:
         merged_text += "。"
     speaker = next((s.get("speaker") for s in group if s.get("speaker")), "")
     return {
@@ -371,6 +456,8 @@ def _merge_group(group: list[dict], text: str) -> dict:
         "start_ms": group[0].get("start_ms", 0),
         "end_ms": group[-1].get("end_ms", 0),
         "speaker": speaker,
+        # 给预览界面做「原文碎片 → 新句子」左右对照；落盘前会剔除。
+        "source_ids": [s["id"] for s in group],
     }
 
 
@@ -422,7 +509,7 @@ def resegment(
                 if first < cursor:
                     continue
                 while cursor < first:
-                    result.append(batch[cursor])
+                    result.append({**batch[cursor], "source_ids": [batch[cursor]["id"]]})
                     cursor += 1
                 valid = True
                 for offset, sid in enumerate(ids):
@@ -446,7 +533,7 @@ def resegment(
                 result.append(_merge_group(group, text))
                 cursor = first + len(group)
             while cursor < len(batch):
-                result.append(batch[cursor])
+                result.append({**batch[cursor], "source_ids": [batch[cursor]["id"]]})
                 cursor += 1
 
     for i, s in enumerate(result):
@@ -495,22 +582,35 @@ def polish(
 
     engine = _engine(key)
     suggestions: list[dict] = []
+    failed_batches = 0
+    batch_count = 0
+    last_error = ""
     with _infer_lock:
         for start in range(0, len(items), POLISH_BATCH):
             batch = items[start:start + POLISH_BATCH]
+            batch_count += 1
             if on_status:
                 on_status(f"正在校对第 {start + 1}–{start + len(batch)} 句…")
             resp = engine.create_chat_completion(
                 messages=_polish_messages(batch),
                 temperature=0.2,
                 top_p=0.9,
-                max_tokens=min(2048, max(256, len(batch) * 160)),
+                # 中文 + JSON 包装下 160 tokens/句偏紧，长句会在数组中间被硬截断。
+                max_tokens=min(3072, max(512, len(batch) * 240)),
             )
             raw = split_think((resp["choices"][0]["message"]["content"] or ""))
             if not raw:
                 continue
             known = {s["id"]: s for s in batch}
-            for change in _parse_changes(raw):
+            try:
+                changes = _parse_changes(raw)
+            except RuntimeError as e:
+                # 单批输出坏了不该拖垮整段稿子：记下来继续后面的批次。
+                failed_batches += 1
+                last_error = str(e)
+                logger.warning("纠错批次解析失败（%s）：%s", start, e)
+                continue
+            for change in changes:
                 sid = str(change.get("id") or "")
                 after = str(change.get("text") or "").strip()
                 original = known.get(sid)
@@ -530,4 +630,7 @@ def polish(
                     "before": before,
                     "after": after,
                 })
+    if batch_count and failed_batches == batch_count:
+        # 全部批次都解析失败才报错；部分失败时把已成功的建议照常返回。
+        raise RuntimeError(last_error or "AI 纠错失败：模型输出无法解析")
     return suggestions

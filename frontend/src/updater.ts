@@ -7,8 +7,9 @@
 //
 // 安全边界：
 // - 只写 BOOTSTRAP_FILES 里列出的固定路径，绝不碰用户的 data/、.runtime/ 或其它文件；
-// - 正在运行的启动器脚本（.bat/.sh/.command）不覆盖，只报告「启动器有更新」，
-//   因为 Windows 的 cmd 是边读边执行，覆盖正在使用的 bat 会导致命令错位。
+// - 不可变入口脚本（start-*.bat/.sh/.command）不覆盖，只报告「启动器有更新」；
+// - 可更新启动主体（run-windows.bat / run.sh）写成 <name>.new，由入口脚本在下次
+//   启动前换入，所以启动逻辑可以和普通代码一样自动更新，不需要用户重新引导。
 
 import { BOOTSTRAP_FILES, BUNDLE_VERSION, type BootstrapFile } from './bootstrapFiles'
 
@@ -137,7 +138,7 @@ export type UpdateResult = {
   launcherStale: string[]
 }
 
-/** 只写内容有差异的文件；正在运行的启动器只登记不覆盖。 */
+/** 只写内容有差异的文件；入口启动器只登记不覆盖，启动主体写 .new 等待换入。 */
 export async function applyUpdate(
   root: FileSystemDirectoryHandle,
   onProgress?: (changed: number) => void,
@@ -145,6 +146,16 @@ export async function applyUpdate(
   let changed = 0
   const launcherStale: string[] = []
   for (const f of BOOTSTRAP_FILES) {
+    if (f.promote) {
+      // 正式文件已是最新、且没有待换入的 .new → 无事可做。
+      const current = await readOne(root, f.path)
+      const pending = await readOne(root, `${f.path}.new`)
+      if (current === f.content && pending === null) continue
+      await writeOne(root, { ...f, path: `${f.path}.new` })
+      changed += 1
+      onProgress?.(changed)
+      continue
+    }
     if ((await readOne(root, f.path)) === f.content) continue
     if (f.launcher) {
       launcherStale.push(f.path)

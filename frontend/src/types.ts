@@ -101,7 +101,8 @@ export type VersionSummary = {
 
 /** AI 整理断句结果：合并前后的句子数与预览正文。 */
 export type ResegmentResult = {
-  sentences: Sentence[]
+  /** source_ids：这句由哪些原句合并而来，供预览左右对照；落盘时会被剔除。 */
+  sentences: (Sentence & { source_ids?: string[] })[]
   before: number
   after: number
   current?: string

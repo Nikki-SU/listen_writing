@@ -920,7 +920,7 @@ function TranscriptPanel({
       setAiNotice('')
       onError('')
     } catch (e) {
-      onError(`AI 纠错失败：${String(e)}`)
+      onError(String(e).replace(/^Error:\s*/, ''))
     } finally {
       setPolishing(false)
     }
@@ -937,7 +937,7 @@ function TranscriptPanel({
       setAiNotice('')
       onError('')
     } catch (e) {
-      onError(`AI 整理断句失败：${String(e)}`)
+      onError(String(e).replace(/^Error:\s*/, ''))
     } finally {
       setResegmenting(false)
     }
@@ -1439,7 +1439,7 @@ function TranscriptPanel({
               onClick={(e) => e.stopPropagation()}
               className="scroll-hidden"
               style={{
-                width: 640,
+                width: 860,
                 maxWidth: '100%',
                 maxHeight: '82vh',
                 overflowY: 'auto',
@@ -1458,16 +1458,41 @@ function TranscriptPanel({
               <p style={{ fontSize: 12, color: '#8a8f98', lineHeight: 1.7, margin: '8px 0 12px' }}>
                 只合并停顿碎片、补标点，不增删内容。应用后写入新版本，可在版本历史里回退。
               </p>
-              <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8, color: '#333' }}>
-                {resegPreview.sentences.slice(0, 8).map((s) => (
-                  <li key={s.id} style={{ marginBottom: 4 }}>{s.text}</li>
-                ))}
-              </ol>
-              {resegPreview.sentences.length > 8 && (
-                <p style={{ fontSize: 12, color: '#9aa0a6', margin: '8px 0 0' }}>
-                  仅预览前 8 句，共 {resegPreview.after} 句。
-                </p>
-              )}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: 11, color: '#8a94a6', marginBottom: 6 }}>
+                <div>原文（按停顿切分）</div>
+                <div>AI 整理后</div>
+              </div>
+              <div
+                className="scroll-hidden"
+                style={{ maxHeight: '50vh', overflowY: 'auto', borderTop: '1px solid #f1f3f5' }}
+              >
+                {resegPreview.sentences.map((s) => {
+                  const srcIds = s.source_ids ?? [s.id]
+                  const sources = srcIds
+                    .map((id) => localSentences.find((x) => x.id === id))
+                    .filter((x): x is Sentence => Boolean(x))
+                  const merged = srcIds.length > 1
+                  return (
+                    <div
+                      key={s.id}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr',
+                        gap: 10,
+                        padding: '6px 0',
+                        borderBottom: '1px solid #f6f7f9',
+                      }}
+                    >
+                      <div style={{ fontSize: 12, lineHeight: 1.65, color: merged ? '#333' : '#9aa0a6' }}>
+                        {sources.length > 0
+                          ? sources.map((x) => <div key={x.id}>· {x.text}</div>)
+                          : <span>（原句已不在当前稿中）</span>}
+                      </div>
+                      <div style={{ fontSize: 12, lineHeight: 1.65, color: '#1e7e34' }}>{s.text}</div>
+                    </div>
+                  )
+                })}
+              </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
                 <button
                   onClick={() => setResegPreview(null)}
@@ -1532,13 +1557,21 @@ function TranscriptPanel({
                       key={item.sentence_id}
                       style={{ border: '1px solid #e6ecf5', background: '#fff', borderRadius: 6, padding: 8 }}
                     >
-                      <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 2 }}>
+                      <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 4 }}>
                         第 {item.index + 1} 句
                       </div>
-                      <div style={{ fontSize: 12, color: '#b00020', textDecoration: 'line-through', lineHeight: 1.6 }}>
-                        {item.before}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                        <div>
+                          <div style={{ fontSize: 10, color: '#9aa0a6', marginBottom: 2 }}>原文</div>
+                          <div style={{ fontSize: 12, color: '#b00020', textDecoration: 'line-through', lineHeight: 1.7 }}>
+                            {item.before}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 10, color: '#9aa0a6', marginBottom: 2 }}>AI 建议</div>
+                          <div style={{ fontSize: 12.5, color: '#1e7e34', lineHeight: 1.7 }}>{item.after}</div>
+                        </div>
                       </div>
-                      <div style={{ fontSize: 13, color: '#1e7e34', lineHeight: 1.6 }}>{item.after}</div>
                       <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                         <button
                           onClick={() => void acceptSuggestion(item)}

@@ -438,6 +438,11 @@ def _sentences_to_markdown(sentences: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _without_sources(sentences: list[dict]) -> list[dict]:
+    """剔除只供预览对照的 source_ids，CSV 只有固定列，不能把它带进落盘/版本。"""
+    return [{k: v for k, v in s.items() if k != "source_ids"} for s in sentences]
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1359,7 +1364,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "只能合并相邻的句子，请连续选择"}, status=400)
                 return
             group = sentences[first:last + 1]
-            merged_text = "".join(str(s.get("text") or "") for s in group)
+            merged_text = llm.join_sentences([str(s.get("text") or "") for s in group])
             speaker = next((s.get("speaker") for s in group if s.get("speaker")), "")
             merged = {
                 **group[0],
@@ -1552,8 +1557,12 @@ class Handler(BaseHTTPRequestHandler):
         if recording is None:
             self._send_json({"error": "recording not found"}, status=404)
             return
-        status = (recording.get("transcribe") or {}).get("status")
-        if status == "transcribing":
+        # 只认本进程内真的在跑的转写。recording.json 里的 transcribing 可能是上次
+        # 进程被杀/重启留下的孤儿状态，不能因为它就永久拒绝删除。
+        key = f"{project_id}/{recording_id}"
+        with _transcribe_lock:
+            running = key in _transcribing
+        if running:
             self._send_json({"error": "这条录音正在转写，等转写结束（或失败）后再删除"}, status=409)
             return
         if not storage.delete_recording(project_id, recording_id):
@@ -1667,13 +1676,13 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        storage.save_sentences(project_id, recording_id, merged)
-        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(merged))
+        storage.save_sentences(project_id, recording_id, _without_sources(merged))
+        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(_without_sources(merged)))
         nick = storage.get_settings()["identity"]["nick"]
         version = storage.commit_version(
             project_id,
             recording_id,
-            merged,
+            _without_sources(merged),
             [],
             message=f"AI 整理断句（{len(sentences)} 句 → {len(merged)} 句）",
             author_nick=nick,
@@ -2264,7 +2273,23 @@ def _match(path: str, pattern: str):
     return m.groups() if m.groups() else True
 
 
+def _recover_interrupted_transcriptions() -> None:
+    """把上次进程被杀/重启留下的 transcribing 状态改成可重试的失败状态。
+
+    转写状态落在 recording.json 里，但真正执行它的线程在内存中；进程退出后线程
+    没了，状态却还是“转写中”，于是界面上永远显示转写中、删除也被误拦。
+    """
+    for project in storage.list_projects():
+        for rec in storage.list_recordings(project["id"]):
+            if (rec.get("transcribe") or {}).get("status") == "transcribing":
+                storage.set_transcribe(
+                    project["id"], rec["id"], "error", 0,
+                    "上次转写被中断（后端重启），请点「重新转写」",
+                )
+
+
 if __name__ == "__main__":
+    _recover_interrupted_transcriptions()
     peers.start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"listen_writing backend listening on http://{HOST}:{PORT}")

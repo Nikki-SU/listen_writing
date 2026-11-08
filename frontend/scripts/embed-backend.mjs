@@ -35,12 +35,18 @@ for (const f of ['main.py', 'models.py', 'storage.py', 'transcriber.py', 'audio.
 }
 // requirements.txt 写到用户文件夹根目录，启动器在根目录执行 pip install -r requirements.txt
 files.push({ path: 'requirements.txt', content: normalize('requirements.txt', readFileSync(join(repoDir, 'backend', 'requirements.txt'), 'utf8')) })
+// 启动器分两层：
+// - start-* 是不可变入口（极小、稳定），负责在加载前把 *.new 换入；
+// - run-* 是真正逻辑，网页更新写 run-*.new，下次启动自动替换，无需用户再点覆盖。
+const LAUNCHER_ENTRIES = new Set(['start-windows.bat', 'start.sh', 'start-mac.command'])
+const LAUNCHER_UPDATABLE = new Set(['run-windows.bat', 'run.sh'])
 for (const f of readdirSync(join(repoDir, 'bootstrap')).sort()) {
   files.push({
     path: f,
-    // 启动器脚本可能正在运行（Windows 的 cmd 按字节边读边执行，覆盖正在使用的 bat
-    // 会导致命令错位），所以自动更新只做检查、不覆盖，提示用户重新写入一次。
-    launcher: /\.(bat|sh|command)$/.test(f),
+    // 入口脚本不允许热覆盖（cmd/bash 边读边执行）；它们本身不再随版本变化。
+    launcher: LAUNCHER_ENTRIES.has(f),
+    // 可更新主体：写入 <name>.new，由入口脚本在下次启动时原子替换。
+    promote: LAUNCHER_UPDATABLE.has(f),
     content: normalize(f, readFileSync(join(repoDir, 'bootstrap', f), 'utf8')),
   })
 }
@@ -58,7 +64,10 @@ const ts = `// 自动生成（scripts/embed-backend.mjs），勿手改；后端 
 export interface BootstrapFile {
   path: string
   content: string
+  /** 不可变入口脚本：自动更新不覆盖，只提示用户重新写入一次。 */
   launcher?: boolean
+  /** 可更新启动主体：写到 path + '.new'，由入口脚本下次启动时换入。 */
+  promote?: boolean
 }
 
 export const BUNDLE_VERSION = ${JSON.stringify(bundleVersion)}
