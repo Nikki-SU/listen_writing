@@ -213,17 +213,17 @@ export async function updateSpeakers(
   )
 }
 
-/** 手动合并相邻句子（批量勾选后一次合成一句）。 */
+/** 手动合并相邻句子：按组提交，一次可合并多组（同色为一组）。 */
 export async function mergeSentences(
   projectId: string,
   recordingId: string,
-  sentenceIds: string[],
+  groups: string[][],
 ): Promise<{ sentences: Sentence[]; redactions: RedactionMark[]; current: string }> {
   return json(
     await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/sentences/merge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sentence_ids: sentenceIds }),
+      body: JSON.stringify({ groups }),
     }),
   )
 }

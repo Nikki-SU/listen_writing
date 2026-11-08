@@ -281,7 +281,7 @@ async function loadDetail(pid,rid){
 
 let editing=null;      // {id,text,speaker}
 let mergeMode=false;
-let selected=[];
+let joins=[];           // 与上一句并组的句子 id；相邻组用两种颜色交替区分
 let detail=null;
 let lastSig='';
 
@@ -325,8 +325,11 @@ function drawTranscript(){
   if(list.length===0){
     app.innerHTML=header+`<main><div class="empty">还没有转写内容</div></main>`;return;
   }
-  const mergeBar=mergeMode?`<div class="bar"><span class="pill">已选 ${selected.length} 句</span>
-      <button class="primary" id="doMerge" ${selected.length<2?'disabled':''}>合并所选</button>
+  const groups=mergeGroupsOf(list);
+  const groupOf={};groups.forEach((g,gi)=>g.forEach(id=>{groupOf[id]=gi}));
+  const reducible=groups.reduce((n,g)=>n+(g.length>1?g.length-1:0),0);
+  const mergeBar=mergeMode?`<div class="bar"><span class="pill">${groups.length} 组 · 可减少 ${reducible} 句</span>
+      <button class="primary" id="doMerge" ${reducible===0?'disabled':''}>合并全部</button>
       <button id="cancelMerge">退出合并</button></div>`:'';
   app.innerHTML=header+`<main>
     <div class="bar" style="justify-content:space-between">
@@ -338,11 +341,12 @@ function drawTranscript(){
     </div>
     ${mergeBar}
     <div class="card" style="padding:0;overflow:hidden">
-      ${list.map(s=>{
-        const checked=selected.includes(s.id);
+      ${list.map((s,si)=>{
+        const gi=groupOf[s.id]||0;
+        const tone=gi%2===0?{fg:'#1a73e8',bg:'#eef4ff'}:{fg:'#e8710a',bg:'#fff4e8'};
         const isEdit=editing&&editing.id===s.id;
-        return `<div class="sentence" data-sid="${esc(s.id)}">
-          ${mergeMode?`<input type="checkbox" data-check="${esc(s.id)}" ${checked?'checked':''} style="width:18px;height:18px;margin-top:2px">`:''}
+        return `<div class="sentence" data-sid="${esc(s.id)}" data-i="${si}" style="${mergeMode?'background:'+tone.bg+';box-shadow:inset 3px 0 0 '+tone.fg:''}">
+          ${mergeMode?`<span style="width:12px;height:12px;border-radius:3px;margin-top:8px;flex:0 0 auto;background:${tone.fg}"></span>`:''}
           <button class="mini" data-play="${esc(s.id)}" aria-label="播放这句">▶</button>
           <span class="speaker">${esc(s.speaker||'未标注')}</span>
           <div class="text" style="flex:1">
@@ -369,7 +373,7 @@ function bindTranscript(list,roster){
   app.querySelectorAll('[data-sid]').forEach(row=>{
     const sid=row.dataset.sid;
     row.onclick=(ev)=>{
-      if(mergeMode){ev.stopPropagation();toggleSelect(sid);return}
+      if(mergeMode){ev.stopPropagation();if(Number(row.dataset.i)>0)toggleJoin(sid);return}
       if(ev.target.closest('button,select,textarea,input'))return;
       const s=list.find(x=>x.id===sid);
       if(!s)return;
@@ -384,13 +388,14 @@ function bindTranscript(list,roster){
     try{await api('/api/projects/'+encodeURIComponent(view.pid)+'/recordings/'+encodeURIComponent(view.rid)+'/speakers',{method:'PATCH',body:{action:'create',name}});toast('已添加');await goTranscript(view.pid,view.rid,true)}catch(e){toast(e.message)}
   };
   const tm=document.getElementById('toggleMerge');
-  if(tm)tm.onclick=()=>{mergeMode=!mergeMode;selected=[];editing=null;drawTranscript()};
+  if(tm)tm.onclick=()=>{mergeMode=!mergeMode;joins=[];editing=null;drawTranscript()};
   const cm=document.getElementById('cancelMerge');
-  if(cm)cm.onclick=()=>{mergeMode=false;selected=[];drawTranscript()};
+  if(cm)cm.onclick=()=>{mergeMode=false;joins=[];drawTranscript()};
   const dm=document.getElementById('doMerge');
   if(dm)dm.onclick=async()=>{
-    if(selected.length<2)return;
-    try{await api('/api/projects/'+encodeURIComponent(view.pid)+'/recordings/'+encodeURIComponent(view.rid)+'/sentences/merge',{method:'POST',body:{sentence_ids:selected}});mergeMode=false;selected=[];toast('已合并');await goTranscript(view.pid,view.rid,true)}catch(e){toast(e.message)}
+    const groups=mergeGroupsOf(detail.sentences||[]).filter(g=>g.length>1);
+    if(!groups.length)return;
+    try{await api('/api/projects/'+encodeURIComponent(view.pid)+'/recordings/'+encodeURIComponent(view.rid)+'/sentences/merge',{method:'POST',body:{groups}});mergeMode=false;joins=[];toast('已合并');await goTranscript(view.pid,view.rid,true)}catch(e){toast(e.message)}
   };
   const se=document.getElementById('saveEdit');
   if(se)se.onclick=async()=>{
@@ -405,9 +410,6 @@ function bindTranscript(list,roster){
   };
   const ce=document.getElementById('cancelEdit');
   if(ce)ce.onclick=()=>{editing=null;drawTranscript()};
-  app.querySelectorAll('[data-check]').forEach(cb=>{
-    cb.onclick=(ev)=>{ev.stopPropagation();toggleSelect(cb.dataset.check)};
-  });
   app.querySelectorAll('[data-play]').forEach(b=>{
     b.onclick=(ev)=>{
       ev.stopPropagation();
@@ -417,10 +419,20 @@ function bindTranscript(list,roster){
   });
 }
 
-function toggleSelect(sid){
-  const i=selected.indexOf(sid);
-  if(i>=0)selected.splice(i,1);else selected.push(sid);
+function toggleJoin(sid){
+  const i=joins.indexOf(sid);
+  if(i>=0)joins.splice(i,1);else joins.push(sid);
   drawTranscript();
+}
+
+/** 由 joins 推导合并组：没并到上一句的句子自成一组。 */
+function mergeGroupsOf(list){
+  const groups=[];
+  for(const s of list){
+    if(joins.includes(s.id)&&groups.length)groups[groups.length-1].push(s.id);
+    else groups.push([s.id]);
+  }
+  return groups;
 }
 
 function boot(){

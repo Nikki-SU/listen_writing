@@ -736,9 +736,10 @@ function TranscriptPanel({
   const [roster, setRoster] = useState<string[]>(detail.speakers ?? [])
   const [newSpeakerOpen, setNewSpeakerOpen] = useState(false)
   const [newSpeakerName, setNewSpeakerName] = useState('')
-  // 多句合并：勾选相邻句子后一次合成一句（ASR 常按逗号切碎）。
+  // 多句合并：点句子与上一句并组，同色为一组，最后一次性合并所有组（ASR 常按逗号切碎）。
   const [mergeMode, setMergeMode] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  // 间隔上色合并：记录“与上一句并组”的句子 id；相邻组用两种颜色交替显示。
+  const [joinIds, setJoinIds] = useState<string[]>([])
   const [merging, setMerging] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [marks, setMarks] = useState<RedactionMark[]>(detail.redactions ?? [])
@@ -1032,19 +1033,33 @@ function TranscriptPanel({
     }
   }
 
-  function toggleSelected(id: string) {
-    setSelectedIds((list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]))
+  function toggleJoin(id: string) {
+    setJoinIds((list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]))
   }
 
-  async function mergeSelected() {
-    if (selectedIds.length < 2 || merging) return
+  // 由 joinIds 推导合并组：没并到上一句的句子自成一组。
+  const mergeGroups: string[][] = []
+  for (const s of localSentences) {
+    if (joinIds.includes(s.id) && mergeGroups.length > 0) {
+      mergeGroups[mergeGroups.length - 1].push(s.id)
+    } else {
+      mergeGroups.push([s.id])
+    }
+  }
+  const groupIndexOf = new Map<string, number>()
+  mergeGroups.forEach((g, gi) => g.forEach((id) => groupIndexOf.set(id, gi)))
+  const mergeReducible = mergeGroups.reduce((n, g) => n + Math.max(0, g.length - 1), 0)
+
+  async function mergeAllGroups() {
+    const groups = mergeGroups.filter((g) => g.length > 1)
+    if (groups.length === 0 || merging) return
     setMerging(true)
     try {
-      const res = await api.mergeSentences(projectId, recordingId, selectedIds)
+      const res = await api.mergeSentences(projectId, recordingId, groups)
       setLocalSentences(res.sentences)
       setMarks(res.redactions ?? [])
       if (res.current) setVersion(res.current)
-      setSelectedIds([])
+      setJoinIds([])
       setMergeMode(false)
       onError('')
     } catch (e) {
@@ -1883,7 +1898,7 @@ function TranscriptPanel({
             <button
               onClick={() => {
                 setMergeMode((v) => !v)
-                setSelectedIds([])
+                setJoinIds([])
               }}
               disabled={transcribe.status !== 'done' || localSentences.length < 2}
               style={{
@@ -1904,47 +1919,54 @@ function TranscriptPanel({
 
         {mergeMode && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '6px 10px', background: '#f5f8ff', border: '1px solid #d6e4ff', borderRadius: 6, fontSize: 12 }}>
-            <span style={{ color: '#1a73e8', fontWeight: 600 }}>已选 {selectedIds.length} 句</span>
-            <span style={{ color: '#888', fontSize: 11 }}>只能合并相邻的句子；勾选后点「合并所选」</span>
+            <span style={{ color: '#1a73e8', fontWeight: 600 }}>
+              {mergeGroups.length} 组 · 可减少 {mergeReducible} 句
+            </span>
+            <span style={{ color: '#888', fontSize: 11 }}>点句子 = 与上一句并组；同色为同组，可一次全部合并</span>
             <button
-              onClick={() => void mergeSelected()}
-              disabled={selectedIds.length < 2 || merging}
+              onClick={() => void mergeAllGroups()}
+              disabled={mergeReducible === 0 || merging}
               style={{ marginLeft: 'auto', fontSize: 12, padding: '3px 12px' }}
             >
-              {merging ? '合并中…' : '合并所选'}
+              {merging ? '合并中…' : '合并全部'}
             </button>
-            <button onClick={() => setSelectedIds([])} disabled={selectedIds.length === 0} style={{ fontSize: 12, padding: '3px 10px' }}>
-              清空
+            <button onClick={() => setJoinIds([])} disabled={joinIds.length === 0} style={{ fontSize: 12, padding: '3px 10px' }}>
+              重置
             </button>
           </div>
         )}
 
         <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
-          {localSentences.map((s) => {
+          {localSentences.map((s, si) => {
             const active = s.id === activeId
+            const gi = groupIndexOf.get(s.id) ?? 0
+            const tone = gi % 2 === 0 ? { fg: '#1a73e8', bg: '#eef4ff' } : { fg: '#e8710a', bg: '#fff4e8' }
             return (
               <li
                 key={s.id}
                 id={`sentence-${s.id}`}
-                onClick={() => seek(s)}
+                onClick={() => {
+                  if (mergeMode) {
+                    // 第一句没有“上一句”，不能并组。
+                    if (si > 0) toggleJoin(s.id)
+                    return
+                  }
+                  seek(s)
+                }}
                 style={{
                   padding: '8px 10px',
                   borderBottom: '1px solid #f0f0f0',
                   display: 'flex',
                   gap: 10,
                   cursor: 'pointer',
-                  background: active ? '#eef4ff' : 'transparent',
-                  borderLeft: active ? '3px solid #4285f4' : '3px solid transparent',
+                  background: mergeMode ? tone.bg : active ? '#eef4ff' : 'transparent',
+                  borderLeft: mergeMode ? `3px solid ${tone.fg}` : active ? '3px solid #4285f4' : '3px solid transparent',
                 }}
               >
                 {mergeMode && (
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.includes(s.id)}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={() => toggleSelected(s.id)}
-                    style={{ marginTop: 4, flexShrink: 0, cursor: 'pointer' }}
-                    aria-label={`选择第 ${s.index + 1} 句`}
+                  <span
+                    aria-hidden
+                    style={{ width: 12, height: 12, marginTop: 5, borderRadius: 3, flexShrink: 0, background: tone.fg }}
                   />
                 )}
                 <span style={{ color: '#999', fontSize: 12, flexShrink: 0, fontVariantNumeric: 'tabular-nums', paddingTop: 2 }}>

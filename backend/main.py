@@ -1379,34 +1379,77 @@ class Handler(BaseHTTPRequestHandler):
         data = self._read_json_body()
         if data is None:
             return
-        ids = data.get("sentence_ids")
-        if not isinstance(ids, list) or len(ids) < 2:
-            self._send_json({"error": "请至少选择两句"}, status=400)
-            return
-        id_set = {str(x) for x in ids}
+        # 两种入参：sentence_ids（单组，旧接口）或 groups（一次多组，供「间隔上色」批量合并）。
+        raw_groups = data.get("groups")
+        if raw_groups is not None:
+            if not isinstance(raw_groups, list) or not raw_groups:
+                self._send_json({"error": "groups 必须是非空数组"}, status=400)
+                return
+            group_ids = []
+            for raw in raw_groups:
+                if not isinstance(raw, list):
+                    self._send_json({"error": "groups 里每一项都必须是句子 id 数组"}, status=400)
+                    return
+                ids = [str(x) for x in raw]
+                if len(ids) >= 2:
+                    group_ids.append(ids)
+            if not group_ids:
+                self._send_json({"error": "每组至少两句"}, status=400)
+                return
+        else:
+            ids = data.get("sentence_ids")
+            if not isinstance(ids, list) or len(ids) < 2:
+                self._send_json({"error": "请至少选择两句"}, status=400)
+                return
+            group_ids = [[str(x) for x in ids]]
 
         with _sentence_io_lock:
             sentences = storage.load_sentences(project_id, recording_id)
-            positions = [i for i, s in enumerate(sentences) if s["id"] in id_set]
-            if len(positions) < 2:
-                self._send_json({"error": "所选句子不存在或少于两句"}, status=400)
-                return
-            first, last = positions[0], positions[-1]
-            # 只能合并相邻句子：跳过中间句会让文字顺序错乱。
-            if last - first + 1 != len(positions):
-                self._send_json({"error": "只能合并相邻的句子，请连续选择"}, status=400)
-                return
-            group = sentences[first:last + 1]
-            merged_text = llm.join_sentences([str(s.get("text") or "") for s in group])
-            speaker = next((s.get("speaker") for s in group if s.get("speaker")), "")
-            merged = {
-                **group[0],
-                "text": merged_text,
-                "speaker": speaker,
-                "end_ms": group[-1].get("end_ms", group[0].get("end_ms", 0)),
-            }
-            removed_ids = {s["id"] for s in group[1:]}
-            sentences = sentences[:first] + [merged] + sentences[last + 1:]
+            pos = {s["id"]: i for i, s in enumerate(sentences)}
+            ranges = []
+            for ids in group_ids:
+                if any(x not in pos for x in ids):
+                    self._send_json({"error": "所选句子已不存在（可能被其他端修改），请刷新后重试"}, status=400)
+                    return
+                positions = sorted(pos[x] for x in ids)
+                if len(set(positions)) != len(positions):
+                    self._send_json({"error": "同一句不能重复出现在合并组里"}, status=400)
+                    return
+                first, last = positions[0], positions[-1]
+                # 只能合并相邻句子：跳过中间句会让文字顺序错乱。
+                if last - first + 1 != len(positions):
+                    self._send_json({"error": "只能合并相邻的句子，请连续选择"}, status=400)
+                    return
+                ranges.append((first, last))
+            ranges.sort()
+            for a, b in zip(ranges, ranges[1:]):
+                if a[1] >= b[0]:
+                    self._send_json({"error": "合并组之间不能重叠"}, status=400)
+                    return
+
+            new_sentences = []
+            cursor = 0
+            removed_ids = set()
+            pairs = []  # (合并前快照, 合并后的句子对象)
+            merged_log = []
+            for first, last in ranges:
+                new_sentences.extend(sentences[cursor:first])
+                group = sentences[first:last + 1]
+                merged_text = llm.join_sentences([str(s.get("text") or "") for s in group])
+                speaker = next((s.get("speaker") for s in group if s.get("speaker")), "")
+                merged = {
+                    **group[0],
+                    "text": merged_text,
+                    "speaker": speaker,
+                    "end_ms": group[-1].get("end_ms", group[0].get("end_ms", 0)),
+                }
+                new_sentences.append(merged)
+                pairs.append((_sentence_snapshot(group[0]), merged))
+                removed_ids.update(s["id"] for s in group[1:])
+                merged_log.append((first + 1, last + 1, len(group)))
+                cursor = last + 1
+            new_sentences.extend(sentences[cursor:])
+            sentences = new_sentences
             for i, s in enumerate(sentences):
                 s["index"] = i
 
@@ -1425,16 +1468,21 @@ class Handler(BaseHTTPRequestHandler):
             if dropped:
                 storage.save_redactions(project_id, recording_id, kept_marks)
 
-        message = f"合并第 {first + 1}–{last + 1} 句（{len(group)} 句并 1 句）"
+        if len(merged_log) == 1:
+            first_no, last_no, count = merged_log[0]
+            message = f"合并第 {first_no}–{last_no} 句（{count} 句并 1 句）"
+        else:
+            total = sum(item[2] for item in merged_log)
+            message = f"批量合并 {len(merged_log)} 组（{total} 句并 {len(merged_log)} 句）"
         if dropped:
             message += f"；清除被合并句的 {dropped} 处脱敏标记"
         diff = [{
             "sentence_id": merged["id"],
             "index": merged["index"],
             "op": "replace",
-            "before": _sentence_snapshot(group[0]),
+            "before": before,
             "after": _sentence_snapshot(merged),
-        }]
+        } for before, merged in pairs]
         nick = storage.get_settings()["identity"]["nick"]
         version = storage.commit_version(
             project_id,
