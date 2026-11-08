@@ -126,8 +126,9 @@
 | M-2 | 后端 | `POST /api/leaf/verify` | `{"code":"123456"}` | `{"ok":true,"token":"…"}` | 配对码错误 `403`；同一后端 10 分钟内错 10 次 `429` |
 | M-3 | 后端 | `GET /m` | 无 | `text/html`（自包含移动端页面） | 无需 token；页面内完成配对，供手机浏览器直接打开 |
 | M-4 | 后端 | `/api/projects*`（GET / POST / PATCH / DELETE） | 同 R 系列 | 同 R 系列 | 需带 `X-Leaf-Token`（或 `?leaf_token=`）；token 不正确 `403`。设置、模型、群组等本机专属接口仍不对局域网开放 |
+| M-5 | 后端 | `GET /api/projects/{pid}/recordings/{rid}/audio?leaf_token={token}` | 可选 `Range` | 音频字节流（`200` / `206`） | 手机端边听边改：`<audio>` 无法自定义请求头，token 走 query；支持 `Range`，点句可跳到该句起点 |
 
-配对码与 token 持久化在 `data/leaf.json`：重启后端不必重新配对；删除该文件即吊销所有手机授权。手机页支持逐句编辑、改发言人、新增发言人、相邻多句合并，并每 5 秒轮询同步电脑端改动。
+配对码与 token 持久化在 `data/leaf.json`：重启后端不必重新配对；删除该文件即吊销所有手机授权。手机页支持逐句编辑、改发言人、新增发言人、相邻多句合并、整段音频播放（点句跳转、上一句/下一句、拖动进度），并每 5 秒轮询同步电脑端改动（内容无变化不重绘，播放与滚动不被打断）。
 
 `RoleCaps`：`view / edit / submit / merge / material / approve / members / roles / review / manage`。默认五角色 `owner/admin/editor/reader/reviewer` 可改名与增删能力（权限模板不硬编码）。
 

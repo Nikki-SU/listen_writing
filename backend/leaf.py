@@ -113,7 +113,7 @@ button{font:inherit;border:0;border-radius:10px;padding:9px 14px;background:#eef
 button.primary{background:var(--primary);color:#fff}
 button.ghost{background:transparent;color:var(--muted)}
 button:disabled{opacity:.45}
-main{padding:12px 12px 30px;max-width:760px;margin:0 auto}
+main{padding:12px 12px 150px;max-width:760px;margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px}
 .row{display:flex;align-items:flex-start;gap:10px}
 .muted{color:var(--muted);font-size:12.5px}
@@ -128,12 +128,26 @@ textarea{min-height:96px;resize:vertical}
 .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
 .pill{font-size:12px;color:var(--muted);padding:8px 2px}
 .empty{text-align:center;color:var(--muted);padding:36px 10px}
-.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#111827;color:#fff;padding:9px 16px;border-radius:999px;font-size:13px;opacity:0;transition:.2s;pointer-events:none}
+.toast{position:fixed;left:50%;bottom:calc(120px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#111827;color:#fff;padding:9px 16px;border-radius:999px;font-size:13px;opacity:0;transition:.2s;pointer-events:none;z-index:9}
 .toast.on{opacity:1}
+/* 播放器：固定在底部，独立于列表重绘，播放不会被轮询打断 */
+.player{position:fixed;left:0;right:0;bottom:0;z-index:6;background:rgba(255,255,255,.97);backdrop-filter:blur(10px);border-top:1px solid var(--line);padding:8px 12px calc(8px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:6px}
+.player.hide{display:none}
+.ptop{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.ptop input[type=range]{flex:1;padding:0;border:0;background:transparent}
+.pbtns{display:flex;gap:8px}
+.pbtns button{flex:1;padding:8px 6px;font-size:13px}
+.sentence.now{background:#eef6ff;box-shadow:inset 3px 0 0 var(--primary)}
+.mini{flex:0 0 auto;padding:4px 9px;font-size:12px;background:#eef4ff;color:#1d4ed8;border-radius:8px}
 </style>
 </head>
 <body>
 <div id="app"></div>
+<div id="player" class="player hide">
+  <div class="ptop"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="0" value="0" step="0.1"><span id="dur">0:00</span></div>
+  <div class="pbtns"><button id="prevS">⏮ 上一句</button><button id="playBtn" class="primary">▶</button><button id="nextS">下一句 ⏭</button></div>
+  <audio id="au" preload="metadata"></audio>
+</div>
 <div id="toast" class="toast"></div>
 <script>
 const KEY='lw_leaf_token';
@@ -156,8 +170,58 @@ async function api(path,opt){
 }
 function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null}}
 
+/* ---------- 音频播放：边听边改 ---------- */
+const au=document.getElementById('au'), player=document.getElementById('player');
+const seek=document.getElementById('seek'), curEl=document.getElementById('cur'),
+      durEl=document.getElementById('dur'), playBtn=document.getElementById('playBtn');
+function fmtTime(t){if(!isFinite(t)||t<0)t=0;const m=Math.floor(t/60),s=Math.floor(t%60);return m+':'+String(s).padStart(2,'0')}
+function showPlayer(on){player.classList.toggle('hide',!on);if(!on)au.pause()}
+function loadAudio(){
+  if(!detail||!detail.recording)return;
+  const src='/api/projects/'+encodeURIComponent(view.pid)+'/recordings/'+encodeURIComponent(view.rid)+'/audio?leaf_token='+encodeURIComponent(token);
+  if(au.dataset.src===src)return;
+  au.dataset.src=src;au.src=src;seek.value=0;seek.max='0';curEl.textContent='0:00';durEl.textContent='0:00';
+}
+function seekTo(ms,autoplay){
+  const t=Math.max(0,(ms||0)/1000);
+  loadAudio();
+  try{au.currentTime=t}catch(e){}
+  seek.value=String(t);curEl.textContent=fmtTime(t);
+  if(autoplay)au.play().catch(()=>toast('点一下播放键开始'));
+}
+function currentIndex(){
+  const list=(detail&&detail.sentences)||[];const t=au.currentTime*1000;let idx=-1;
+  for(let i=0;i<list.length;i++){if((list[i].start_ms||0)<=t)idx=i;else break}
+  return idx;
+}
+function jump(delta){
+  const list=(detail&&detail.sentences)||[];if(!list.length)return;
+  let i=currentIndex()+delta;
+  if(i<0)i=0;if(i>=list.length)i=list.length-1;
+  seekTo(list[i].start_ms,true);
+}
+function markNow(){
+  const list=(detail&&detail.sentences)||[];const byId={};list.forEach(s=>{byId[s.id]=s});
+  const t=au.currentTime*1000;
+  app.querySelectorAll('[data-sid]').forEach(row=>{
+    const s=byId[row.dataset.sid];
+    row.classList.toggle('now',!!s&&(s.start_ms||0)<=t&&t<(s.end_ms||0));
+  });
+}
+au.addEventListener('timeupdate',()=>{
+  const t=au.currentTime;seek.value=String(t);curEl.textContent=fmtTime(t);markNow();
+});
+au.addEventListener('loadedmetadata',()=>{durEl.textContent=fmtTime(au.duration);seek.max=String(au.duration||0)});
+au.addEventListener('play',()=>{playBtn.textContent='⏸'});
+au.addEventListener('pause',()=>{playBtn.textContent='▶'});
+au.addEventListener('error',()=>{if(au.dataset.src)toast('音频加载失败，请重新配对')});
+playBtn.onclick=()=>{loadAudio();if(au.paused)au.play().catch(()=>toast('点一下播放键开始'));else au.pause()};
+seek.oninput=()=>{const t=Number(seek.value);try{au.currentTime=t}catch(e){}curEl.textContent=fmtTime(t)};
+document.getElementById('prevS').onclick=()=>jump(-1);
+document.getElementById('nextS').onclick=()=>jump(1);
+
 function renderPair(msg){
-  stopPoll();view.name='pair';
+  stopPoll();showPlayer(false);view.name='pair';
   app.innerHTML=`<header><h1>配对这台电脑</h1></header><main>
     <div class="card">
       <div class="title" style="margin-bottom:6px">输入电脑上的 6 位配对码</div>
@@ -181,7 +245,7 @@ function renderPair(msg){
 }
 
 async function goProjects(){
-  stopPoll();view.name='projects';
+  stopPoll();showPlayer(false);view.name='projects';
   app.innerHTML=`<header><h1>我的项目</h1></header><main><div class="empty">加载中…</div></main>`;
   try{
     const d=await api('/api/projects');
@@ -194,7 +258,7 @@ async function goProjects(){
 }
 
 async function goRecordings(pid,pidName){
-  stopPoll();view.name='recordings';view.pid=pid;
+  stopPoll();showPlayer(false);view.name='recordings';view.pid=pid;
   app.innerHTML=`<header><button class="ghost" onclick="goProjects()">‹ 项目</button><h1>录音</h1></header><main><div class="empty">加载中…</div></main>`;
   try{
     const d=await api('/api/projects/'+encodeURIComponent(pid)+'/recordings');
@@ -219,19 +283,33 @@ let editing=null;      // {id,text,speaker}
 let mergeMode=false;
 let selected=[];
 let detail=null;
+let lastSig='';
 
 async function goTranscript(pid,rid,quiet){
   view.name='transcript';view.pid=pid;view.rid=rid;
-  if(!quiet){app.innerHTML=`<header><button class="ghost" onclick="goRecordings('${esc(pid)}')">‹ 录音</button><h1>转写稿</h1></header><main><div class="empty">加载中…</div></main>`}
+  if(!quiet){app.innerHTML=`<header><button class="ghost" onclick="goRecordings('${esc(pid)}')">‹ 录音</button><h1>转写稿</h1></header><main><div class="empty">加载中…</div></main>`;lastSig=''}
   try{
     detail=await loadDetail(pid,rid);
     if(editing){const s=(detail.sentences||[]).find(x=>x.id===editing.id);if(!s){editing=null}}
+    const sig=signatureOf(detail);
+    // 轮询时内容没变就不重绘：否则会打断滚动、让正在播放的列表跳动。
+    if(quiet&&sig===lastSig)return;
+    lastSig=sig;
     drawTranscript();
+    showPlayer(true);
+    loadAudio();
+    markNow();
     if(!pollTimer){pollTimer=setInterval(()=>{if(view.name==='transcript'&&!editing&&!mergeMode)goTranscript(view.pid,view.rid,true)},5000)}
   }catch(e){
     if(view.name==='pair')return;
     if(!quiet)app.innerHTML=`<header><button class="ghost" onclick="goProjects()">‹ 项目</button><h1>转写稿</h1></header><main><div class="empty">${esc(e.message)}</div></main>`;
   }
+}
+
+function signatureOf(d){
+  if(!d)return '';
+  const r=d.recording||{};
+  return (r.name||'')+'|'+(d.sentences||[]).map(s=>s.id+':'+s.text+':'+s.speaker).join('\\u0001');
 }
 
 function speakersOf(){
@@ -265,6 +343,7 @@ function drawTranscript(){
         const isEdit=editing&&editing.id===s.id;
         return `<div class="sentence" data-sid="${esc(s.id)}">
           ${mergeMode?`<input type="checkbox" data-check="${esc(s.id)}" ${checked?'checked':''} style="width:18px;height:18px;margin-top:2px">`:''}
+          <button class="mini" data-play="${esc(s.id)}" aria-label="播放这句">▶</button>
           <span class="speaker">${esc(s.speaker||'未标注')}</span>
           <div class="text" style="flex:1">
             ${isEdit?`
@@ -328,6 +407,13 @@ function bindTranscript(list,roster){
   if(ce)ce.onclick=()=>{editing=null;drawTranscript()};
   app.querySelectorAll('[data-check]').forEach(cb=>{
     cb.onclick=(ev)=>{ev.stopPropagation();toggleSelect(cb.dataset.check)};
+  });
+  app.querySelectorAll('[data-play]').forEach(b=>{
+    b.onclick=(ev)=>{
+      ev.stopPropagation();
+      const s=list.find(x=>x.id===b.dataset.play);
+      if(s)seekTo(s.start_ms,true);
+    };
   });
 }
 
