@@ -118,6 +118,7 @@ fi
 
 while :; do
 echo "[3/4] 首次安装组件（约 600MB，需要联网）……"
+: > .runtime/install.log
 "$PY" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 \
   -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple || {
   echo "      国内镜像失败，改用官方源重试……"
@@ -134,8 +135,9 @@ if ! "$PY" -c "import llama_cpp" >/dev/null 2>&1; then
   echo "[3/4] 安装本地 AI 运行时（可选，约 30MB）……"
   "$PY" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 \
     llama-cpp-python==0.3.36 \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu >/dev/null 2>&1 || {
-    echo "      AI 纠错运行时安装失败（不影响录音转写）；下次运行启动器会自动重试。"
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu >>.runtime/install.log 2>&1 || {
+    echo "      AI 纠错运行时安装失败（不影响录音转写），原因见 .runtime/install.log；"
+    echo "      下次运行启动器会自动重试。"
   }
 fi
 
@@ -147,8 +149,9 @@ if ! "$PY" -c "import torch" >/dev/null 2>&1; then
   "$PY" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 \
     torch==2.15.0 \
     --index-url https://download.pytorch.org/whl/cpu \
-    --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple >/dev/null 2>&1 || {
-    echo "      Qwen3-ASR 运行时安装失败（不影响 Whisper / SenseVoice）；下次运行启动器会自动重试。"
+    --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple >>.runtime/install.log 2>&1 || {
+    echo "      Qwen3-ASR 运行时安装失败（不影响 Whisper / SenseVoice），原因见 .runtime/install.log；"
+    echo "      下次运行启动器会自动重试。"
   }
 fi
 

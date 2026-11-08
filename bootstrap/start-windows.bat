@@ -52,21 +52,41 @@ if not exist "%PY%" goto runtime_missing
 
 :install_deps
 echo [3/4] Installing components (first run only, about 600 MB, needs internet)
+if exist ".runtime\install.log" del /q ".runtime\install.log"
 "%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-if not errorlevel 1 goto check_native
+rem Jump to the OPTIONAL runtimes, not straight to check_native. The old code
+rem skipped the AI runtime whenever this mirror worked, so the web page always
+rem said "runtime not installed" no matter how many times the files were replaced.
+if not errorlevel 1 goto ai_runtime
 echo        Mirror failed, retrying with the official index ...
 "%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 -r requirements.txt
 if errorlevel 1 goto pip_failed
 
+:ai_runtime
 rem AI correction runtime: PyPI only ships sources. Install the CPU wheel from the
 rem project wheel index. Failure is not fatal - transcription still works and the
 rem web page reports that the AI runtime is missing.
 "%PY%" -c "import llama_cpp" >nul 2>nul
 if not errorlevel 1 goto torch_runtime
 echo        Installing the optional local AI runtime (about 30 MB) ...
-"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 llama-cpp-python==0.3.36 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu >nul 2>nul
+echo        Details are written to .runtime\install.log
+"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 --only-binary llama-cpp-python llama-cpp-python==0.3.36 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu >>".runtime\install.log" 2>&1
+if not errorlevel 1 goto ai_runtime_check
+echo        Wheel index unreachable, trying the direct download ...
+"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 "https://gh-proxy.com/https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.36/llama_cpp_python-0.3.36-py3-none-win_amd64.whl" >>".runtime\install.log" 2>&1
+if errorlevel 1 goto ai_runtime_failed
+
+:ai_runtime_check
+"%PY%" -c "import llama_cpp" >nul 2>nul
 if not errorlevel 1 goto torch_runtime
-echo        Local AI runtime not installed (transcription is unaffected; retried next run).
+echo        [WARN] Local AI runtime installed but cannot be loaded (missing DLL?).
+echo               See .runtime\install.log for details.
+goto torch_runtime
+
+:ai_runtime_failed
+echo        [WARN] Local AI runtime not installed (transcription is unaffected).
+echo               See .runtime\install.log ; it is retried on every launch.
+goto torch_runtime
 
 :torch_runtime
 rem Qwen3-ASR needs torch. The PyPI Windows wheel is CPU-only, so no CUDA deps.
@@ -75,11 +95,12 @@ rem reports this option as unavailable on this machine.
 "%PY%" -c "import torch" >nul 2>nul
 if not errorlevel 1 goto check_native
 echo        Installing the Qwen3-ASR runtime (optional, about 200 MB) ...
-"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 torch==2.15.0 -i https://pypi.tuna.tsinghua.edu.cn/simple >nul 2>nul
+"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 torch==2.15.0 -i https://pypi.tuna.tsinghua.edu.cn/simple >>".runtime\install.log" 2>&1
 if not errorlevel 1 goto check_native
-"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 torch==2.15.0 >nul 2>nul
+"%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 torch==2.15.0 >>".runtime\install.log" 2>&1
 if not errorlevel 1 goto check_native
-echo        Qwen3-ASR runtime not installed (Whisper / SenseVoice are unaffected; retried next run).
+echo        [WARN] Qwen3-ASR runtime not installed (Whisper / SenseVoice are unaffected;
+echo               see .runtime\install.log ; retried next run).
 
 :check_native
 rem ctranslate2 / av dlls need MSVCP140.dll, which the portable Python does not ship.
