@@ -98,7 +98,7 @@
 - **无副本群组**（`mode=authoritative`）：群主节点是唯一权威，其他节点的写请求由本机原样转发给群主；群主离线返回 `503 {"error":"…","code":"owner_offline"}`。
 - **有副本群组**（`mode=replica`）：每个节点持有完整副本，改动后互推快照，按修订号（`rev` / `revs`）判断祖先、句子级三方合并；真冲突保留本地文本，并把对方文本写成 `status=conflict` 的群组提案交给人决定。
 - **同人多设备**：昵称 + 设备码完全一致视为同一个人，自动同步项目、录音、音频（仅对这类设备开放）。
-- 非回环地址只开放 `/api/peer/*`、`/api/groups*` 与 `/api/health`、`/api/version`，其它接口返回 `403 {"code":"local_only"}`。
+- 非回环地址只开放 `/api/peer/*`、`/api/groups*`、`/m`、`/api/leaf/verify` 与 `/api/health`、`/api/version`，以及已配对手机带 token 的 `/api/projects*`；其它接口返回 `403 {"code":"local_only"}`。
 
 | 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
 |---|---|---|---|---|---|
@@ -115,6 +115,19 @@
 | N-11 | 后端 | `GET /api/peer/projects/{pid}/recordings/{rid}/audio?device_code={d}&nick={n}` | 可选 `Range` | 音频字节流（`200`/`206`） | 同人同步音频本体 |
 
 `PeerNode = {key,device_code,nick,host,port,instance,groups,via,last_seen,online,base_url,same_identity}`；`via` 为 `udp` / `manual`。
+
+### 手机 / 平板叶子节点（M 系列）
+
+手机不跑模型、不存整库：与电脑连同一个 Wi‑Fi，用浏览器打开 hub 提供的 `/m`，输入电脑设置页显示的 6 位配对码换取 token。之后手机上的读写直接落到电脑端（同源 `/api/projects*`），电脑刷新即见最新稿。
+
+| 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
+|---|---|---|---|---|---|
+| M-1 | 后端 | `GET /api/leaf/info` | 无 | `{"code":"123456","urls":["http://192.168.1.8:7850/m"],"port":7850}` | 含配对码，**仅回环**可读，不能暴露给同网段设备 |
+| M-2 | 后端 | `POST /api/leaf/verify` | `{"code":"123456"}` | `{"ok":true,"token":"…"}` | 配对码错误 `403`；同一后端 10 分钟内错 10 次 `429` |
+| M-3 | 后端 | `GET /m` | 无 | `text/html`（自包含移动端页面） | 无需 token；页面内完成配对，供手机浏览器直接打开 |
+| M-4 | 后端 | `/api/projects*`（GET / POST / PATCH / DELETE） | 同 R 系列 | 同 R 系列 | 需带 `X-Leaf-Token`（或 `?leaf_token=`）；token 不正确 `403`。设置、模型、群组等本机专属接口仍不对局域网开放 |
+
+配对码与 token 持久化在 `data/leaf.json`：重启后端不必重新配对；删除该文件即吊销所有手机授权。手机页支持逐句编辑、改发言人、新增发言人、相邻多句合并，并每 5 秒轮询同步电脑端改动。
 
 `RoleCaps`：`view / edit / submit / merge / material / approve / members / roles / review / manage`。默认五角色 `owner/admin/editor/reader/reviewer` 可改名与增删能力（权限模板不硬编码）。
 

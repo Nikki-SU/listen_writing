@@ -72,6 +72,11 @@ export async function restartBackend(): Promise<boolean> {
   }
 }
 
+/** 手机/平板叶子节点配对信息（仅本机可见）：局域网地址 + 6 位配对码。 */
+export async function fetchLeafInfo(): Promise<{ code: string; urls: string[]; port: number }> {
+  return json(await fetch(`${BACKEND}/api/leaf/info`))
+}
+
 export async function listProjects(): Promise<Project[]> {
   const data = await json<{ projects: Project[] }>(await fetch(`${BACKEND}/api/projects`))
   return data.projects

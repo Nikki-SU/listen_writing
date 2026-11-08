@@ -23,6 +23,7 @@ import audio
 import transcriber
 import collab
 import diarize
+import leaf
 import llm
 import peers
 import storage
@@ -450,7 +451,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format, Range")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format, Range, X-Leaf-Token")
         # Chrome 私有网络访问（PNA）：https 的 Pages 页面请求 http://127.0.0.1 时，
         # 预检要求后端显式允许；本地回环地址本身可信，放开不影响安全边界。
         self.send_header("Access-Control-Allow-Private-Network", "true")
@@ -459,15 +460,36 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         peers.after_request(self)
 
+    def _send_html(self, html: str, status=200):
+        body = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        peers.after_request(self)
+
+    def _leaf_token(self) -> str:
+        token = self.headers.get("X-Leaf-Token") or ""
+        if token:
+            return token
+        return (parse_qs(urlparse(self.path).query).get("leaf_token") or [""])[0]
+
     def _guard_lan(self, path: str) -> bool:
-        """非回环地址只开放 P2P 面（/api/peer）与需要成员身份的群组接口。
+        """非回环地址只开放 P2P 面、群组接口和已配对的手机叶子节点。
 
         数据不出局域网，但也不等于把整台机器的项目文件暴露给同网段任意设备。
         """
         client = (self.client_address or ("",))[0]
         if client in ("127.0.0.1", "::1", "localhost"):
             return True
+        if path == "/m" or path == "/api/leaf/verify":
+            return True
         if path.startswith("/api/peer/") or path.startswith("/api/groups") or path in ("/api/health", "/api/version"):
+            return True
+        # 手机配对后带 token：只放开项目/录音的读写，不放开本机专属的设置与模型管理。
+        if leaf.token_ok(self._leaf_token()) and path.startswith("/api/projects"):
             return True
         self._send_json({"error": "该接口仅允许本机访问", "code": "local_only"}, status=403)
         return False
@@ -516,7 +538,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format, Range")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Filename, X-Format, Range, X-Leaf-Token")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
 
@@ -527,6 +549,17 @@ class Handler(BaseHTTPRequestHandler):
         if peers.maybe_forward(self):
             return
 
+        if path == "/m":
+            self._send_html(leaf.page())
+            return
+        if path == "/api/leaf/info":
+            # 配对码只给本机看：同网段设备拿到码就能冒充手机，配对就失去意义。
+            self._send_json({
+                "code": leaf.state()["code"],
+                "urls": leaf.urls(PORT),
+                "port": PORT,
+            })
+            return
         if path == "/api/health":
             self._send_json({"status": "ok"})
             return
@@ -1857,6 +1890,20 @@ class Handler(BaseHTTPRequestHandler):
         if peers.maybe_forward(self):
             return
 
+        if path == "/api/leaf/verify":
+            if leaf.too_many_attempts():
+                self._send_json({"error": "配对码错误次数过多，请 10 分钟后再试"}, status=429)
+                return
+            data = self._read_json_body()
+            if data is None:
+                return
+            token = leaf.verify(str(data.get("code") or ""))
+            if not token:
+                leaf.note_failure()
+                self._send_json({"error": "配对码不正确"}, status=403)
+                return
+            self._send_json({"ok": True, "token": token})
+            return
         if path == "/api/models/download":
             data = self._read_json_body()
             if data is None:

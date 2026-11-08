@@ -17,6 +17,8 @@ export default function SettingsPanel({
   const [payload, setPayload] = useState<SettingsPayload | null>(null)
   const [nick, setNick] = useState('')
   const [deviceCode, setDeviceCode] = useState('')
+  const [leafInfo, setLeafInfo] = useState<{ code: string; urls: string[] } | null>(null)
+  const [leafError, setLeafError] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const { models, error: modelError, download } = useModels(1500)
@@ -32,6 +34,17 @@ export default function SettingsPanel({
         setDeviceCode(p.settings.identity.device_code)
       })
       .catch((e) => !cancelled && setError(String(e)))
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .fetchLeafInfo()
+      .then((info) => !cancelled && setLeafInfo({ code: info.code, urls: info.urls }))
+      .catch((e) => !cancelled && setLeafError(String(e)))
     return () => {
       cancelled = true
     }
@@ -168,6 +181,38 @@ export default function SettingsPanel({
               <p style={{ margin: 0, fontSize: 11, color: '#9aa0a6' }}>
                 设备码用于协作时区分“谁改的”。可以改成你易记的标识（4–64 位字母数字），改完后本机旧授权仍按原码记录。
               </p>
+            </Section>
+
+            <Section title="手机 / 平板（同一 Wi-Fi）">
+              {leafError && <div style={{ fontSize: 12, color: '#b00020' }}>{leafError}</div>}
+              {leafInfo ? (
+                <>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: 13, color: '#6b7280', width: 70 }}>配对码</label>
+                    <span style={{ fontSize: 22, letterSpacing: '0.22em', fontFamily: 'ui-monospace, monospace' }}>
+                      {leafInfo.code}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: 13, color: '#6b7280', width: 70 }}>访问地址</label>
+                    {leafInfo.urls.map((u) => (
+                      <code key={u} style={{ fontSize: 12.5, color: '#1f6feb' }}>{u}</code>
+                    ))}
+                    <button
+                      style={{ fontSize: 12, padding: '3px 10px' }}
+                      onClick={() => void navigator.clipboard?.writeText(leafInfo.urls[0] || '')}
+                    >
+                      复制链接
+                    </button>
+                  </div>
+                  <p style={{ margin: 0, fontSize: 11, color: '#9aa0a6', lineHeight: 1.7 }}>
+                    手机与电脑连同一个 Wi-Fi，用浏览器打开上面的地址，输入配对码。手机不跑模型、不存整库，
+                    改完直接写回这台电脑；电脑上按 F5 即可看到。首次配对后手机会记住授权。
+                  </p>
+                </>
+              ) : (
+                !leafError && <div style={{ fontSize: 12, color: '#8a8f98' }}>正在读取配对信息…</div>
+              )}
             </Section>
 
             <Section title="转写模型（语音 → 文字）">
