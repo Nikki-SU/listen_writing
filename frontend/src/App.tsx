@@ -736,10 +736,10 @@ function TranscriptPanel({
   const [roster, setRoster] = useState<string[]>(detail.speakers ?? [])
   const [newSpeakerOpen, setNewSpeakerOpen] = useState(false)
   const [newSpeakerName, setNewSpeakerName] = useState('')
-  // 多句合并：点句子与上一句并组，同色为一组，最后一次性合并所有组（ASR 常按逗号切碎）。
+  // 多句合并：点句子自行涂色分组（同色为一组），最后一次性合并所有组（ASR 常按逗号切碎）。
   const [mergeMode, setMergeMode] = useState(false)
-  // 间隔上色合并：记录“与上一句并组”的句子 id；相邻组用两种颜色交替显示。
-  const [joinIds, setJoinIds] = useState<string[]>([])
+  // 间隔上色合并：用户自己点句子涂色；同色（含未涂色的白色）连续句子为一组。
+  const [paintedIds, setPaintedIds] = useState<string[]>([])
   const [merging, setMerging] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [marks, setMarks] = useState<RedactionMark[]>(detail.redactions ?? [])
@@ -1033,24 +1033,22 @@ function TranscriptPanel({
     }
   }
 
-  function toggleJoin(id: string) {
-    setJoinIds((list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]))
+  function togglePaint(id: string) {
+    setPaintedIds((list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]))
   }
 
-  // 由 joinIds 推导合并组：没并到上一句的句子自成一组。
+  // 连续同色（涂色 / 未涂色）的句子构成一组；一开始全是白色，由用户点句子自行分组。
   const mergeGroups: string[][] = []
   for (const s of localSentences) {
-    if (joinIds.includes(s.id) && mergeGroups.length > 0) {
-      mergeGroups[mergeGroups.length - 1].push(s.id)
-    } else {
-      mergeGroups.push([s.id])
-    }
+    const painted = paintedIds.includes(s.id)
+    const last = mergeGroups[mergeGroups.length - 1]
+    if (last && paintedIds.includes(last[0]) === painted) last.push(s.id)
+    else mergeGroups.push([s.id])
   }
-  const groupIndexOf = new Map<string, number>()
-  mergeGroups.forEach((g, gi) => g.forEach((id) => groupIndexOf.set(id, gi)))
   const mergeReducible = mergeGroups.reduce((n, g) => n + Math.max(0, g.length - 1), 0)
 
   async function mergeAllGroups() {
+    if (paintedIds.length === 0) return
     const groups = mergeGroups.filter((g) => g.length > 1)
     if (groups.length === 0 || merging) return
     setMerging(true)
@@ -1059,7 +1057,7 @@ function TranscriptPanel({
       setLocalSentences(res.sentences)
       setMarks(res.redactions ?? [])
       if (res.current) setVersion(res.current)
-      setJoinIds([])
+      setPaintedIds([])
       setMergeMode(false)
       onError('')
     } catch (e) {
@@ -1898,7 +1896,8 @@ function TranscriptPanel({
             <button
               onClick={() => {
                 setMergeMode((v) => !v)
-                setJoinIds([])
+                setPaintedIds([])
+                setEditingId(null)
               }}
               disabled={transcribe.status !== 'done' || localSentences.length < 2}
               style={{
@@ -1920,35 +1919,35 @@ function TranscriptPanel({
         {mergeMode && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '6px 10px', background: '#f5f8ff', border: '1px solid #d6e4ff', borderRadius: 6, fontSize: 12 }}>
             <span style={{ color: '#1a73e8', fontWeight: 600 }}>
-              {mergeGroups.length} 组 · 可减少 {mergeReducible} 句
+              {paintedIds.length === 0 ? '尚未分组' : `${mergeGroups.length} 组 · 可减少 ${mergeReducible} 句`}
             </span>
-            <span style={{ color: '#888', fontSize: 11 }}>点句子 = 与上一句并组；同色为同组，可一次全部合并</span>
+            <span style={{ color: '#888', fontSize: 11 }}>
+              {paintedIds.length === 0 ? '点句子自己涂色；白色与彩色交替，同色连续为一组' : '再点一次取消涂色；同色连续为一组'}
+            </span>
             <button
               onClick={() => void mergeAllGroups()}
-              disabled={mergeReducible === 0 || merging}
+              disabled={paintedIds.length === 0 || mergeReducible === 0 || merging}
               style={{ marginLeft: 'auto', fontSize: 12, padding: '3px 12px' }}
             >
               {merging ? '合并中…' : '合并全部'}
             </button>
-            <button onClick={() => setJoinIds([])} disabled={joinIds.length === 0} style={{ fontSize: 12, padding: '3px 10px' }}>
-              重置
+            <button onClick={() => setPaintedIds([])} disabled={paintedIds.length === 0} style={{ fontSize: 12, padding: '3px 10px' }}>
+              清除涂色
             </button>
           </div>
         )}
 
         <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
-          {localSentences.map((s, si) => {
+          {localSentences.map((s) => {
             const active = s.id === activeId
-            const gi = groupIndexOf.get(s.id) ?? 0
-            const tone = gi % 2 === 0 ? { fg: '#1a73e8', bg: '#eef4ff' } : { fg: '#e8710a', bg: '#fff4e8' }
+            const painted = mergeMode && paintedIds.includes(s.id)
             return (
               <li
                 key={s.id}
                 id={`sentence-${s.id}`}
                 onClick={() => {
                   if (mergeMode) {
-                    // 第一句没有“上一句”，不能并组。
-                    if (si > 0) toggleJoin(s.id)
+                    togglePaint(s.id)
                     return
                   }
                   seek(s)
@@ -1959,16 +1958,12 @@ function TranscriptPanel({
                   display: 'flex',
                   gap: 10,
                   cursor: 'pointer',
-                  background: mergeMode ? tone.bg : active ? '#eef4ff' : 'transparent',
-                  borderLeft: mergeMode ? `3px solid ${tone.fg}` : active ? '3px solid #4285f4' : '3px solid transparent',
+                  background: mergeMode ? (painted ? '#eef4ff' : '#fff') : active ? '#eef4ff' : 'transparent',
+                  borderLeft: mergeMode
+                    ? `3px solid ${painted ? '#1a73e8' : 'transparent'}`
+                    : active ? '3px solid #4285f4' : '3px solid transparent',
                 }}
               >
-                {mergeMode && (
-                  <span
-                    aria-hidden
-                    style={{ width: 12, height: 12, marginTop: 5, borderRadius: 3, flexShrink: 0, background: tone.fg }}
-                  />
-                )}
                 <span style={{ color: '#999', fontSize: 12, flexShrink: 0, fontVariantNumeric: 'tabular-nums', paddingTop: 2 }}>
                   {fmtMs(s.start_ms)}
                 </span>
@@ -2023,15 +2018,17 @@ function TranscriptPanel({
                     >
                       {renderText(s)}
                     </span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        startEdit(s)
-                      }}
-                      style={{ fontSize: 11, padding: '1px 8px', alignSelf: 'flex-start', color: '#666', flexShrink: 0 }}
-                    >
-                      修改
-                    </button>
+                    {!mergeMode && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          startEdit(s)
+                        }}
+                        style={{ fontSize: 11, padding: '1px 8px', alignSelf: 'flex-start', color: '#666', flexShrink: 0 }}
+                      >
+                        修改
+                      </button>
+                    )}
                   </>
                 )}
               </li>
