@@ -284,7 +284,7 @@ async function loadDetail(pid,rid){
 
 let editing=null;      // {id,text,speaker}
 let mergeMode=false;
-let painted=[];         // 用户自己涂色的句子 id；未涂色保持白色，连续同色为一组
+let painted=[];         // 用户自己涂色的句子 id；只有涂色且连续的句子会合并，未涂色原地保留
 let detail=null;
 let lastSig='';
 
@@ -328,13 +328,13 @@ function drawTranscript(){
   if(list.length===0){
     app.innerHTML=header+`<main><div class="empty">还没有转写内容</div></main>`;return;
   }
-  const groups=mergeGroupsOf(list);
+  const groups=mergeGroupsOf(list).filter(g=>g.length>1);
   const paintedIds={};painted.forEach(id=>{paintedIds[id]=1});
-  const reducible=groups.reduce((n,g)=>n+(g.length>1?g.length-1:0),0);
+  const reducible=groups.reduce((n,g)=>n+g.length-1,0);
   const mergeBar=mergeMode?`<div class="bar"><span class="pill">${painted.length===0?'尚未分组':groups.length+' 组 · 可减少 '+reducible+' 句'}</span>
       <button class="primary" id="doMerge" ${painted.length===0||reducible===0?'disabled':''}>合并全部</button>
       <button id="cancelMerge">退出合并</button></div>
-      <div class="bar"><span style="font-size:12px;color:#6b7280">${painted.length?'再点一次取消涂色；同色连续为一组':'点句子自己涂色；白色与彩色交替，同色连续为一组'}</span></div>`:'';
+      <div class="bar"><span style="font-size:12px;color:#6b7280">${painted.length?'再点一次取消涂色；涂色且连续才成一组':'点句子自己涂色；没涂色的句子不参与合并，涂色且连续才成一组'}</span></div>`:'';
   app.innerHTML=header+`<main>
     <div class="bar" style="justify-content:space-between">
       <span class="pill">${list.length} 句 · ${roster.length} 位发言人</span>
@@ -447,15 +447,15 @@ function togglePaint(sid){
   drawTranscript();
 }
 
-/** 连续同色（涂色 / 未涂色）的句子构成一组；一开始全是白色，由用户自己涂。 */
+/** 只有「涂色且连续」的句子才构成一组；没涂色的句子原地保留，不参与合并。 */
 function mergeGroupsOf(list){
   const groups=[];
-  for(const s of list){
-    const on=painted.includes(s.id);
-    const last=groups[groups.length-1];
-    if(last&&painted.includes(last[0])===on)last.push(s.id);
+  list.forEach((s,i)=>{
+    if(!painted.includes(s.id))return;
+    const prev=list[i-1];
+    if(prev&&painted.includes(prev.id))groups[groups.length-1].push(s.id);
     else groups.push([s.id]);
-  }
+  });
   return groups;
 }
 

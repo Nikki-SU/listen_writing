@@ -736,9 +736,9 @@ function TranscriptPanel({
   const [roster, setRoster] = useState<string[]>(detail.speakers ?? [])
   const [newSpeakerOpen, setNewSpeakerOpen] = useState(false)
   const [newSpeakerName, setNewSpeakerName] = useState('')
-  // 多句合并：点句子自行涂色分组（同色为一组），最后一次性合并所有组（ASR 常按逗号切碎）。
+  // 多句合并：点句子自行涂色分组（涂色且连续为一组），最后一次性合并所有组（ASR 常按逗号切碎）。
   const [mergeMode, setMergeMode] = useState(false)
-  // 间隔上色合并：用户自己点句子涂色；同色（含未涂色的白色）连续句子为一组。
+  // 间隔上色合并：用户自己点句子涂色；只有涂色且连续的句子成组，未涂色的不参与合并。
   const [paintedIds, setPaintedIds] = useState<string[]>([])
   const [merging, setMerging] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -1074,19 +1074,20 @@ function TranscriptPanel({
     setPaintedIds((list) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]))
   }
 
-  // 连续同色（涂色 / 未涂色）的句子构成一组；一开始全是白色，由用户点句子自行分组。
+  // 只有「涂色且连续」的句子才构成一组；没涂色的句子原地保留，不参与合并。
   const mergeGroups: string[][] = []
-  for (const s of localSentences) {
-    const painted = paintedIds.includes(s.id)
-    const last = mergeGroups[mergeGroups.length - 1]
-    if (last && paintedIds.includes(last[0]) === painted) last.push(s.id)
+  localSentences.forEach((s, i) => {
+    if (!paintedIds.includes(s.id)) return
+    const prev = localSentences[i - 1]
+    if (prev && paintedIds.includes(prev.id)) mergeGroups[mergeGroups.length - 1].push(s.id)
     else mergeGroups.push([s.id])
-  }
-  const mergeReducible = mergeGroups.reduce((n, g) => n + Math.max(0, g.length - 1), 0)
+  })
+  const mergeableGroups = mergeGroups.filter((g) => g.length > 1)
+  const mergeReducible = mergeableGroups.reduce((n, g) => n + g.length - 1, 0)
 
   async function mergeAllGroups() {
     if (paintedIds.length === 0) return
-    const groups = mergeGroups.filter((g) => g.length > 1)
+    const groups = mergeableGroups
     if (groups.length === 0 || merging) return
     setMerging(true)
     try {
@@ -1956,10 +1957,10 @@ function TranscriptPanel({
         {mergeMode && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '6px 10px', background: '#f5f8ff', border: '1px solid #d6e4ff', borderRadius: 6, fontSize: 12 }}>
             <span style={{ color: '#1a73e8', fontWeight: 600 }}>
-              {paintedIds.length === 0 ? '尚未分组' : `${mergeGroups.length} 组 · 可减少 ${mergeReducible} 句`}
+              {paintedIds.length === 0 ? '尚未分组' : `${mergeableGroups.length} 组 · 可减少 ${mergeReducible} 句`}
             </span>
             <span style={{ color: '#888', fontSize: 11 }}>
-              {paintedIds.length === 0 ? '点句子自己涂色；白色与彩色交替，同色连续为一组' : '再点一次取消涂色；同色连续为一组'}
+              {paintedIds.length === 0 ? '点句子自己涂色；没涂色的句子不参与合并，涂色且连续才成一组' : '再点一次取消涂色；涂色且连续才成一组'}
             </span>
             <button
               onClick={() => void mergeAllGroups()}
