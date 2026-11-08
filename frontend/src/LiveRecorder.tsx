@@ -261,7 +261,7 @@ export default function LiveRecorder({
         <p style={{ margin: '8px 0 0', fontSize: 12, color: '#8a8f98', lineHeight: 1.7 }}>
           {status === 'init' && '正在启动麦克风…'}
           {status === 'recording' &&
-            `边说边转写${asrModel ? `（${asrModel}）` : ''}。句子会陆续出现在下面；保持窗口开启。`}
+            `边说边转写${asrModel ? `（${asrModel}）` : ''}。停止后会按设置里的模型再精转一遍（稍慢）。`}
           {status === 'stopping' && '正在保存录音与最后一段转写…'}
           {status === 'error' && '录音未开始或已中断。'}
         </p>

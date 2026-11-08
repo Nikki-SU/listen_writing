@@ -77,6 +77,10 @@ def _get_transcriber(model_key: str):
 _live_lock = threading.Lock()
 _live_sessions: dict[str, dict] = {}
 
+# 精转档位排序：实时为了低延迟只能落在轻量档；停止后只有设置里选了更高档才重转，
+# 避免把 SenseVoice 的实时草稿反而覆盖成 Whisper small。
+_ASR_RANK = {"whisper-small": 1, "sensevoice-small": 2, "qwen3-asr-0.6b": 3, "whisper-medium": 3}
+
 
 def _live_asr_key() -> str:
     """实时优先 SenseVoice（轻、快），其次 Whisper small。
@@ -377,6 +381,81 @@ def _run_transcribe(project_id: str, recording_id: str) -> None:
         storage.set_transcribe(project_id, recording_id, "done", 100)
     except Exception as e:  # noqa: BLE001 - 转写失败要如实落盘
         storage.set_transcribe(project_id, recording_id, "error", 0, str(e))
+    finally:
+        with _transcribe_lock:
+            _transcribing.discard(key)
+
+
+def _replace_transcript(
+    project_id: str,
+    recording_id: str,
+    engine_key: str,
+    base_version: str | None = None,
+    message: str = "",
+    keep_draft_on_error: bool = False,
+) -> None:
+    """用指定模型整段重转并覆盖现有句子（实时草稿 / 旧模型的转写）。
+
+    `base_version` 非空时只在“用户还没改过这一版”时覆盖，避免吞掉停止后已经
+    做出的编辑。精转失败保留实时草稿（keep_draft_on_error），重试失败则如实报错。
+    """
+    key = f"{project_id}/{recording_id}"
+    with _transcribe_lock:
+        if key in _transcribing:
+            return
+        _transcribing.add(key)
+
+    try:
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            return
+        audio_path = recording["audio_path"]
+        engine = _get_transcriber(engine_key)
+        collected: list[dict] = []
+
+        def on_progress(p: int) -> None:
+            storage.set_transcribe(project_id, recording_id, "transcribing", p)
+
+        def on_sentence(seg: dict) -> None:
+            collected.append({
+                "id": storage.new_id(),
+                "recording_id": recording_id,
+                "index": len(collected),
+                "text": seg["text"],
+                "start_ms": seg["start_ms"],
+                "end_ms": seg["end_ms"],
+                "speaker": seg.get("speaker", ""),
+            })
+
+        engine.transcribe(audio_path, on_progress, on_sentence)
+
+        current = (storage.get_recording(project_id, recording_id) or {}).get("version") or {}
+        if base_version and current.get("current") != base_version:
+            storage.set_transcribe(project_id, recording_id, "done", 100)
+            return
+        if not collected:
+            storage.set_transcribe(project_id, recording_id, "done", 100)
+            return
+
+        diarize.assign_speakers(audio_path, collected)
+        with _sentence_io_lock:
+            storage.save_sentences(project_id, recording_id, collected)
+            storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(collected))
+        storage.commit_version(
+            project_id,
+            recording_id,
+            collected,
+            [],
+            message or f"重新转写（{ASR_MODELS[engine_key]['label']}）",
+            author_nick=storage.get_settings()["identity"]["nick"],
+        )
+        storage.update_recording(project_id, recording_id, asr_model=engine_key)
+        storage.set_transcribe(project_id, recording_id, "done", 100)
+    except Exception as e:  # noqa: BLE001 - 失败原因要如实落盘
+        if keep_draft_on_error:
+            storage.set_transcribe(project_id, recording_id, "done", 100)
+        else:
+            storage.set_transcribe(project_id, recording_id, "error", 0, str(e))
     finally:
         with _transcribe_lock:
             _transcribing.discard(key)
@@ -1095,6 +1174,21 @@ class Handler(BaseHTTPRequestHandler):
             version={"stage": 0, "seq": 1, "current": "0.1"},
         )
         storage.set_transcribe(project_id, recording_id, "done", 100)
+        # 实时只能用轻量档先出草稿；停止后按设置里的更高档模型整段精转一遍，
+        # 慢一点没关系。用户若在精转完成前已编辑（版本号已变），则不覆盖。
+        selected = storage.get_settings().get("asr_model") or ""
+        if (
+            selected
+            and _ASR_RANK.get(selected, 0) > _ASR_RANK.get(session["engine"], 0)
+            and _asr_downloaded(selected)
+        ):
+            message = f"精转写（{ASR_MODELS[selected]['label']}）"
+            storage.set_transcribe(project_id, recording_id, "transcribing", 0)
+            threading.Thread(
+                target=_replace_transcript,
+                args=(project_id, recording_id, selected, "0.1", message, True),
+                daemon=True,
+            ).start()
         try:
             session["pcm_path"].unlink()
         except OSError:
@@ -1118,8 +1212,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "该录音正在转写中"}, status=409)
                 return
         storage.set_transcribe(project_id, recording_id, "transcribing", 0)
+        asr_key = storage.get_settings().get("asr_model") or "whisper-small"
+        # 重试是重做整条录音，必须覆盖旧句子；原来的增量追加会把整篇复制一遍。
         threading.Thread(
-            target=_run_transcribe, args=(project_id, recording_id), daemon=True
+            target=_replace_transcript, args=(project_id, recording_id, asr_key), daemon=True
         ).start()
         self._send_json({"ok": True, "status": "transcribing"})
 
