@@ -284,7 +284,7 @@ async function loadDetail(pid,rid){
 
 let editing=null;      // {id,text,speaker}
 let mergeMode=false;
-let painted=[];         // 用户自己涂色的句子 id；只有涂色且连续的句子会合并，未涂色原地保留
+let painted={};         // 句子 id → 1/2（两种颜色各代表一组）；白色 = 未涂色，不参与合并
 let detail=null;
 let lastSig='';
 
@@ -329,12 +329,12 @@ function drawTranscript(){
     app.innerHTML=header+`<main><div class="empty">还没有转写内容</div></main>`;return;
   }
   const groups=mergeGroupsOf(list).filter(g=>g.length>1);
-  const paintedIds={};painted.forEach(id=>{paintedIds[id]=1});
   const reducible=groups.reduce((n,g)=>n+g.length-1,0);
-  const mergeBar=mergeMode?`<div class="bar"><span class="pill">${painted.length===0?'尚未分组':groups.length+' 组 · 可减少 '+reducible+' 句'}</span>
-      <button class="primary" id="doMerge" ${painted.length===0||reducible===0?'disabled':''}>合并全部</button>
+  const paintedCount=Object.keys(painted).length;
+  const mergeBar=mergeMode?`<div class="bar"><span class="pill">${paintedCount===0?'尚未分组':groups.length+' 组 · 可减少 '+reducible+' 句'}</span>
+      <button class="primary" id="doMerge" ${paintedCount===0||reducible===0?'disabled':''}>合并全部</button>
       <button id="cancelMerge">退出合并</button></div>
-      <div class="bar"><span style="font-size:12px;color:#6b7280">${painted.length?'再点一次取消涂色；涂色且连续才成一组':'点句子自己涂色；没涂色的句子不参与合并，涂色且连续才成一组'}</span></div>`:'';
+      <div class="bar"><span style="font-size:12px;color:#6b7280">${paintedCount?'再点一次换颜色（蓝 → 橙 → 白）；同色连续才成一组':'点句子循环上色：蓝色一组、橙色一组，白色不合并'}</span></div>`:'';
   app.innerHTML=header+`<main>
     <div class="bar" style="justify-content:space-between">
       <span class="pill">${list.length} 句 · ${roster.length} 位发言人</span>
@@ -347,9 +347,9 @@ function drawTranscript(){
     ${mergeBar}
     <div class="card" style="padding:0;overflow:hidden">
       ${list.map((s,si)=>{
-        const on=!!paintedIds[s.id];
+        const on=painted[s.id]||0;
         const isEdit=editing&&editing.id===s.id;
-        return `<div class="sentence" data-sid="${esc(s.id)}" data-i="${si}" style="${mergeMode?(on?'background:#eef4ff;box-shadow:inset 3px 0 0 #1a73e8':'background:#fff'):''}">
+        return `<div class="sentence" data-sid="${esc(s.id)}" data-i="${si}" style="${mergeMode?(on===1?'background:#eef4ff;box-shadow:inset 3px 0 0 #1a73e8':on===2?'background:#fff4e6;box-shadow:inset 3px 0 0 #f59e0b':'background:#fff'):''}">
           <button class="mini" data-play="${esc(s.id)}" aria-label="播放这句">▶</button>
           <span class="speaker">${esc(s.speaker||'未标注')}</span>
           <div class="text" style="flex:1">
@@ -391,14 +391,14 @@ function bindTranscript(list,roster){
     try{await api('/api/projects/'+encodeURIComponent(view.pid)+'/recordings/'+encodeURIComponent(view.rid)+'/speakers',{method:'PATCH',body:{action:'create',name}});toast('已添加');await goTranscript(view.pid,view.rid,true)}catch(e){toast(e.message)}
   };
   const tm=document.getElementById('toggleMerge');
-  if(tm)tm.onclick=()=>{mergeMode=!mergeMode;painted=[];editing=null;drawTranscript()};
+  if(tm)tm.onclick=()=>{mergeMode=!mergeMode;painted={};editing=null;drawTranscript()};
   const cm=document.getElementById('cancelMerge');
-  if(cm)cm.onclick=()=>{mergeMode=false;painted=[];drawTranscript()};
+  if(cm)cm.onclick=()=>{mergeMode=false;painted={};drawTranscript()};
   const dm=document.getElementById('doMerge');
   if(dm)dm.onclick=async()=>{
     const groups=mergeGroupsOf(detail.sentences||[]).filter(g=>g.length>1);
-    if(!painted.length||!groups.length)return;
-    try{await api('/api/projects/'+encodeURIComponent(view.pid)+'/recordings/'+encodeURIComponent(view.rid)+'/sentences/merge',{method:'POST',body:{groups}});mergeMode=false;painted=[];toast('已合并');await goTranscript(view.pid,view.rid,true)}catch(e){toast(e.message)}
+    if(!Object.keys(painted).length||!groups.length)return;
+    try{await api('/api/projects/'+encodeURIComponent(view.pid)+'/recordings/'+encodeURIComponent(view.rid)+'/sentences/merge',{method:'POST',body:{groups}});mergeMode=false;painted={};toast('已合并');await goTranscript(view.pid,view.rid,true)}catch(e){toast(e.message)}
   };
   const se=document.getElementById('saveEdit');
   if(se)se.onclick=async()=>{
@@ -442,18 +442,21 @@ function bindTranscript(list,roster){
 }
 
 function togglePaint(sid){
-  const i=painted.indexOf(sid);
-  if(i>=0)painted.splice(i,1);else painted.push(sid);
+  const cur=painted[sid];
+  if(!cur)painted[sid]=1;
+  else if(cur===1)painted[sid]=2;
+  else delete painted[sid];
   drawTranscript();
 }
 
-/** 只有「涂色且连续」的句子才构成一组；没涂色的句子原地保留，不参与合并。 */
+/** 同色且连续的句子构成一组；白色（未涂色）原地保留，不参与合并。 */
 function mergeGroupsOf(list){
   const groups=[];
   list.forEach((s,i)=>{
-    if(!painted.includes(s.id))return;
+    const color=painted[s.id];
+    if(!color)return;
     const prev=list[i-1];
-    if(prev&&painted.includes(prev.id))groups[groups.length-1].push(s.id);
+    if(prev&&painted[prev.id]===color)groups[groups.length-1].push(s.id);
     else groups.push([s.id]);
   });
   return groups;
