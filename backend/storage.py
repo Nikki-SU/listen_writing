@@ -183,10 +183,14 @@ def update_recording(project_id: str, recording_id: str, **fields) -> dict | Non
     return recording
 
 
-def set_transcribe(project_id: str, recording_id: str, status: str, progress: int, error: str = "") -> None:
+def set_transcribe(
+    project_id: str, recording_id: str, status: str, progress: int,
+    error: str = "", message: str = "",
+) -> None:
+    """写转写状态。`message` 是给用户看的阶段说明（加载模型 / 解码 / 已出 N 句）。"""
     update_recording(
         project_id, recording_id,
-        transcribe={"status": status, "progress": progress, "error": error},
+        transcribe={"status": status, "progress": progress, "error": error, "message": message},
     )
 
 

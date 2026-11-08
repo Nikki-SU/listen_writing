@@ -162,12 +162,26 @@ export async function updateSentence(
   )
 }
 
-/** AI 语义纠错：只取建议，不改正文（POST 会阻塞到模型跑完，首次可能还要下载模型）。 */
+/** AI 长任务的统一进度：纠错用 suggestions，整理断句用 sentences。 */
+export type AiJob = {
+  status: 'idle' | 'running' | 'done' | 'error'
+  processed: number
+  total: number
+  message: string
+  model: string
+  error: string
+  suggestions: PolishSuggestion[]
+  sentences: ResegmentResult['sentences']
+  before: number
+  after: number
+}
+
+/** 启动 AI 语义纠错：立即返回任务快照，之后用 fetchPolishJob 轮询增量结果。 */
 export async function polishRecording(
   projectId: string,
   recordingId: string,
   model?: string,
-): Promise<{ suggestions: PolishSuggestion[]; model: string }> {
+): Promise<AiJob> {
   return json(
     await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/polish`, {
       method: 'POST',
@@ -177,7 +191,34 @@ export async function polishRecording(
   )
 }
 
-/** AI 整理断句：apply=false 只返回预览，apply=true 写入阶段 1 新版本。 */
+export async function fetchPolishJob(projectId: string, recordingId: string): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/polish`),
+  )
+}
+
+/** 启动断句整理预览（apply=false）：立即返回任务快照，之后轮询增量预览。 */
+export async function startResegmentPreview(
+  projectId: string,
+  recordingId: string,
+  model?: string,
+): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/resegment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apply: false, model }),
+    }),
+  )
+}
+
+export async function fetchResegmentJob(projectId: string, recordingId: string): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/resegment`),
+  )
+}
+
+/** 应用已完成的预览结果：后端按正文签名核对，对不上会重算，不会套用旧结果。 */
 export async function resegmentRecording(
   projectId: string,
   recordingId: string,

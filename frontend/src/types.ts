@@ -18,6 +18,8 @@ export type TranscribeStatus = {
   status: 'pending' | 'transcribing' | 'done' | 'error'
   progress: number
   error: string
+  /** 阶段说明：加载模型 / 解码 / 正在转写，避免 0% 时看起来像卡死。 */
+  message?: string
 }
 
 export type RecordingVersion = {

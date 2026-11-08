@@ -57,6 +57,42 @@ _transcribing: set[str] = set()  # "project_id/recording_id"
 # 转写线程与用户编辑都会读改写 sentences.csv：串行化，避免边出边改时互相覆盖。
 _sentence_io_lock = threading.Lock()
 
+# AI 长任务（纠错）：后台线程跑，每批把结果写进 job，前端轮询即可逐批看到。
+# 不落盘：进程重启后任务丢失，前端看到 idle 重跑即可（模型结果本身没有持久价值）。
+_ai_jobs: dict[str, dict] = {}
+_ai_jobs_lock = threading.Lock()
+
+
+def _ai_job_key(project_id: str, recording_id: str, kind: str) -> str:
+    return f"{kind}:{project_id}/{recording_id}"
+
+
+def _ai_job_get(key: str) -> dict:
+    with _ai_jobs_lock:
+        job = _ai_jobs.get(key)
+        if job is None:
+            return {"status": "idle", "processed": 0, "total": 0, "message": "", "model": "", "error": ""}
+        # 拷一份再返回：后台线程还在改同一个 dict，序列化时不能拿引用。
+        return {
+            "status": job["status"],
+            "processed": job["processed"],
+            "total": job["total"],
+            "message": job["message"],
+            "model": job["model"],
+            "error": job["error"],
+            "suggestions": list(job.get("suggestions") or []),
+            # 整理断句用：边跑边追加的句子预览
+            "sentences": list(job.get("sentences") or []),
+            "before": job.get("before", 0),
+            "after": job.get("after", 0),
+        }
+
+
+def _ai_jobs_running(key: str) -> bool:
+    with _ai_jobs_lock:
+        job = _ai_jobs.get(key)
+        return bool(job and job["status"] == "running")
+
 # 引擎按设置里的模型档位缓存：换档才重建，重复转写不必反复加载模型。
 _engine_lock = threading.Lock()
 _engines: dict[str, object] = {}
@@ -303,16 +339,25 @@ def _run_transcribe(project_id: str, recording_id: str) -> None:
         if recording is None:
             return
         audio_path = recording["audio_path"]
-        storage.set_transcribe(project_id, recording_id, "transcribing", 0)
+        storage.set_transcribe(
+            project_id, recording_id, "transcribing", 0, message="正在准备转写引擎…"
+        )
 
         # 转写引擎按设置里选中的档位构建；未内置运行时的档位会在这里明确报错，
         # 错误原样写进转写状态，界面能直接看到原因。
         asr_key = storage.get_settings().get("asr_model") or "whisper-small"
         engine = _get_transcriber(asr_key)
         storage.update_recording(project_id, recording_id, asr_model=asr_key)
+        storage.set_transcribe(
+            project_id, recording_id, "transcribing", 0,
+            message="正在加载模型并解码音频（首次使用需要下载模型，可能较久）…",
+        )
 
         def on_progress(p: int) -> None:
-            storage.set_transcribe(project_id, recording_id, "transcribing", p)
+            storage.set_transcribe(
+                project_id, recording_id, "transcribing", p,
+                message="正在转写…" if p > 0 else "正在加载模型并解码音频…",
+            )
 
         # 边转边出：每识别一句就合入磁盘，最多等 2 秒；用户此刻的修改也会被保留。
         pending: list[dict] = []
@@ -874,6 +919,18 @@ class Handler(BaseHTTPRequestHandler):
                 "redactions": storage.get_redactions(project_id, recording_id),
                 "speakers": _speaker_roster(recording, sentences),
             })
+            return
+
+        # AI 纠错是后台长任务：前端轮询这个接口拿「已检查多少句 + 已出的建议」。
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/polish$")
+        if m:
+            self._send_json(_ai_job_get(_ai_job_key(m[0], m[1], "polish")))
+            return
+
+        # 断句整理同理：轮询拿「已整理多少片段 + 当前合并结果」。
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/resegment$")
+        if m:
+            self._send_json(_ai_job_get(_ai_job_key(m[0], m[1], "resegment")))
             return
 
         self._send_json({"error": "not found"}, status=404)
@@ -1782,17 +1839,57 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         sentences = storage.load_sentences(project_id, recording_id)
-        if not sentences:
+        items = [s for s in sentences if str(s.get("text") or "").strip()]
+        if not items:
             self._send_json({"error": "没有可校对的句子"}, status=409)
             return
 
-        try:
-            suggestions = llm.polish(sentences, model_key)
-        except Exception as e:  # noqa: BLE001 - 下载/推理失败原因要原样告知用户
-            self._send_json({"error": f"AI 纠错失败：{e}"}, status=503)
+        key = _ai_job_key(project_id, recording_id, "polish")
+        if _ai_jobs_running(key):
+            # 已经跑起来了：返回当前进度，前端继续轮询，不再起第二个线程。
+            self._send_json(_ai_job_get(key), status=202)
             return
 
-        self._send_json({"suggestions": suggestions, "model": model_key})
+        total = len(items)
+        job = {
+            "status": "running",
+            "processed": 0,
+            "total": total,
+            "message": "正在加载模型…",
+            "model": model_key,
+            "error": "",
+            "suggestions": [],
+        }
+        with _ai_jobs_lock:
+            _ai_jobs[key] = job
+
+        def on_status(message: str) -> None:
+            with _ai_jobs_lock:
+                job["message"] = message
+
+        def on_batch(found: list[dict], processed: int) -> None:
+            with _ai_jobs_lock:
+                job["suggestions"] = list(found)
+                job["processed"] = processed
+                job["message"] = f"已检查 {processed}/{total} 句，发现 {len(found)} 条建议"
+
+        def run() -> None:
+            try:
+                result = llm.polish(items, model_key, on_status, on_batch)
+            except Exception as e:  # noqa: BLE001 - 下载/推理失败原因要原样告知用户
+                with _ai_jobs_lock:
+                    job["status"] = "error"
+                    job["error"] = f"AI 纠错失败：{e}"
+                return
+            with _ai_jobs_lock:
+                job["suggestions"] = result
+                job["status"] = "done"
+                job["processed"] = total
+                job["message"] = f"完成，共 {len(result)} 条建议"
+
+        # 1 小时录音 4B CPU 上要 20 分钟以上：必须立即返回，让前端边跑边轮询。
+        threading.Thread(target=run, daemon=True).start()
+        self._send_json(_ai_job_get(key), status=202)
 
     def _resegment_recording(self, project_id: str, recording_id: str):
         """AI 整理断句：把按停顿切碎的片段合并成人类可读的句子。
@@ -1837,20 +1934,76 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "没有可整理的句子"}, status=409)
             return
 
-        try:
-            merged = llm.resegment(sentences, model_key)
-        except Exception as e:  # noqa: BLE001 - 下载/推理失败原因要原样告知用户
-            self._send_json({"error": f"AI 整理断句失败：{e}"}, status=503)
-            return
-
+        items = [s for s in sentences if str(s.get("text") or "").strip()]
+        key = _ai_job_key(project_id, recording_id, "resegment")
+        # 预览和「应用」之间稿子可能被改过：用签名确认预览结果仍然对应当前正文，
+        # 对不上就重算，绝不把旧结果硬套到新稿子上（工程纪律「不许 hack」）。
+        signature = "\n".join(f"{s['id']}:{s.get('text', '')}" for s in sentences)
         applied = bool(data.get("apply"))
-        if not applied:
-            self._send_json({
-                "sentences": merged,
-                "before": len(sentences),
-                "after": len(merged),
+
+        if applied:
+            merged: list[dict] | None = None
+            with _ai_jobs_lock:
+                job = _ai_jobs.get(key)
+                if job and job["status"] == "done" and job.get("signature") == signature:
+                    merged = list(job["sentences"])
+            if merged is None:
+                try:
+                    merged = llm.resegment(items, model_key)
+                except Exception as e:  # noqa: BLE001 - 下载/推理失败原因要原样告知用户
+                    self._send_json({"error": f"AI 整理断句失败：{e}"}, status=503)
+                    return
+        else:
+            if _ai_jobs_running(key):
+                self._send_json(_ai_job_get(key), status=202)
+                return
+            total = len(items)
+            job = {
+                "status": "running",
+                "processed": 0,
+                "total": total,
+                "message": "正在加载模型…",
                 "model": model_key,
-            })
+                "error": "",
+                "suggestions": [],
+                "sentences": [],
+                "before": len(sentences),
+                "after": 0,
+                "signature": signature,
+            }
+            with _ai_jobs_lock:
+                _ai_jobs[key] = job
+
+            def on_status(message: str) -> None:
+                with _ai_jobs_lock:
+                    job["message"] = message
+
+            def on_batch(partial: list[dict], processed: int) -> None:
+                with _ai_jobs_lock:
+                    job["sentences"] = list(partial)
+                    job["processed"] = processed
+                    job["after"] = len(partial)
+                    job["message"] = (
+                        f"已整理 {processed}/{total} 个片段，{len(sentences)} 句 → {len(partial)} 句"
+                    )
+
+            def run() -> None:
+                try:
+                    result = llm.resegment(items, model_key, on_status, on_batch)
+                except Exception as e:  # noqa: BLE001 - 失败原因原样告知用户
+                    with _ai_jobs_lock:
+                        job["status"] = "error"
+                        job["error"] = f"AI 整理断句失败：{e}"
+                    return
+                with _ai_jobs_lock:
+                    job["sentences"] = result
+                    job["status"] = "done"
+                    job["processed"] = total
+                    job["after"] = len(result)
+                    job["message"] = f"完成，{len(sentences)} 句 → {len(result)} 句"
+
+            threading.Thread(target=run, daemon=True).start()
+            self._send_json(_ai_job_get(key), status=202)
             return
 
         storage.save_sentences(project_id, recording_id, _without_sources(merged))

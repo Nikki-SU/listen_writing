@@ -756,6 +756,7 @@ function TranscriptPanel({
   // AI 语义纠错：建议列表、运行时的可用性、模型名；运行不可用时按钮置灰。
   const [polishOpen, setPolishOpen] = useState(false)
   const [polishing, setPolishing] = useState(false)
+  const [polishStage, setPolishStage] = useState('')
   const [suggestions, setSuggestions] = useState<PolishSuggestion[]>([])
   const [polishModel, setPolishModel] = useState('')
   const [llmReady, setLlmReady] = useState<boolean | null>(null)
@@ -764,6 +765,7 @@ function TranscriptPanel({
   const [aiNotice, setAiNotice] = useState('')
   // AI 整理断句：先出预览（合并前后句数 + 正文），用户确认后才落盘。
   const [resegmenting, setResegmenting] = useState(false)
+  const [resegStage, setResegStage] = useState('')
   const [resegPreview, setResegPreview] = useState<ResegmentResult | null>(null)
   const [editOrigin, setEditOrigin] = useState<'ai_polish' | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -952,13 +954,25 @@ function TranscriptPanel({
     setPolishOpen(true)
     setPolishing(true)
     setSuggestions([])
+    setPolishStage('正在启动…')
     try {
-      const res = await api.polishRecording(projectId, recordingId)
-      setSuggestions(res.suggestions)
-      setPolishModel(res.model)
+      let job = await api.polishRecording(projectId, recordingId)
+      setPolishModel(job.model)
+      // 长录音一批要几十秒：每批回来就刷新列表，用户能看到建议一条条长出来，
+      // 而不是整篇跑完才一次性出现（1 小时录音要等 20 分钟以上）。
+      while (job.status === 'running') {
+        setSuggestions(job.suggestions ?? [])
+        setPolishStage(job.message || `已检查 ${job.processed}/${job.total} 句`)
+        await new Promise((r) => setTimeout(r, 700))
+        job = await api.fetchPolishJob(projectId, recordingId)
+      }
+      setSuggestions(job.suggestions ?? [])
+      if (job.status === 'error') throw new Error(job.error || 'AI 纠错失败')
+      setPolishStage('')
       setAiNotice('')
       onError('')
     } catch (e) {
+      setPolishStage('')
       onError(String(e).replace(/^Error:\s*/, ''))
     } finally {
       setPolishing(false)
@@ -969,13 +983,33 @@ function TranscriptPanel({
     if (resegmenting) return
     if (!(await ensureLlmReady())) return
     setResegmenting(true)
-    setResegPreview(null)
+    setResegStage('正在启动…')
+    setResegPreview({ sentences: [], before: localSentences.length, after: 0 })
     try {
-      const res = await api.resegmentRecording(projectId, recordingId, false)
-      setResegPreview(res)
+      let job = await api.startResegmentPreview(projectId, recordingId)
+      while (job.status === 'running') {
+        setResegPreview({
+          sentences: job.sentences ?? [],
+          before: job.before,
+          after: job.after,
+          model: job.model,
+        })
+        setResegStage(job.message || `已整理 ${job.processed}/${job.total} 个片段`)
+        await new Promise((r) => setTimeout(r, 700))
+        job = await api.fetchResegmentJob(projectId, recordingId)
+      }
+      if (job.status === 'error') throw new Error(job.error || 'AI 整理断句失败')
+      setResegPreview({
+        sentences: job.sentences ?? [],
+        before: job.before,
+        after: job.after,
+        model: job.model,
+      })
+      setResegStage('')
       setAiNotice('')
       onError('')
     } catch (e) {
+      setResegStage('')
       onError(String(e).replace(/^Error:\s*/, ''))
     } finally {
       setResegmenting(false)
@@ -986,7 +1020,7 @@ function TranscriptPanel({
     if (!resegPreview || resegmenting) return
     setResegmenting(true)
     try {
-      const res = await api.resegmentRecording(projectId, recordingId, true)
+      const res = await api.resegmentRecording(projectId, recordingId, true, resegPreview.model)
       setLocalSentences(res.sentences)
       if (res.current) setVersion(res.current)
       setResegPreview(null)
@@ -1467,7 +1501,8 @@ function TranscriptPanel({
               marginBottom: 8,
             }}
           >
-            正在转写 {transcribe.progress}% · 已出 {localSentences.length} 句。现在就能先改，后面的句子会继续追加，不会覆盖你的修改。
+            正在转写 {transcribe.progress}% · 已出 {localSentences.length} 句
+            {transcribe.message ? ` · ${transcribe.message}` : ''}。现在就能先改，后面的句子会继续追加，不会覆盖你的修改。
           </div>
         )}
 
@@ -1518,6 +1553,11 @@ function TranscriptPanel({
               <p style={{ fontSize: 12, color: '#8a8f98', lineHeight: 1.7, margin: '8px 0 12px' }}>
                 只合并停顿碎片、补标点，不增删内容。应用后写入新版本，可在版本历史里回退。
               </p>
+              {resegStage && (
+                <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
+                  {resegStage}（结果会边整理边出现在右侧）
+                </div>
+              )}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: 11, color: '#8a94a6', marginBottom: 6 }}>
                 <div>原文（按停顿切分）</div>
                 <div>AI 整理后</div>
@@ -1566,7 +1606,7 @@ function TranscriptPanel({
                   disabled={resegmenting}
                   style={{ fontSize: 13, padding: '6px 14px', background: '#245c9c', color: '#fff', border: 'none', borderRadius: 4 }}
                 >
-                  {resegmenting ? '应用中…' : '应用并生成新版本'}
+                  {resegStage ? '整理中…' : '应用并生成新版本'}
                 </button>
               </div>
             </div>
@@ -1591,7 +1631,7 @@ function TranscriptPanel({
                 {polishModel ? `模型 ${polishModel}` : ''}
               </span>
               <span style={{ fontSize: 11, color: '#7a869a' }}>
-                {polishing ? '' : `共 ${suggestions.length} 条`}
+                {polishing ? `已出 ${suggestions.length} 条` : `共 ${suggestions.length} 条`}
               </span>
               <button
                 onClick={() => setPolishOpen(false)}
@@ -1600,15 +1640,17 @@ function TranscriptPanel({
                 关闭
               </button>
             </div>
-            {polishing ? (
-              <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.7 }}>
-                正在本地分析，请保持窗口开启。首次使用需要下载模型（约 1–3 GB），可能耗时较久。
+            {polishing && (
+              <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.7, marginBottom: 8 }}>
+                {polishStage || '正在本地分析，请保持窗口开启。'}
+                {suggestions.length > 0 ? ` · 已出 ${suggestions.length} 条建议` : ''}
               </div>
-            ) : suggestions.length === 0 ? (
+            )}
+            {!polishing && suggestions.length === 0 ? (
               <div style={{ fontSize: 12, color: '#6b7280' }}>
                 未发现需要修改的句子。你也可以再点一次「AI 纠错」重新分析。
               </div>
-            ) : (
+            ) : suggestions.length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {suggestions.map((item) => {
                   const target = localSentences.find((s) => s.id === item.sentence_id)
@@ -1657,7 +1699,7 @@ function TranscriptPanel({
                   )
                 })}
               </div>
-            )}
+            ) : null}
           </div>
         )}
 

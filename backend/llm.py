@@ -465,11 +465,13 @@ def resegment(
     sentences: list[dict],
     model_key: str | None = None,
     on_status: Callable[[str], None] | None = None,
+    on_batch: Callable[[list[dict], int], None] | None = None,
 ) -> list[dict]:
     """AI 断句整理：把 ASR 的碎片合并成可读句子，返回整份新句子列表。
 
     服务端校验每个 id 恰好用一次且顺序不变；模型只提议分组与标点，
     文字内容仍以原文为准，避免长文整理时悄悄改写事实。
+    `on_batch(已整理的句子, 已处理片段数)` 每批回调，供接口边跑边吐预览。
     """
     if not runtime_available():
         raise RuntimeError(RUNTIME_MISSING_MSG)
@@ -535,6 +537,9 @@ def resegment(
             while cursor < len(batch):
                 result.append({**batch[cursor], "source_ids": [batch[cursor]["id"]]})
                 cursor += 1
+            if on_batch:
+                partial = [{**s, "index": i} for i, s in enumerate(result)]
+                on_batch(partial, min(start + len(batch), len(items)))
 
     for i, s in enumerate(result):
         s["index"] = i
@@ -564,10 +569,12 @@ def polish(
     sentences: list[dict],
     model_key: str | None = None,
     on_status: Callable[[str], None] | None = None,
+    on_batch: Callable[[list[dict], int], None] | None = None,
 ) -> list[dict]:
     """AI 语义纠错：只返回建议，不改正文。
 
     返回 [{sentence_id, index, before, after}]；调用方负责让用户逐条接受。
+    `on_batch(累计建议, 已处理句数)` 每批结束回调一次，供接口边跑边吐进度。
     运行时未安装时抛 `RuntimeError(RUNTIME_MISSING_MSG)`，接口原样转给界面。
     """
     if not runtime_available():
@@ -600,6 +607,8 @@ def polish(
             )
             raw = split_think((resp["choices"][0]["message"]["content"] or ""))
             if not raw:
+                if on_batch:
+                    on_batch(list(suggestions), min(start + len(batch), len(items)))
                 continue
             known = {s["id"]: s for s in batch}
             try:
@@ -609,6 +618,8 @@ def polish(
                 failed_batches += 1
                 last_error = str(e)
                 logger.warning("纠错批次解析失败（%s）：%s", start, e)
+                if on_batch:
+                    on_batch(list(suggestions), min(start + len(batch), len(items)))
                 continue
             for change in changes:
                 sid = str(change.get("id") or "")
@@ -630,6 +641,8 @@ def polish(
                     "before": before,
                     "after": after,
                 })
+            if on_batch:
+                on_batch(list(suggestions), min(start + len(batch), len(items)))
     if batch_count and failed_batches == batch_count:
         # 全部批次都解析失败才报错；部分失败时把已成功的建议照常返回。
         raise RuntimeError(last_error or "AI 纠错失败：模型输出无法解析")
