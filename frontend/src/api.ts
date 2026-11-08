@@ -558,6 +558,28 @@ export async function decideProposal(
   )
 }
 
+export async function mergeProposals(
+  groupId: string,
+  options: { proposalIds?: string[]; mineOnly?: boolean; force?: boolean } = {},
+): Promise<{
+  merged: { id: string; material_id: string; index: number }[]
+  conflicts: { id: string; material_id: string; index: number; current: string; incoming: string }[]
+  skipped: { id: string; reason: string }[]
+  versions: Record<string, string>
+}> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/proposals/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proposal_ids: options.proposalIds ?? null,
+        mine_only: options.mineOnly ?? false,
+        force: options.force ?? false,
+      }),
+    }),
+  )
+}
+
 export async function requestPlayback(
   groupId: string,
   materialId: string,

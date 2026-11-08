@@ -94,6 +94,7 @@ export default function CollabPanel({
   }[]>([])
   const [materials, setMaterials] = useState<CollabMaterial[]>([])
   const [proposals, setProposals] = useState<CollabProposal[]>([])
+  const [proposalSel, setProposalSel] = useState<string[]>([])
   const [approvals, setApprovals] = useState<CollabApproval[]>([])
   const [access, setAccess] = useState<CollabAccess[]>([])
 
@@ -133,6 +134,12 @@ export default function CollabPanel({
   const myRole = selected?.my_role || ''
   const myCaps = (roles[myRole]?.caps || []) as string[]
   const has = (cap: string) => myCaps.includes(cap)
+  // 待处理提案：pending 与 conflict 都能批量合并（conflict 由服务端严格判断）。
+  const mergeableProposals = proposals.filter(
+    (p) => p.status === 'pending' || p.status === 'conflict',
+  )
+  const allProposalsSelected =
+    mergeableProposals.length > 0 && mergeableProposals.every((p) => proposalSel.includes(p.id))
   // 提案只对能提交/合并的人生效；只读与审查者连 tab 都不显示，避免拿到他人原文。
   const visibleTabs = TABS.filter(
     ([key]) => key !== 'proposals' || has('submit') || has('merge'),
@@ -268,6 +275,7 @@ export default function CollabPanel({
     setLocalEdits({})
     setLocalEditing(null)
     setMergeConflicts(null)
+    setProposalSel([])
     await run(async () => {
       await loadGroup(id)
     })
@@ -346,14 +354,37 @@ export default function CollabPanel({
     }
   }
 
-  async function onSubmitProposal() {
+  // 有 merge 权限的人（群主 / 管理员）不必自己提提案再自己批：直接落库。
+  async function onSubmitProposal(applyNow = false) {
     if (!selected || !materialView || !editSentence) return
     await run(async () => {
-      await api.createProposal(selected.id, materialView.material.id, editSentence.id, editText)
+      const proposal = await api.createProposal(selected.id, materialView.material.id, editSentence.id, editText)
+      if (applyNow) {
+        await api.decideProposal(selected.id, proposal.id, true)
+        setNotice('已直接合并，生成新版本')
+        setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
+      } else {
+        setNotice('提案已提交，等待合并')
+      }
       setEditSentence(null)
       setEditText('')
-      setNotice('提案已提交，等待合并')
       await loadGroup(selected.id)
+    })
+  }
+
+  async function onBatchMerge(ids: string[] | null, mineOnly = false) {
+    if (!selected) return
+    await run(async () => {
+      const res = await api.mergeProposals(selected.id, { proposalIds: ids ?? undefined, mineOnly })
+      const parts = [`已合并 ${res.merged.length} 条`]
+      if (res.conflicts.length) parts.push(`${res.conflicts.length} 条有冲突待人工判断`)
+      if (res.skipped.length) parts.push(`跳过 ${res.skipped.length} 条`)
+      setNotice(parts.join('，'))
+      setProposalSel([])
+      await loadGroup(selected.id)
+      if (materialView) {
+        setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
+      }
     })
   }
 
@@ -371,8 +402,12 @@ export default function CollabPanel({
   async function onPlayback(mode: 'burn' | 'permanent' | 'timed') {
     if (!selected || !materialView) return
     await run(async () => {
-      await api.requestPlayback(selected.id, materialView.material.id, mode, 7)
-      setNotice('播放申请已提交，等待群主/管理员批准')
+      const approval = await api.requestPlayback(selected.id, materialView.material.id, mode, 7)
+      setNotice(
+        approval.status === 'approved'
+          ? '已直接放行，播放器已就绪'
+          : '播放申请已提交，等待群主/管理员批准',
+      )
       await loadGroup(selected.id)
       setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
     })
@@ -825,19 +860,23 @@ export default function CollabPanel({
                   ) : (
                     <div style={{ marginBottom: 12, border: '1px dashed #e2e6ec', borderRadius: 8, padding: 8 }}>
                       <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 6 }}>
-                        {materialView.approval?.status === 'pending'
-                          ? '播放申请待批准。批准后此处会出现播放器。'
-                          : '只读材料不提供音频直链；申请获批后才能播放。'}
+                        {!materialView.material.has_audio
+                          ? '该材料没有可播放音频。'
+                          : materialView.approval?.status === 'pending'
+                            ? '播放申请待批准。批准后此处会出现播放器。'
+                            : has('approve')
+                              ? '你是审批人：点播放会直接放行，并记一条访问留痕。'
+                              : '只读材料不提供音频直链；申请获批后才能播放。'}
                       </div>
-                      {has('view') && (
+                      {has('view') && materialView.material.has_audio && (
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                           <select value={playMode} onChange={(e) => setPlayMode(e.target.value as 'burn' | 'permanent' | 'timed')} style={{ fontSize: 11 }}>
                             <option value="burn">听完即毁（一次）</option>
                             <option value="permanent">长期有效</option>
                             <option value="timed">限时 7 天</option>
                           </select>
-                          <button disabled={busy || !materialView.material.can_play} onClick={() => void onPlayback(playMode)} style={{ fontSize: 11, padding: '2px 10px' }}>
-                            申请播放
+                          <button disabled={busy} onClick={() => void onPlayback(playMode)} style={{ fontSize: 11, padding: '2px 10px' }}>
+                            {has('approve') ? '直接播放' : '申请播放'}
                           </button>
                         </div>
                       )}
@@ -881,9 +920,14 @@ export default function CollabPanel({
                                 style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
                               />
                               <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                                <button disabled={busy || editText.trim() === s.text} onClick={() => void onSubmitProposal()} style={{ fontSize: 11, padding: '2px 10px' }}>
-                                  提交提案
+                                <button disabled={busy || editText.trim() === s.text} onClick={() => void onSubmitProposal(has('merge'))} style={{ fontSize: 11, padding: '2px 10px' }}>
+                                  {has('merge') ? '提交并直接合并' : '提交提案'}
                                 </button>
+                                {has('merge') && (
+                                  <button disabled={busy || editText.trim() === s.text} onClick={() => void onSubmitProposal(false)} style={{ fontSize: 11, padding: '2px 10px' }}>
+                                    仅提交提案
+                                  </button>
+                                )}
                                 <button onClick={() => { setEditSentence(null); setEditText('') }} style={{ fontSize: 11, padding: '2px 10px' }}>
                                   取消
                                 </button>
@@ -1181,16 +1225,63 @@ export default function CollabPanel({
             {/* ---- 提案 ---- */}
             {tab === 'proposals' && (
               <div>
+                {has('merge') && mergeableProposals.length > 0 && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+                    <button
+                      onClick={() =>
+                        setProposalSel(allProposalsSelected ? [] : mergeableProposals.map((p) => p.id))
+                      }
+                      style={{ fontSize: 11, padding: '2px 10px' }}
+                    >
+                      {allProposalsSelected ? '取消全选' : '全选待合并'}
+                    </button>
+                    <button
+                      disabled={busy || proposalSel.length === 0}
+                      onClick={() => void onBatchMerge(proposalSel)}
+                      style={{ fontSize: 11, padding: '2px 10px' }}
+                    >
+                      合并所选（{proposalSel.length}）
+                    </button>
+                    <button
+                      disabled={busy}
+                      onClick={() => void onBatchMerge(null, true)}
+                      style={{ fontSize: 11, padding: '2px 10px' }}
+                    >
+                      合并我提交的
+                    </button>
+                    <button
+                      disabled={busy}
+                      onClick={() => void onBatchMerge(null)}
+                      style={{ fontSize: 11, padding: '2px 10px' }}
+                    >
+                      合并全部待处理
+                    </button>
+                  </div>
+                )}
                 {proposals.length === 0 ? (
                   <div style={{ fontSize: 12, color: '#999' }}>还没有修改提案。</div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {proposals.map((p) => (
                       <div key={p.id} style={{ border: '1px solid #eee', borderRadius: 8, padding: 8 }}>
-                        <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4 }}>
-                          第 {p.index + 1} 句 · {p.by || p.by_device} · {fmtTime(p.created_at)} ·{' '}
-                          <span style={{ color: p.status === 'conflict' ? '#b00020' : p.status === 'accepted' ? '#1e7e34' : p.status === 'rejected' ? '#999' : '#8a5a00' }}>
-                            {p.status === 'pending' ? '待合并' : p.status === 'accepted' ? '已合并' : p.status === 'rejected' ? '已拒绝' : '有冲突'}
+                        <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4, display: 'flex', gap: 6, alignItems: 'center' }}>
+                          {(p.status === 'pending' || p.status === 'conflict') && has('merge') && (
+                            <input
+                              type="checkbox"
+                              checked={proposalSel.includes(p.id)}
+                              onChange={() =>
+                                setProposalSel((prev) =>
+                                  prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id],
+                                )
+                              }
+                              style={{ margin: 0 }}
+                            />
+                          )}
+                          <span>
+                            第 {p.index + 1} 句 · {p.by || p.by_device} · {fmtTime(p.created_at)} ·{' '}
+                            <span style={{ color: p.status === 'conflict' ? '#b00020' : p.status === 'accepted' ? '#1e7e34' : p.status === 'rejected' ? '#999' : '#8a5a00' }}>
+                              {p.status === 'pending' ? '待合并' : p.status === 'accepted' ? '已合并' : p.status === 'rejected' ? '已拒绝' : '有冲突'}
+                            </span>
                           </span>
                         </div>
                         <div style={{ fontSize: 12, color: '#b00020', textDecoration: 'line-through', lineHeight: 1.6 }}>{p.before}</div>

@@ -66,12 +66,13 @@
 | G-10 | 后端 | `POST /api/groups/{gid}/roles` | `{"role","name","caps":[…]}` | `{"roles":{role:Role}}` | 自定义五级权限；能力见下；群主必须保留 `roles` 与 `manage` |
 | G-11 | 后端 | `GET /api/groups/{gid}/materials` | 无 | `{"materials":[MaterialMeta…]}` | 审查者只返回阶段 ≥2 的材料 |
 | G-12 | 后端 | `POST /api/groups/{gid}/materials` | `{"project_id","recording_id"}` | `{"material":MaterialMeta}` | 管理员及以上灌入**当前版本**快照（句子/脱敏/音频路径/阶段/版本） |
-| G-13 | 后端 | `GET /api/groups/{gid}/materials/{mid}` | 无 | `{"material":MaterialDetail,"review_mode":bool,"can_play":bool,"approval?":…}` | 审查者返回阶段 ≥2 的脱敏正文、历史截断到阶段 2 之前、`review_mode=true` |
+| G-13 | 后端 | `GET /api/groups/{gid}/materials/{mid}` | 无 | `{"material":MaterialDetail,"review_mode":bool,"can_play":bool,"approval?":…}` | 审查者返回阶段 ≥2 的脱敏正文、历史截断到阶段 2 之前、`review_mode=true`。`material.has_audio` 表示材料确有可播放音频（≠ `can_play`，后者是已获批授权），申请按钮按 `has_audio` 启用 |
 | G-14 | 后端 | `POST /api/groups/{gid}/materials/{mid}/proposals` | `{"sentence_id","after"}` | `{"proposal":…}` | 读写及以上提交逐句修改提案，不改正文 |
 | G-15 | 后端 | `GET /api/groups/{gid}/proposals` | 无 | `{"proposals":[…]}` | 群组内全部提案 |
 | G-16 | 后端 | `POST /api/groups/{gid}/proposals/{pid}/decide` | `{"accept":bool}` | `{"proposal":…,"material":…}` | 需 `merge` 能力；同一句已被覆盖时先标 `conflict` 并返回 409，再次调用即强制采用提案 |
+| G-16B | 后端 | `POST /api/groups/{gid}/proposals/merge` | `{"proposal_ids?":[…],"mine_only?":bool,"force?":bool}` | `{"merged":[…],"conflicts":[…],"skipped":[…],"versions":{mid:"2.3"}}` | 需 `merge` 能力；批量合并。`proposal_ids` 省略即全部待处理，`mine_only` 只合并自己提交的；pending 且该句已被他人改动 → 标 `conflict` 跳过，不覆盖他人改动；同一材料的多条提案合成**一个**新版本 |
 | G-17 | 后端 | `POST /api/groups/{gid}/materials/{mid}/merge` | `{"parent","sentences":[…],"force?":bool}` | `{"status":"merged\|conflict","conflicts?":[…],"version?"}` 或 `{"material":…}` 错误 | 有副本模式的节点三方合并（base/current/incoming）；冲突返回 `status=conflict` 并列出 `base/current/incoming`；`force=true` 时冲突句采用本地版本 |
-| G-18 | 后端 | `POST /api/groups/{gid}/materials/{mid}/playback` | `{"mode":"burn\|permanent\|timed","days?":1~365}` | `{"approval":…}` | 申请播放；同一设备已有 pending 时 409 |
+| G-18 | 后端 | `POST /api/groups/{gid}/materials/{mid}/playback` | `{"mode":"burn\|permanent\|timed","days?":1~365}` | `{"approval":…}` | 申请播放。申请者**自己有 `approve` 能力**（群主 / 管理员）时直接返回 `status=approved`（`auto_approved=true`，仍然留痕），不必自己批自己；其他人返回 pending，同一设备已有 pending 时 409 |
 | G-19 | 后端 | `GET /api/groups/{gid}/approvals` | 无 | `{"approvals":[…]}` | 有 `approve` 能力看全部，否则只看自己的申请 |
 | G-20 | 后端 | `POST /api/groups/{gid}/approvals/{aid}/decide` | `{"approve":bool}` | `{"approval":…}` | 需 `approve` 能力；timed 批准时写入 `expires_at` |
 | G-21 | 后端 | `POST /api/groups/{gid}/approvals/{aid}/consume` | 无 | `{"approval":…}` | 阅后即焚在 `<audio>` 播完后由前端上报；未上报前不会失效 |

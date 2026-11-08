@@ -585,6 +585,23 @@ def add_material(group_id: str, project_id: str, recording_id: str, device_code:
     return _material_meta(group, material, actor)
 
 
+def _material_has_audio(material: dict) -> bool:
+    """材料是否真有可播放音频：群组快照里的路径，或本机同一条录音的文件。
+
+    跨机副本的路径可能来自别的机器，所以再回退查一次本机录音，
+    与 playback_target 的兜底规则保持一致。
+    """
+    marked = str(material.get("audio_path") or "")
+    if marked and Path(marked).is_file():
+        return True
+    recording = storage.get_recording(
+        material.get("project_id") or "", material.get("recording_id") or ""
+    )
+    if recording and recording.get("audio_path"):
+        return Path(recording["audio_path"]).is_file()
+    return False
+
+
 def _material_meta(group: dict, material: dict, member: dict) -> dict:
     return {
         "id": material.get("id"),
@@ -594,7 +611,10 @@ def _material_meta(group: dict, material: dict, member: dict) -> dict:
         "sentence_count": len(material.get("sentences", [])),
         "added_at": material.get("added_at"),
         "added_by": material.get("added_by"),
+        # can_play 是「已有获批的播放授权」，不是「有音频」。
+        # 申请按钮必须看 has_audio，否则永远点不动（要先获批才能点申请）。
         "can_play": _playback_state(group, material, member)[0],
+        "has_audio": _material_has_audio(material),
     }
 
 
@@ -951,6 +971,114 @@ def decide_proposal(group_id: str, proposal_id: str, accept: bool, device_code: 
     return {"proposal": proposal, "material": _material_meta(group, material, actor)}
 
 
+def merge_proposals(
+    group_id: str,
+    proposal_ids: list[str] | None,
+    device_code: str,
+    mine_only: bool = False,
+    force: bool = False,
+) -> dict:
+    """批量合并提案：群主 / 管理员不必一条条点。
+
+    - proposal_ids 为空 = 合并全部待处理提案；mine_only 只处理自己提交的。
+    - pending 且该句已被别人改过 → 标为 conflict 并跳过，不覆盖他人改动。
+    - conflict 只有显式 force 才按提案内容覆盖。
+    同一材料的多条提案合成一个新版本，避免版本号一次跳好几格。
+    """
+    group = load_group(group_id)
+    actor = _require(group, device_code, "merge")
+    wanted = {str(i) for i in (proposal_ids or [])}
+    candidates = [
+        p for p in group.get("proposals", [])
+        if p.get("status") in ("pending", "conflict")
+        and (not wanted or str(p.get("id")) in wanted)
+        and (not mine_only or p.get("by_device") == device_code)
+    ]
+    if not candidates:
+        raise CollabError("没有可合并的提案", status=409)
+
+    materials = {str(m.get("id")): m for m in group.get("materials", [])}
+    merged: list[dict] = []
+    conflicts: list[dict] = []
+    skipped: list[dict] = []
+    per_material: dict[str, list[dict]] = {}
+
+    for p in candidates:
+        material = materials.get(str(p.get("material_id")))
+        if material is None:
+            skipped.append({"id": p.get("id"), "reason": "材料不存在"})
+            continue
+        target = next(
+            (s for s in material.get("sentences", []) if s.get("id") == p.get("sentence_id")),
+            None,
+        )
+        if target is None:
+            skipped.append({"id": p.get("id"), "reason": "句子已不存在"})
+            continue
+        current_text = str(target.get("text") or "")
+        if p.get("status") == "pending" and current_text != p.get("before"):
+            p["status"] = "conflict"
+            p["conflict_text"] = current_text
+            conflicts.append({
+                "id": p.get("id"),
+                "material_id": material.get("id"),
+                "index": int(target.get("index", 0)),
+                "current": current_text,
+                "incoming": p.get("after", ""),
+            })
+            continue
+        if p.get("status") == "conflict" and not force:
+            conflicts.append({
+                "id": p.get("id"),
+                "material_id": material.get("id"),
+                "index": int(target.get("index", 0)),
+                "current": current_text,
+                "incoming": p.get("after", ""),
+            })
+            continue
+        before = current_text
+        target["text"] = p.get("after", "")
+        _drop_stale_marks(material, str(target.get("id", "")))
+        p.update({
+            "status": "accepted",
+            "decided_by": actor.get("nick", ""),
+            "decided_at": _now(),
+            "conflict_text": "",
+        })
+        per_material.setdefault(str(material.get("id")), []).append({
+            "sentence_id": target.get("id", ""),
+            "index": int(target.get("index", 0)),
+            "before": before,
+            "after": target.get("text", ""),
+        })
+        merged.append({
+            "id": p.get("id"),
+            "material_id": material.get("id"),
+            "index": int(target.get("index", 0)),
+        })
+
+    versions: dict[str, str] = {}
+    for material_id, diff in per_material.items():
+        material = materials[material_id]
+        material["version"] = _version_next(material.get("version", "2.0"))
+        material["updated_at"] = _now()
+        _bump_revision(material)
+        message = f"批量合并 {len(diff)} 条提案"
+        _snapshot_history(material, message, actor.get("nick", ""), diff)
+        _writeback(material, message, diff)
+        versions[material_id] = material["version"]
+        _log(group, actor, "merge_proposals", material_id, f"{len(diff)} 条 → {material['version']}")
+    if conflicts:
+        _log(group, actor, "merge_proposals_conflict", "", f"{len(conflicts)} 条待人工判断")
+    _save(group)
+    return {
+        "merged": merged,
+        "conflicts": conflicts,
+        "skipped": skipped,
+        "versions": versions,
+    }
+
+
 def merge_snapshot(group_id: str, material_id: str, parent: str, sentences: list[dict], device_code: str, force: bool = False) -> dict:
     """有副本模式下的节点合并：以 base 做三方合并，能自动合的就合，冲突列出来人工判断。"""
     group = load_group(group_id)
@@ -1072,14 +1200,15 @@ def request_playback(group_id: str, material_id: str, mode: str, days: int, devi
         raise CollabError("材料不存在", status=404)
     if _is_reviewer(group, actor) and int(material.get("stage", 0)) < 2:
         raise CollabError("审查模式仅可查看阶段 2 之后的版本", status=403)
-    if not str(material.get("audio_path") or ""):
+    if not _material_has_audio(material):
         raise CollabError("该材料没有可播放音频", status=409)
     pending = next(
         (a for a in group.get("approvals", [])
          if a.get("material_id") == material_id and a.get("device_code") == device_code and a.get("status") == "pending"),
         None,
     )
-    if pending is not None:
+    can_approve = _can(group, actor, "approve")
+    if pending is not None and not can_approve:
         raise CollabError("已有待审批的播放申请", status=409)
     try:
         days = int(days or 7)
@@ -1097,8 +1226,21 @@ def request_playback(group_id: str, material_id: str, mode: str, days: int, devi
         "status": "pending",
         "requested_at": _now(),
     }
+    if can_approve:
+        # 群主 / 管理员自己就是审批人：自己给自己打报告没有意义，直接放行，
+        # 但仍落一条记录留痕（谁、什么模式、什么时候开始听）。
+        approval.update({
+            "status": "approved",
+            "granted_by": actor.get("nick", ""),
+            "granted_at": _now(),
+            "auto_approved": True,
+        })
+        if mode == "timed":
+            approval["expires_at"] = (_now_dt() + timedelta(days=days)).isoformat()
     group.setdefault("approvals", []).append(approval)
     _log(group, actor, "request_playback", material_id, mode)
+    if can_approve:
+        _log(group, actor, "decide_playback", material_id, f"{mode} → 自动批准（审批人本人）")
     _save(group)
     return approval
 

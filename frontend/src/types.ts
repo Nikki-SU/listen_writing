@@ -153,7 +153,10 @@ export type CollabMaterial = {
   sentence_count: number
   added_at: string
   added_by: string
+  /** 已有获批的播放授权（≠ 有音频） */
   can_play: boolean
+  /** 材料是否真有可播放音频；「申请播放」按钮据此启用 */
+  has_audio?: boolean
 }
 
 export type CollabMaterialDetail = {

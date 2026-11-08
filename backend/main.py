@@ -2018,6 +2018,25 @@ class Handler(BaseHTTPRequestHandler):
             ))
             return
 
+        m = _match(path, r"^/api/groups/([^/]+)/proposals/merge$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            ids = data.get("proposal_ids")
+            if ids is not None and not isinstance(ids, list):
+                self._send_json({"error": "proposal_ids 必须是数组"}, status=400)
+                return
+            self._collab_call(lambda: collab.merge_proposals(
+                m[0],
+                [str(i) for i in ids] if isinstance(ids, list) else None,
+                device,
+                bool(data.get("mine_only", False)),
+                bool(data.get("force", False)),
+            ))
+            return
+
         m = _match(path, r"^/api/groups/([^/]+)/proposals/([^/]+)/decide$")
         if m:
             data = self._read_json_body()
