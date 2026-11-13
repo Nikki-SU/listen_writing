@@ -103,7 +103,8 @@ export default function LiveRecorder({
     try {
       const res = await api.sendLiveChunk(rec.project_id, rec.id, pcm)
       if (res.error) setError(res.error)
-      if (res.sentences?.length) setSentences((prev) => [...prev, ...res.sentences])
+      // 后端每次返回整份句子（说话人标签会随后续句子重算），这里整体替换而不是追加。
+      if (res.sentences?.length) setSentences(res.sentences)
       if (res.duration_sec) setSeconds(res.duration_sec)
     } catch (e) {
       setError(`发送音频失败：${String(e)}`)
@@ -296,6 +297,20 @@ export default function LiveRecorder({
               <div key={s.id} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
                 <span style={{ fontSize: 11, color: '#b0b6c0', width: 44, flexShrink: 0, paddingTop: 2 }}>
                   {fmt(s.start_ms / 1000)}
+                </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: '#245c9c',
+                    background: '#eef5ff',
+                    borderRadius: 4,
+                    padding: '0 5px',
+                    height: 18,
+                    lineHeight: '18px',
+                    flexShrink: 0,
+                  }}
+                >
+                  {s.speaker || 'Speaker 1'}
                 </span>
                 <span style={{ fontSize: 13, lineHeight: 1.7 }}>{s.text}</span>
               </div>

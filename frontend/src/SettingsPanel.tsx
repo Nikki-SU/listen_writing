@@ -21,7 +21,7 @@ export default function SettingsPanel({
   const [leafError, setLeafError] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  const { models, error: modelError, download } = useModels(1500)
+  const { models, error: modelError, download, cancel } = useModels(1500)
 
   useEffect(() => {
     let cancelled = false
@@ -240,6 +240,7 @@ export default function SettingsPanel({
                   status={statusOf('llm', m.id)}
                   job={jobFor(models, 'llm', m.id)}
                   onDownload={() => void download('llm', m.id)}
+                  onCancel={(id) => void cancel(id)}
                 />
               ))}
               <Hint>
@@ -274,6 +275,7 @@ function ModelRow({
   status,
   job,
   onDownload,
+  onCancel,
 }: {
   option: ModelOption
   checked: boolean
@@ -281,9 +283,11 @@ function ModelRow({
   status?: ModelStatus
   job?: ModelJob
   onDownload: () => void
+  onCancel?: (jobId: string) => void
 }) {
   const running = job?.status === 'running'
   const failed = job?.status === 'error'
+  const stopped = job?.status === 'cancelled'
   const ready = status?.downloaded || job?.status === 'done'
   return (
     <div
@@ -319,20 +323,27 @@ function ModelRow({
               padding: '1px 6px',
             }}
           >
-            {ready ? '已下载' : running ? `下载中 ${job?.progress ?? 0}%` : failed ? '下载失败' : '未下载'}
+          {ready ? '已下载' : running ? `下载中 ${job?.progress ?? 0}%` : failed ? '下载失败' : stopped ? '已停止' : '未下载'}
           </span>
           {!option.available && (
             <span style={{ fontSize: 11, color: '#b36b00', background: '#fff4e0', borderRadius: 4, padding: '1px 6px' }}>
               运行时未安装
             </span>
           )}
-          {!ready && (
+          {running && onCancel && job && (
+            <button
+              onClick={() => onCancel(job.id)}
+              style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', color: '#b00020' }}
+            >
+              停止下载
+            </button>
+          )}
+          {!ready && !running && (
             <button
               onClick={onDownload}
-              disabled={running}
-              style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', cursor: running ? 'wait' : 'pointer' }}
+              style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
             >
-              {running ? '下载中…' : failed ? '重试' : '下载'}
+              {failed ? '重试' : stopped ? '继续下载' : '下载'}
             </button>
           )}
         </div>
@@ -357,6 +368,9 @@ function ModelRow({
         )}
         {failed && (
           <div style={{ marginTop: 3, fontSize: 11, color: '#b00020' }}>{job?.error || job?.message}</div>
+        )}
+        {stopped && (
+          <div style={{ marginTop: 3, fontSize: 11, color: '#8a5a00' }}>{job?.message}</div>
         )}
       </div>
     </div>

@@ -93,6 +93,16 @@ def _ai_jobs_running(key: str) -> bool:
         job = _ai_jobs.get(key)
         return bool(job and job["status"] == "running")
 
+
+def _ai_job_cancel(key: str) -> dict:
+    """请求停止任务：只置标记，后台线程在下一个 token 处退出，不会硬杀进程。"""
+    with _ai_jobs_lock:
+        job = _ai_jobs.get(key)
+        if job is not None and job["status"] == "running":
+            job["cancel"] = True
+            job["message"] = "正在停止…"
+    return _ai_job_get(key)
+
 # 引擎按设置里的模型档位缓存：换档才重建，重复转写不必反复加载模型。
 _engine_lock = threading.Lock()
 _engines: dict[str, object] = {}
@@ -153,7 +163,7 @@ def _live_flush(session: dict, force: bool = False) -> list[dict]:
         samples = np.frombuffer(raw[start * 2:], dtype="<i2").astype(np.float32) / 32768.0
         engine = _get_transcriber(session["engine"])
         regions = audio.split_speech(samples)
-        new_sentences: list[dict] = []
+        added: list[dict] = []
         consumed = 0
         for idx, (begin, end) in enumerate(regions):
             last = idx == len(regions) - 1
@@ -187,16 +197,32 @@ def _live_flush(session: dict, force: bool = False) -> list[dict]:
                     "speaker": "",
                 }
                 session["sentences"].append(sentence)
-                new_sentences.append(sentence)
+                added.append(sentence)
+                # 句级声纹特征：实时界面同样要区分说话人，不能等整段结束才算。
+                try:
+                    feature = diarize._sentence_feature(seg, 0, len(seg))
+                except Exception:
+                    feature = np.zeros(diarize.N_MFCC * 2 + 2)
+                session.setdefault("features", []).append(feature)
             consumed = end
 
         if consumed:
             session["processed"] = start + consumed
-        if new_sentences:
+        # 每次有新增句子就重算一次说话人：句子越多越准，界面拿到的始终是同一套标签。
+        features = session.get("features") or []
+        if added and len(features) >= 3:
+            try:
+                labels = diarize.assign_from_features(features)
+                for sentence, label in zip(session["sentences"], labels):
+                    sentence["speaker"] = label
+            except Exception:
+                pass
+        if added:
             pid, rid = session["project_id"], session["recording_id"]
             storage.save_sentences(pid, rid, session["sentences"])
             storage.update_recording(pid, rid, duration_sec=round(session["processed"] / 16000, 2))
-        return new_sentences
+        # 返回整份列表而不是只返回新增：说话人标签会随后续句子重算，前端整体替换。
+        return list(session["sentences"])
 
 
 # ---------- 模型管理器（引导配置里自动下载千问等模型） ----------
@@ -283,8 +309,31 @@ def _run_model_job(job: dict) -> None:
             if not ok:
                 raise RuntimeError("下载失败，请检查网络后重试")
         else:
-            llm.ensure_model(key, on_status=lambda msg: _set_job(job, message=msg, progress=25))
-        _set_job(job, status="done", progress=100, message="已就绪")
+            def on_progress(done: int, total: int, speed: float) -> None:
+                pct = min(95, 5 + int(90 * done / total)) if total else 5
+                text = f"已下载 {done / 1e6:.0f}MB"
+                if total:
+                    text += f" / {total / 1e6:.0f}MB"
+                if speed > 0:
+                    text += f" · {speed / 1e6:.1f}MB/s"
+                    if total and done < total:
+                        text += f" · 剩余约 {max(1, int((total - done) / speed / 60))} 分钟"
+                _set_job(job, message=text, progress=pct, received=done, total=total)
+
+            llm.ensure_model(
+                key,
+                on_status=lambda msg: _set_job(job, message=msg),
+                on_progress=on_progress,
+                should_stop=lambda: job.get("cancel", False),
+            )
+        if job.get("cancel"):
+            _set_job(job, status="cancelled", message="已停止")
+        else:
+            _set_job(job, status="done", progress=100, message="已就绪")
+    except llm.Cancelled:
+        _set_job(
+            job, status="cancelled", message="已停止下载（已下载部分保留，再点下载会续传）"
+        )
     except Exception as e:  # noqa: BLE001 - 下载失败原因要原样告诉用户
         _set_job(job, status="error", error=str(e), message=f"下载失败：{e}")
 
@@ -309,6 +358,9 @@ def start_model_job(kind: str, key: str) -> dict:
             "progress": 5,
             "error": "",
             "started_at": storage.now_iso(),
+            "cancel": False,
+            "received": 0,
+            "total": 0,
         }
         _model_jobs[job["id"]] = job
     threading.Thread(target=_run_model_job, args=(job,), daemon=True).start()
@@ -1173,14 +1225,14 @@ class Handler(BaseHTTPRequestHandler):
             with open(session["pcm_path"], "ab") as fh:
                 fh.write(body)
         try:
-            new_sentences = _live_flush(session)
+            all_sentences = _live_flush(session)
         except Exception as e:  # noqa: BLE001 - 模型下载 / 推理失败返回给界面提示
             self._send_json({"sentences": [], "error": str(e)}, status=503)
             return
         duration = round(
             (session["pcm_path"].stat().st_size // 2) / 16000, 2
         )
-        self._send_json({"sentences": new_sentences, "duration_sec": duration})
+        self._send_json({"sentences": all_sentences, "duration_sec": duration})
 
     def _live_stop(self, project_id: str, recording_id: str):
         with _live_lock:
@@ -1208,6 +1260,9 @@ class Handler(BaseHTTPRequestHandler):
             storage.set_transcribe(project_id, recording_id, "error", 0, "没有识别到语音，请检查麦克风音量")
             self._send_json({"recording": storage.get_recording(project_id, recording_id), "sentences": []})
             return
+        # 整段音频到手后再跑一次全量聚类：实时阶段是边录边估的标签，
+        # 到这里用完整音频复核，最终稿的说话人划分与「上传录音」走同一套算法。
+        diarize.assign_speakers(wav_path, sentences)
         storage.save_sentences(project_id, recording_id, sentences)
         storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
         storage.save_version(project_id, recording_id, 0, 1, {
@@ -1859,6 +1914,7 @@ class Handler(BaseHTTPRequestHandler):
             "model": model_key,
             "error": "",
             "suggestions": [],
+            "cancel": False,
         }
         with _ai_jobs_lock:
             _ai_jobs[key] = job
@@ -1875,7 +1931,15 @@ class Handler(BaseHTTPRequestHandler):
 
         def run() -> None:
             try:
-                result = llm.polish(items, model_key, on_status, on_batch)
+                result = llm.polish(
+                    items, model_key, on_status, on_batch,
+                    should_stop=lambda: job.get("cancel", False),
+                )
+            except llm.Cancelled:
+                with _ai_jobs_lock:
+                    job["status"] = "cancelled"
+                    job["message"] = f"已停止，保留已完成的 {len(job.get('suggestions') or [])} 条建议"
+                return
             except Exception as e:  # noqa: BLE001 - 下载/推理失败原因要原样告知用户
                 with _ai_jobs_lock:
                     job["status"] = "error"
@@ -1970,6 +2034,7 @@ class Handler(BaseHTTPRequestHandler):
                 "before": len(sentences),
                 "after": 0,
                 "signature": signature,
+                "cancel": False,
             }
             with _ai_jobs_lock:
                 _ai_jobs[key] = job
@@ -1989,7 +2054,15 @@ class Handler(BaseHTTPRequestHandler):
 
             def run() -> None:
                 try:
-                    result = llm.resegment(items, model_key, on_status, on_batch)
+                    result = llm.resegment(
+                        items, model_key, on_status, on_batch,
+                        should_stop=lambda: job.get("cancel", False),
+                    )
+                except llm.Cancelled:
+                    with _ai_jobs_lock:
+                        job["status"] = "cancelled"
+                        job["message"] = "已停止整理，下面是已完成的部分"
+                    return
                 except Exception as e:  # noqa: BLE001 - 失败原因原样告知用户
                     with _ai_jobs_lock:
                         job["status"] = "error"
@@ -2201,6 +2274,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({"ok": True, "token": token})
             return
+        m = _match(path, r"^/api/models/jobs/([^/]+)/cancel$")
+        if m:
+            with _model_jobs_lock:
+                job = _model_jobs.get(m[0])
+                if job is not None and job.get("status") == "running":
+                    job["cancel"] = True
+                    job["message"] = "正在停止…"
+                snapshot = dict(job) if job else {"error": "任务不存在"}
+            self._send_json({"job": snapshot})
+            return
+
         if path == "/api/models/download":
             data = self._read_json_body()
             if data is None:
@@ -2459,6 +2543,16 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions$")
         if m:
             self._add_redactions(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/polish/cancel$")
+        if m:
+            self._send_json(_ai_job_cancel(_ai_job_key(m[0], m[1], "polish")))
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/resegment/cancel$")
+        if m:
+            self._send_json(_ai_job_cancel(_ai_job_key(m[0], m[1], "resegment")))
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/polish$")

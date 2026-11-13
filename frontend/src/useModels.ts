@@ -47,7 +47,20 @@ export function useModels(pollMs = 1500) {
     [refresh],
   )
 
-  return { models, error, refresh, download }
+  const cancel = useCallback(
+    async (jobId: string) => {
+      setError('')
+      try {
+        await api.cancelModelJob(jobId)
+        await refresh()
+      } catch (e) {
+        setError(String(e))
+      }
+    },
+    [refresh],
+  )
+
+  return { models, error, refresh, download, cancel }
 }
 
 /** 找到某个模型最近的一次下载任务（后端按开始时间倒序返回）。 */

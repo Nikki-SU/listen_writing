@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -115,42 +116,133 @@ def model_file(model_key: str) -> Path | None:
     return (preferred or files)[0]
 
 
-def _pick_remote_file(repo_id: str) -> str:
-    """在仓库里挑一个 Q4_K_M 的 GGUF 单文件（兼容不同仓库的命名大小写）。"""
-    from huggingface_hub import HfApi
+# 每个档位在 bartowski 仓库里的 Q4_K_M 文件名。写死而不是先查仓库：
+# 查仓库要额外发一次网络请求，国内网络下这次请求可能长时间无响应，
+# 界面就会一直停在「准备下载」像卡死（真实用户反馈过）。
+MODEL_FILES: dict[str, tuple[str, int]] = {
+    "qwen3-1.7b": ("Qwen_Qwen3-1.7B-Q4_K_M.gguf", 1_100_000_000),
+    "qwen3-4b": ("Qwen_Qwen3-4B-Q4_K_M.gguf", 2_500_000_000),
+    "qwen2.5-7b": ("Qwen2.5-7B-Instruct-Q4_K_M.gguf", 4_400_000_000),
+}
 
-    files = HfApi().list_repo_files(repo_id)
-    cands = [
-        f for f in files
-        if f.lower().endswith(".gguf") and "q4_k_m" in f.lower() and "mmproj" not in f.lower()
-    ]
-    if not cands:
-        raise RuntimeError(f"模型仓库 {repo_id} 里没有找到 Q4_K_M 的 GGUF 文件")
-    # 只有一个文件时直接用；多个分片时取第一片（llama.cpp 支持按分片自动拼接）
-    return sorted(cands)[0]
+HF_OFFICIAL = "https://huggingface.co"
+HF_MIRROR = "https://hf-mirror.com"
 
 
-def ensure_model(model_key: str, on_status: Callable[[str], None] | None = None) -> Path:
-    """确保选中档位的 GGUF 在本地；必要时联网下载。返回文件路径。"""
+class Cancelled(Exception):
+    """用户主动停止后台任务（下载 / 纠错 / 整理断句）。"""
+
+
+def _endpoints() -> list[str]:
+    """下载源：进程启动时已定的 HF_ENDPOINT 优先，其次官方源与国内镜像。"""
+    primary = (os.environ.get("HF_ENDPOINT") or HF_OFFICIAL).rstrip("/")
+    order = [primary]
+    for url in (HF_OFFICIAL, HF_MIRROR):
+        if url not in order:
+            order.append(url)
+    return [url for url in order if url not in _dead_endpoints] or order
+
+
+# 本进程内已失败的源：重试时不再重复等它超时（官方源在国内常常 30 秒无响应）。
+_dead_endpoints: set[str] = set()
+
+
+def _download(
+    url: str,
+    part: Path,
+    on_progress: Callable[[int, int, float], None] | None,
+    should_stop: Callable[[], bool] | None,
+    expected: int,
+) -> None:
+    """断点续传到 `part`；每 0.5 秒回调（已下字节、总字节、速度 B/s）。"""
+    import urllib.request
+
+    offset = part.stat().st_size if part.is_file() else 0
+    headers = {"User-Agent": "listen-writing"}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+    req = urllib.request.Request(url, headers=headers)
+    # socket 超时同时充当「卡住检测」：连续 30 秒收不到数据就换源重试。
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        if resp.status == 206:
+            content_range = resp.headers.get("Content-Range") or ""
+            total = int(content_range.rsplit("/", 1)[-1]) if "/" in content_range else expected
+            mode = "ab"
+        else:
+            offset = 0
+            total = int(resp.headers.get("Content-Length") or expected)
+            mode = "wb"
+        done = offset
+        last_t = last_b = None
+        speed = 0.0
+        with open(part, mode) as fh:
+            while True:
+                if should_stop is not None and should_stop():
+                    raise Cancelled()
+                chunk = resp.read(262144)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                done += len(chunk)
+                now = time.monotonic()
+                if last_t is None:
+                    last_t, last_b = now, done
+                elif now - last_t >= 0.5:
+                    speed = (done - last_b) / (now - last_t)
+                    last_t, last_b = now, done
+                    if on_progress:
+                        on_progress(done, total, speed)
+        if on_progress:
+            on_progress(done, total, speed)
+        if total and done < total:
+            raise RuntimeError(f"下载中断：{done}/{total} 字节")
+
+
+def _download_url(model_key: str, base: str) -> str:
+    spec = LLM_MODELS[model_key]
+    name = MODEL_FILES[model_key][0]
+    return f"{base}/{spec['repo']}/resolve/main/{name}"
+
+
+def ensure_model(
+    model_key: str,
+    on_status: Callable[[str], None] | None = None,
+    on_progress: Callable[[int, int, float], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> Path:
+    """确保选中档位的 GGUF 在本地；必要时联网下载（支持进度、续传、停止）。"""
     spec = LLM_MODELS.get(model_key)
     if spec is None:
         raise ValueError(f"未知的 AI 模型：{model_key}")
     existing = model_file(model_key)
     if existing is not None:
         return existing
+    if model_key not in MODEL_FILES:
+        raise RuntimeError(f"模型 {model_key} 没有登记下载文件名")
 
-    if on_status:
-        on_status(f"正在下载 {spec['label']}（首次使用，约 1–5GB）…")
-    from huggingface_hub import hf_hub_download
+    name, expected = MODEL_FILES[model_key]
+    dest_dir = model_dir(model_key)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / name
+    part = dest.with_suffix(dest.suffix + ".part")
 
-    filename = _pick_remote_file(spec["repo"])
-    path = hf_hub_download(
-        repo_id=spec["repo"],
-        filename=filename,
-        local_dir=str(model_dir(model_key)),
-    )
-    logger.info("AI 模型已就绪：%s", path)
-    return Path(path)
+    last_error: Exception | None = None
+    for base in _endpoints():
+        host = base.split("://", 1)[-1].split("/")[0]
+        if on_status:
+            on_status(f"正在从 {host} 下载 {spec['label']}（{expected / 1e9:.1f}GB，可断点续传）…")
+        try:
+            _download(_download_url(model_key, base), part, on_progress, should_stop, expected)
+            part.replace(dest)
+            logger.info("AI 模型已就绪：%s", dest)
+            return dest
+        except Cancelled:
+            raise
+        except Exception as e:  # noqa: BLE001 - 换下一个源继续试
+            last_error = e
+            _dead_endpoints.add(base)
+            logger.warning("从 %s 下载失败：%s", host, e)
+    raise RuntimeError(f"模型下载失败（已试过官方源与国内镜像）：{last_error}")
 
 
 def split_think(text: str) -> str:
@@ -175,13 +267,27 @@ _POLISH_SYSTEM = (
 )
 
 
-def _engine(model_key: str):
-    """按档位装载 llama.cpp 引擎（首次会触发 GGUF 下载）。"""
+def _engine(
+    model_key: str,
+    on_status: Callable[[str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+):
+    """按档位装载 llama.cpp 引擎（首次会触发 GGUF 下载）。
+
+    装载 4B 要在磁盘上读 2GB 以上并把权重放进内存，慢机器上要几十秒；
+    这里把「下载 / 装载」分阶段报给界面，避免用户只看到一条不动的进度。
+    """
     with _engine_lock:
         if model_key not in _engines:
             from llama_cpp import Llama
 
-            path = ensure_model(model_key)
+            if on_status:
+                on_status("正在检查本地模型文件…")
+            path = ensure_model(model_key, on_status, should_stop=should_stop)
+            if should_stop is not None and should_stop():
+                raise Cancelled()
+            if on_status:
+                on_status("正在装载模型到内存（首次较慢，之后会复用）…")
             _engines[model_key] = Llama(
                 model_path=str(path),
                 n_ctx=4096,
@@ -189,6 +295,31 @@ def _engine(model_key: str):
                 verbose=False,
             )
         return _engines[model_key]
+
+
+def _complete(
+    engine,
+    messages: list[dict],
+    should_stop: Callable[[], bool] | None = None,
+    **kwargs,
+) -> str:
+    """流式生成并拼接文本；每个 chunk 检查停止标记，停止能在一秒内生效。
+
+    非流式调用要等整批生成完（长录音一批可达 40 秒），用户点了「停止」也要干等；
+    这里改成边生成边检查，停止几乎立刻生效。
+    """
+    parts: list[str] = []
+    for piece in engine.create_chat_completion(messages=messages, stream=True, **kwargs):
+        if should_stop is not None and should_stop():
+            raise Cancelled()
+        try:
+            delta = piece["choices"][0].get("delta") or {}
+        except (KeyError, IndexError, TypeError):
+            continue
+        text = delta.get("content") or ""
+        if text:
+            parts.append(text)
+    return "".join(parts)
 
 
 def _polish_messages(batch: list[dict]) -> list[dict]:
@@ -307,6 +438,7 @@ def redact(
     categories: list[dict],
     model_key: str | None = None,
     on_status: Callable[[str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[dict]:
     """AI 智能脱敏：返回带字符偏移的标记建议，不直接改正文。
 
@@ -329,20 +461,23 @@ def redact(
     if not items:
         return []
 
-    engine = _engine(key)
+    engine = _engine(key, on_status, should_stop)
     suggestions: list[dict] = []
     with _infer_lock:
         for start in range(0, len(items), POLISH_BATCH):
+            if should_stop is not None and should_stop():
+                raise Cancelled()
             batch = items[start:start + POLISH_BATCH]
             if on_status:
                 on_status(f"正在扫描第 {start + 1}–{start + len(batch)} 句…")
-            resp = engine.create_chat_completion(
-                messages=_redact_messages(batch, cats),
+            raw = split_think(_complete(
+                engine,
+                _redact_messages(batch, cats),
+                should_stop,
                 temperature=0.1,
                 top_p=0.9,
                 max_tokens=min(2048, max(256, len(batch) * 120)),
-            )
-            raw = split_think((resp["choices"][0]["message"]["content"] or ""))
+            ))
             if not raw:
                 continue
             known = {s["id"]: s for s in batch}
@@ -475,11 +610,67 @@ def _merge_group(group: list[dict], text: str) -> dict:
     }
 
 
+# 规则兜底合并的上限：一眼能读顺的中文句子大致 20–50 字，超过就断开。
+_RULE_MAX_CHARS = 48
+_RULE_MAX_SPAN_MS = 12000
+_RULE_MAX_GAP_MS = 900
+_RULE_MAX_FRAGMENTS = 6
+
+
+def _rule_groups(items: list[dict]) -> list[list[dict]]:
+    """不依赖模型的合并：按句末标点、停顿长短与字数把碎片并成句子。
+
+    ASR 因为换气把一句话切成三五片是常态。模型没给出任何合并时，
+    界面不能左右完全一样（那看起来像功能坏了），所以留一条确定性的兜底规则。
+    """
+    groups: list[list[dict]] = []
+    current: list[dict] = []
+    chars = 0
+    for s in items:
+        text = str(s.get("text") or "").strip()
+        if not current:
+            current = [s]
+            chars = len(text)
+            continue
+        prev = current[-1]
+        gap = int(s.get("start_ms") or 0) - int(prev.get("end_ms") or 0)
+        span = int(s.get("end_ms") or 0) - int(current[0].get("start_ms") or 0)
+        speaker_changed = bool(s.get("speaker")) and bool(prev.get("speaker")) and s["speaker"] != prev["speaker"]
+        close = (
+            _STRONG_END.search(str(prev.get("text") or "").strip()) is not None
+            or gap > _RULE_MAX_GAP_MS
+            or span > _RULE_MAX_SPAN_MS
+            or chars + len(text) > _RULE_MAX_CHARS
+            or len(current) >= _RULE_MAX_FRAGMENTS
+            or speaker_changed
+        )
+        if close:
+            groups.append(current)
+            current = [s]
+            chars = len(text)
+        else:
+            current.append(s)
+            chars += len(text)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def merge_fragments(sentences: list[dict]) -> list[dict]:
+    """规则版断句整理：只合并不改写，输出句数一定不会比输入多。"""
+    items = [s for s in sentences if str(s.get("text") or "").strip()]
+    result = [_merge_group(group, "") for group in _rule_groups(items)]
+    for i, s in enumerate(result):
+        s["index"] = i
+    return result
+
+
 def resegment(
     sentences: list[dict],
     model_key: str | None = None,
     on_status: Callable[[str], None] | None = None,
     on_batch: Callable[[list[dict], int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[dict]:
     """AI 断句整理：把 ASR 的碎片合并成可读句子，返回整份新句子列表。
 
@@ -497,19 +688,22 @@ def resegment(
     if len(items) <= 1:
         return sentences
 
-    engine = _engine(key)
+    engine = _engine(key, on_status, should_stop)
     result: list[dict] = []
     with _infer_lock:
         for start, batch in _batches(items, RESEGMENT_BATCH, RESEGMENT_FIRST_BATCH):
+            if should_stop is not None and should_stop():
+                raise Cancelled()
             if on_status:
                 on_status(f"正在整理第 {start + 1}–{start + len(batch)} 句…")
-            resp = engine.create_chat_completion(
-                messages=_resegment_messages(batch),
+            raw = split_think(_complete(
+                engine,
+                _resegment_messages(batch),
+                should_stop,
                 temperature=0.1,
                 top_p=0.9,
                 max_tokens=min(4096, max(512, len(batch) * 120)),
-            )
-            raw = split_think((resp["choices"][0]["message"]["content"] or ""))
+            ))
             groups = _parse_changes(raw) if raw else []
 
             pos = {s["id"]: i for i, s in enumerate(batch)}
@@ -554,6 +748,19 @@ def resegment(
                 partial = [{**s, "index": i} for i, s in enumerate(result)]
                 on_batch(partial, min(start + len(batch), len(items)))
 
+    if len(result) >= len(items):
+        # 模型一条都没合并：长稿上这等于「整理前后一模一样」，界面看起来像坏了。
+        # 换用确定性的标点/停顿规则，保证输出确实更少、更长。
+        fallback = merge_fragments(items)
+        if len(fallback) < len(result):
+            if on_status:
+                on_status(
+                    f"模型没有给出可用的合并，已按标点与停顿规则整理：{len(items)} 句 → {len(fallback)} 句"
+                )
+            result = fallback
+            if on_batch:
+                on_batch(result, len(items))
+
     for i, s in enumerate(result):
         s["index"] = i
     return result
@@ -583,6 +790,7 @@ def polish(
     model_key: str | None = None,
     on_status: Callable[[str], None] | None = None,
     on_batch: Callable[[list[dict], int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[dict]:
     """AI 语义纠错：只返回建议，不改正文。
 
@@ -600,24 +808,27 @@ def polish(
     if not items:
         return []
 
-    engine = _engine(key)
+    engine = _engine(key, on_status, should_stop)
     suggestions: list[dict] = []
     failed_batches = 0
     batch_count = 0
     last_error = ""
     with _infer_lock:
         for start, batch in _batches(items, POLISH_BATCH, POLISH_FIRST_BATCH):
+            if should_stop is not None and should_stop():
+                raise Cancelled()
             batch_count += 1
             if on_status:
                 on_status(f"正在校对第 {start + 1}–{start + len(batch)} 句…")
-            resp = engine.create_chat_completion(
-                messages=_polish_messages(batch),
+            raw = split_think(_complete(
+                engine,
+                _polish_messages(batch),
+                should_stop,
                 temperature=0.2,
                 top_p=0.9,
                 # 中文 + JSON 包装下 160 tokens/句偏紧，长句会在数组中间被硬截断。
                 max_tokens=min(3072, max(512, len(batch) * 240)),
-            )
-            raw = split_think((resp["choices"][0]["message"]["content"] or ""))
+            ))
             if not raw:
                 if on_batch:
                     on_batch(list(suggestions), min(start + len(batch), len(items)))

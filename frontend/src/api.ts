@@ -164,7 +164,7 @@ export async function updateSentence(
 
 /** AI 长任务的统一进度：纠错用 suggestions，整理断句用 sentences。 */
 export type AiJob = {
-  status: 'idle' | 'running' | 'done' | 'error'
+  status: 'idle' | 'running' | 'done' | 'error' | 'cancelled'
   processed: number
   total: number
   message: string
@@ -197,6 +197,15 @@ export async function fetchPolishJob(projectId: string, recordingId: string): Pr
   )
 }
 
+/** 停止长时间的 AI 纠错：后台线程在下一个 token 处退出，已完成建议保留。 */
+export async function cancelPolishJob(projectId: string, recordingId: string): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/polish/cancel`, {
+      method: 'POST',
+    }),
+  )
+}
+
 /** 启动断句整理预览（apply=false）：立即返回任务快照，之后轮询增量预览。 */
 export async function startResegmentPreview(
   projectId: string,
@@ -215,6 +224,15 @@ export async function startResegmentPreview(
 export async function fetchResegmentJob(projectId: string, recordingId: string): Promise<AiJob> {
   return json(
     await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/resegment`),
+  )
+}
+
+/** 停止正在跑的断句整理：已完成的部分保留在任务快照里。 */
+export async function cancelResegmentJob(projectId: string, recordingId: string): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/resegment/cancel`, {
+      method: 'POST',
+    }),
   )
 }
 
@@ -726,6 +744,14 @@ export async function downloadModel(kind: 'asr' | 'llm', key: string): Promise<M
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind, key }),
     }),
+  )
+  return data.job
+}
+
+/** 停止大模型下载（已下载部分保留，下次续传）。 */
+export async function cancelModelJob(jobId: string): Promise<ModelJob> {
+  const data = await json<{ job: ModelJob }>(
+    await fetch(`${BACKEND}/api/models/jobs/${jobId}/cancel`, { method: 'POST' }),
   )
   return data.job
 }

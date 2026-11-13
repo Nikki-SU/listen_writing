@@ -768,6 +768,9 @@ function TranscriptPanel({
   const [resegmenting, setResegmenting] = useState(false)
   const [resegStage, setResegStage] = useState('')
   const [resegPreview, setResegPreview] = useState<ResegmentResult | null>(null)
+  // 预览弹窗是否展开：关掉不等于停止任务，后台继续跑，用户可以去实时录音。
+  const [resegOpen, setResegOpen] = useState(false)
+  const [resegDone, setResegDone] = useState(false)
   const [editOrigin, setEditOrigin] = useState<'ai_polish' | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   // 点句播放的“只播这一句”上限；长按或点整行时清空，改为连播
@@ -946,8 +949,10 @@ function TranscriptPanel({
       setAiNotice('AI 模型已就绪，再点一次「AI 纠错 / AI 整理断句」即可使用。')
     } else if (llmJob?.status === 'error') {
       setAiNotice(`AI 模型下载失败：${llmJob.error || llmJob.message || '请到设置里重试'}`)
+    } else if (llmDownloading) {
+      setAiNotice(`AI 模型下载中 ${Math.max(0, llmJob?.progress ?? 0)}%：${llmJob?.message || '准备下载…'}`)
     }
-  }, [aiNotice, llmDownloaded, llmJob?.status, llmJob?.error, llmJob?.message])
+  }, [aiNotice, llmDownloaded, llmDownloading, llmJob?.status, llmJob?.error, llmJob?.message, llmJob?.progress])
 
   async function runPolish() {
     if (polishing) return
@@ -969,6 +974,12 @@ function TranscriptPanel({
       }
       setSuggestions(job.suggestions ?? [])
       if (job.status === 'error') throw new Error(job.error || 'AI 纠错失败')
+      if (job.status === 'cancelled') {
+        setPolishStage('')
+        setAiNotice(`已停止 AI 纠错，保留已完成的 ${job.suggestions?.length ?? 0} 条建议`)
+        onError('')
+        return
+      }
       setPolishStage('')
       setAiNotice('')
       onError('')
@@ -980,10 +991,20 @@ function TranscriptPanel({
     }
   }
 
+  async function stopPolish() {
+    try {
+      await api.cancelPolishJob(projectId!, recordingId!)
+    } catch (e) {
+      onError(`停止失败：${String(e)}`)
+    }
+  }
+
   async function runResegment() {
     if (resegmenting) return
     if (!(await ensureLlmReady())) return
     setResegmenting(true)
+    setResegOpen(true)
+    setResegDone(false)
     setResegStage('正在启动…')
     setResegPreview({ sentences: [], before: localSentences.length, after: 0 })
     try {
@@ -1006,8 +1027,13 @@ function TranscriptPanel({
         after: job.after,
         model: job.model,
       })
+      setResegDone(job.status === 'done')
       setResegStage('')
-      setAiNotice('')
+      if (job.status === 'cancelled') {
+        setAiNotice('已停止整理断句，下面是已完成的部分（不能应用，避免丢掉未处理的句子）')
+      } else {
+        setAiNotice('')
+      }
       onError('')
     } catch (e) {
       setResegStage('')
@@ -1017,8 +1043,16 @@ function TranscriptPanel({
     }
   }
 
+  async function stopResegment() {
+    try {
+      await api.cancelResegmentJob(projectId!, recordingId!)
+    } catch (e) {
+      onError(`停止失败：${String(e)}`)
+    }
+  }
+
   async function applyResegment() {
-    if (!resegPreview || resegmenting) return
+    if (!resegPreview || resegmenting || !resegDone) return
     setResegmenting(true)
     try {
       const res = await api.resegmentRecording(projectId, recordingId, true, resegPreview.model)
@@ -1394,8 +1428,11 @@ function TranscriptPanel({
             {showHistory ? '收起版本' : '版本历史'}
           </button>
           <button
-            onClick={() => void runPolish()}
-            disabled={polishing || llmReady === false || llmDownloading || transcribe.status !== 'done'}
+            onClick={() => {
+              if (polishing || suggestions.length > 0) setPolishOpen(true)
+              else void runPolish()
+            }}
+            disabled={llmReady === false || llmDownloading || transcribe.status !== 'done'}
             style={{
               fontSize: 12,
               padding: '4px 10px',
@@ -1404,7 +1441,7 @@ function TranscriptPanel({
               border: `1px solid ${polishOpen ? '#8ab4f8' : '#ddd'}`,
               color: llmReady === false ? '#999' : '#245c9c',
               borderRadius: 4,
-              cursor: polishing || llmReady === false || llmDownloading ? 'not-allowed' : 'pointer',
+              cursor: llmReady === false || llmDownloading ? 'not-allowed' : 'pointer',
             }}
             title={
               llmReady === false
@@ -1414,11 +1451,11 @@ function TranscriptPanel({
                   : '用本地大模型纠错：只给建议，逐句采纳后才改正文；首次使用需下载模型'
             }
           >
-            {polishing ? 'AI 分析中…' : llmDownloading ? '模型下载中…' : 'AI 纠错'}
+            {polishing ? `AI 分析中 ${suggestions.length} 条…` : llmDownloading ? '模型下载中…' : 'AI 纠错'}
           </button>
           <button
-            onClick={() => void runResegment()}
-            disabled={resegmenting || llmReady === false || llmDownloading || transcribe.status !== 'done'}
+            onClick={() => (resegmenting || resegDone ? setResegOpen(true) : void runResegment())}
+            disabled={llmReady === false || llmDownloading || transcribe.status !== 'done'}
             style={{
               fontSize: 12,
               padding: '4px 10px',
@@ -1427,7 +1464,7 @@ function TranscriptPanel({
               color: llmReady === false ? '#999' : '#245c9c',
               borderRadius: 4,
               cursor:
-                resegmenting || llmReady === false || llmDownloading || transcribe.status !== 'done'
+                llmReady === false || llmDownloading || transcribe.status !== 'done'
                   ? 'not-allowed'
                   : 'pointer',
             }}
@@ -1456,6 +1493,53 @@ function TranscriptPanel({
             {redactMode ? '退出脱敏' : '脱敏'}
           </button>
         </div>
+
+        {((polishing && !polishOpen) ||
+          (resegPreview && !resegOpen && (resegmenting || resegDone))) && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 8,
+              padding: '6px 10px',
+              border: '1px solid #d6e4f7',
+              background: '#f2f7ff',
+              borderRadius: 6,
+              fontSize: 12,
+              color: '#245c9c',
+            }}
+          >
+            <span style={{ flex: 1 }}>
+              {polishing
+                ? `AI 纠错在后台运行：${polishStage || '处理中…'}`
+                : resegmenting
+                  ? `AI 整理断句在后台运行：${resegStage || '处理中…'}`
+                  : `AI 整理断句已完成：${resegPreview?.before ?? 0} 句 → ${resegPreview?.after ?? 0} 句`}
+            </span>
+            <button
+              onClick={() => (polishing ? setPolishOpen(true) : setResegOpen(true))}
+              style={{ fontSize: 11, padding: '2px 8px' }}
+            >
+              {polishing ? '查看建议' : resegDone ? '查看结果' : '查看进度'}
+            </button>
+            {polishing ? (
+              <button
+                onClick={() => void stopPolish()}
+                style={{ fontSize: 11, padding: '2px 8px', color: '#b00020' }}
+              >
+                停止
+              </button>
+            ) : resegmenting ? (
+              <button
+                onClick={() => void stopResegment()}
+                style={{ fontSize: 11, padding: '2px 8px', color: '#b00020' }}
+              >
+                停止
+              </button>
+            ) : null}
+          </div>
+        )}
 
         {llmReady === false && (
           <div
@@ -1516,9 +1600,9 @@ function TranscriptPanel({
           style={{ width: '100%', height: 36, marginBottom: 10 }}
         />
 
-        {resegPreview && (
+        {resegOpen && resegPreview && (
           <div
-            onClick={() => !resegmenting && setResegPreview(null)}
+            onClick={() => setResegOpen(false)}
             style={{
               position: 'fixed',
               inset: 0,
@@ -1547,25 +1631,27 @@ function TranscriptPanel({
             >
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
                 <h3 style={{ margin: 0, fontSize: 16, flex: 1 }}>AI 整理断句预览</h3>
-                <span style={{ fontSize: 12, color: '#7a869a' }}>
+                <span style={{ fontSize: 12, color: resegPreview.after < resegPreview.before ? '#1e7e34' : '#7a869a' }}>
                   {resegPreview.before} 句 → {resegPreview.after} 句
                 </span>
               </div>
               <p style={{ fontSize: 12, color: '#8a8f98', lineHeight: 1.7, margin: '8px 0 12px' }}>
-                只合并停顿碎片、补标点，不增删内容。应用后写入新版本，可在版本历史里回退。
+                断句整理不是逐句改写，而是把左边几个停顿碎片合并成一句；只动断句与标点，不增删内容。
+                应用后写入新版本，可在版本历史里回退。
               </p>
               {resegStage && (
                 <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
-                  {resegStage}（结果会边整理边出现在右侧）
+                  {resegStage}（结果会边整理边出现在下面；关掉窗口任务仍在后台继续）
                 </div>
               )}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: 11, color: '#8a94a6', marginBottom: 6 }}>
-                <div>原文（按停顿切分）</div>
-                <div>AI 整理后</div>
-              </div>
+              {!resegmenting && !resegDone && (
+                <div style={{ fontSize: 12, color: '#b26b00', marginBottom: 10 }}>
+                  任务已停止，下面是已完成的部分；未处理的句子没有出现在结果里，所以不能直接应用。
+                </div>
+              )}
               <div
                 className="scroll-hidden"
-                style={{ maxHeight: '50vh', overflowY: 'auto', borderTop: '1px solid #f1f3f5' }}
+                style={{ maxHeight: '52vh', overflowY: 'auto', borderTop: '1px solid #f1f3f5' }}
               >
                 {resegPreview.sentences.map((s) => {
                   const srcIds = s.source_ids ?? [s.id]
@@ -1576,39 +1662,107 @@ function TranscriptPanel({
                   return (
                     <div
                       key={s.id}
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '1fr 1fr',
-                        gap: 10,
-                        padding: '6px 0',
-                        borderBottom: '1px solid #f6f7f9',
-                      }}
+                      style={{ padding: '8px 0', borderBottom: '1px solid #f6f7f9' }}
                     >
-                      <div style={{ fontSize: 12, lineHeight: 1.65, color: merged ? '#333' : '#9aa0a6' }}>
-                        {sources.length > 0
-                          ? sources.map((x) => <div key={x.id}>· {x.text}</div>)
-                          : <span>（原句已不在当前稿中）</span>}
+                      {merged && (
+                        <div style={{ marginBottom: 6 }}>
+                          <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 3 }}>
+                            左边这 {sources.length} 个碎片合并为一句
+                            {sources.length > 0 ? `（${sources.reduce((n, x) => n + x.text.length, 0)} 字）` : ''}
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {sources.length > 0 ? (
+                              sources.map((x) => (
+                                <span
+                                  key={x.id}
+                                  style={{
+                                    fontSize: 11,
+                                    color: '#5b6472',
+                                    background: '#f2f4f7',
+                                    borderRadius: 4,
+                                    padding: '1px 6px',
+                                    lineHeight: 1.7,
+                                  }}
+                                >
+                                  {x.text}
+                                </span>
+                              ))
+                            ) : (
+                              <span style={{ fontSize: 11, color: '#b0b6c0' }}>（原句已不在当前稿中）</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                        <span
+                          style={{
+                            fontSize: 11,
+                            color: merged ? '#1e7e34' : '#b0b6c0',
+                            flexShrink: 0,
+                            paddingTop: 4,
+                            width: 44,
+                          }}
+                        >
+                          {merged ? '合并后' : '未改动'}
+                        </span>
+                        <div
+                          style={{
+                            fontSize: merged ? 13.5 : 12.5,
+                            color: merged ? '#1e7e34' : '#5b6472',
+                            lineHeight: 1.75,
+                          }}
+                        >
+                          {s.text}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 12, lineHeight: 1.65, color: '#1e7e34' }}>{s.text}</div>
                     </div>
                   )
                 })}
               </div>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-                <button
-                  onClick={() => setResegPreview(null)}
-                  disabled={resegmenting}
-                  style={{ fontSize: 13, padding: '6px 14px' }}
-                >
-                  取消
-                </button>
-                <button
-                  onClick={() => void applyResegment()}
-                  disabled={resegmenting}
-                  style={{ fontSize: 13, padding: '6px 14px', background: '#245c9c', color: '#fff', border: 'none', borderRadius: 4 }}
-                >
-                  {resegStage ? '整理中…' : '应用并生成新版本'}
-                </button>
+                {resegmenting ? (
+                  <>
+                    <button
+                      onClick={() => setResegOpen(false)}
+                      style={{ fontSize: 13, padding: '6px 14px' }}
+                    >
+                      转到后台
+                    </button>
+                    <button
+                      onClick={() => void stopResegment()}
+                      style={{ fontSize: 13, padding: '6px 14px', color: '#b00020' }}
+                    >
+                      停止
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => {
+                        setResegOpen(false)
+                        setResegPreview(null)
+                        setResegDone(false)
+                      }}
+                      style={{ fontSize: 13, padding: '6px 14px' }}
+                    >
+                      关闭
+                    </button>
+                    <button
+                      onClick={() => void applyResegment()}
+                      disabled={!resegDone}
+                      style={{
+                        fontSize: 13,
+                        padding: '6px 14px',
+                        background: resegDone ? '#245c9c' : '#e3e8ef',
+                        color: resegDone ? '#fff' : '#9aa0a6',
+                        border: 'none',
+                        borderRadius: 4,
+                      }}
+                    >
+                      应用并生成新版本
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -1634,17 +1788,34 @@ function TranscriptPanel({
               <span style={{ fontSize: 11, color: '#7a869a' }}>
                 {polishing ? `已出 ${suggestions.length} 条` : `共 ${suggestions.length} 条`}
               </span>
+              {polishing && (
+                <button
+                  onClick={() => void stopPolish()}
+                  style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', color: '#b00020' }}
+                >
+                  停止
+                </button>
+              )}
+              {!polishing && (
+                <button
+                  onClick={() => void runPolish()}
+                  style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px' }}
+                >
+                  重新分析
+                </button>
+              )}
               <button
                 onClick={() => setPolishOpen(false)}
-                style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px' }}
+                style={{ fontSize: 11, padding: '2px 8px' }}
               >
                 关闭
               </button>
             </div>
             {polishing && (
               <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.7, marginBottom: 8 }}>
-                {polishStage || '正在本地分析，请保持窗口开启。'}
+                {polishStage || '正在本地分析…'}
                 {suggestions.length > 0 ? ` · 已出 ${suggestions.length} 条建议` : ''}
+                。可以关掉这个面板，任务会在后台继续，不影响先录新的音。
               </div>
             )}
             {!polishing && suggestions.length === 0 ? (

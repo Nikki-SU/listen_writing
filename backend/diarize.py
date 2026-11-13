@@ -42,6 +42,22 @@ def assign_speakers(audio_path: str, sentences: list[dict]) -> bool:
         return False
 
 
+def assign_from_features(features: list[np.ndarray]) -> list[str]:
+    """用已经算好的句级特征在线分配说话人（实时录音每批重跑一次）。
+
+    实时录音拿不到「整段音频」，但聚合已有的句级特征再做一次聚类，
+    结论与整段结束后跑 `assign_speakers` 一致；句子越多越准。
+    """
+    if not features:
+        return []
+    if len(features) < 3:
+        return ["Speaker 1"] * len(features)
+    X = _standardize(np.vstack(features))
+    k, labels = _choose_k(X)
+    names = _label_names(labels, k)
+    return [names[int(label)] for label in labels]
+
+
 def _load_pcm(path: str) -> np.ndarray:
     import av
 

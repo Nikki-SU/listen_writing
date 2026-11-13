@@ -295,11 +295,14 @@ export type ModelJob = {
   kind: 'asr' | 'llm'
   key: string
   label: string
-  status: 'running' | 'done' | 'error'
+  status: 'running' | 'done' | 'error' | 'cancelled'
   message: string
   progress: number
   error: string
   started_at: string
+  /** 已下载 / 总字节：下载页显示实际进度，而不是一直停在 25%。 */
+  received?: number
+  total?: number
 }
 
 export type ModelsPayload = {
