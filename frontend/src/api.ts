@@ -206,6 +206,21 @@ export async function cancelPolishJob(projectId: string, recordingId: string): P
   )
 }
 
+/** 告诉后端「这条建议已处理」：轮询时不再把它塞回来，任务跑完也不会重现。 */
+export async function dismissPolishSuggestion(
+  projectId: string,
+  recordingId: string,
+  sentenceId: string,
+): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/polish/dismiss`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sentence_id: sentenceId }),
+    }),
+  )
+}
+
 /** 启动断句整理预览（apply=false）：立即返回任务快照，之后轮询增量预览。 */
 export async function startResegmentPreview(
   projectId: string,

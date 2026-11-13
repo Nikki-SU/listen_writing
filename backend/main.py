@@ -103,6 +103,24 @@ def _ai_job_cancel(key: str) -> dict:
             job["message"] = "正在停止…"
     return _ai_job_get(key)
 
+
+def _ai_job_decide(key: str, sentence_id: str) -> dict:
+    """用户已接受/忽略某条建议：从任务里删掉它，后续轮询不再重新出现。
+
+    纠错是边跑边出建议的。用户在前端采纳后，任务里还留着同一条建议，
+    下一次轮询（700ms 后）又把它塞回列表，界面看起来就是「点了没反应」。
+    同时在 job 里记住这个句 id，任务跑完时也不会再把这条建议写回去。
+    """
+    with _ai_jobs_lock:
+        job = _ai_jobs.get(key)
+        if job is not None and sentence_id:
+            job.setdefault("decided", set()).add(sentence_id)
+            job["suggestions"] = [
+                s for s in (job.get("suggestions") or [])
+                if s.get("sentence_id") != sentence_id
+            ]
+    return _ai_job_get(key)
+
 # 引擎按设置里的模型档位缓存：换档才重建，重复转写不必反复加载模型。
 _engine_lock = threading.Lock()
 _engines: dict[str, object] = {}
@@ -1915,6 +1933,7 @@ class Handler(BaseHTTPRequestHandler):
             "error": "",
             "suggestions": [],
             "cancel": False,
+            "decided": set(),
         }
         with _ai_jobs_lock:
             _ai_jobs[key] = job
@@ -1925,9 +1944,11 @@ class Handler(BaseHTTPRequestHandler):
 
         def on_batch(found: list[dict], processed: int) -> None:
             with _ai_jobs_lock:
-                job["suggestions"] = list(found)
+                decided = job.get("decided") or set()
+                kept = [s for s in found if s.get("sentence_id") not in decided]
+                job["suggestions"] = kept
                 job["processed"] = processed
-                job["message"] = f"已检查 {processed}/{total} 句，发现 {len(found)} 条建议"
+                job["message"] = f"已检查 {processed}/{total} 句，发现 {len(kept)} 条建议"
 
         def run() -> None:
             try:
@@ -1946,10 +1967,13 @@ class Handler(BaseHTTPRequestHandler):
                     job["error"] = f"AI 纠错失败：{e}"
                 return
             with _ai_jobs_lock:
-                job["suggestions"] = result
+                decided = job.get("decided") or set()
+                job["suggestions"] = [
+                    s for s in result if s.get("sentence_id") not in decided
+                ]
                 job["status"] = "done"
                 job["processed"] = total
-                job["message"] = f"完成，共 {len(result)} 条建议"
+                job["message"] = f"完成，共 {len(job['suggestions'])} 条建议"
 
         # 1 小时录音 4B CPU 上要 20 分钟以上：必须立即返回，让前端边跑边轮询。
         threading.Thread(target=run, daemon=True).start()
@@ -2543,6 +2567,16 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions$")
         if m:
             self._add_redactions(*m)
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/polish/dismiss$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            self._send_json(_ai_job_decide(
+                _ai_job_key(m[0], m[1], "polish"), str(data.get("sentence_id") or "")
+            ))
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/polish/cancel$")

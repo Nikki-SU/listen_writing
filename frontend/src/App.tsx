@@ -773,6 +773,8 @@ function TranscriptPanel({
   const [resegDone, setResegDone] = useState(false)
   const [editOrigin, setEditOrigin] = useState<'ai_polish' | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
+  // 本轮已被用户接受/忽略的建议：轮询回来时过滤掉，避免「点了接受又弹回来」。
+  const decidedRef = useRef<Set<string>>(new Set())
   // 点句播放的“只播这一句”上限；长按或点整行时清空，改为连播
   const sentenceStopRef = useRef<number | null>(null)
   const playPressTimer = useRef<number | null>(null)
@@ -954,12 +956,18 @@ function TranscriptPanel({
     }
   }, [aiNotice, llmDownloaded, llmDownloading, llmJob?.status, llmJob?.error, llmJob?.message, llmJob?.progress])
 
+  /** 过滤本轮已被接受/忽略的建议：边跑边改时轮询不能把它们塞回来。 */
+  function visibleSuggestions(list: PolishSuggestion[]): PolishSuggestion[] {
+    return list.filter((s) => !decidedRef.current.has(s.sentence_id))
+  }
+
   async function runPolish() {
     if (polishing) return
     if (!(await ensureLlmReady())) return
     setPolishOpen(true)
     setPolishing(true)
     setSuggestions([])
+    decidedRef.current = new Set()
     setPolishStage('正在启动…')
     try {
       let job = await api.polishRecording(projectId, recordingId)
@@ -967,12 +975,12 @@ function TranscriptPanel({
       // 长录音一批要几十秒：每批回来就刷新列表，用户能看到建议一条条长出来，
       // 而不是整篇跑完才一次性出现（1 小时录音要等 20 分钟以上）。
       while (job.status === 'running') {
-        setSuggestions(job.suggestions ?? [])
+        setSuggestions(visibleSuggestions(job.suggestions ?? []))
         setPolishStage(job.message || `已检查 ${job.processed}/${job.total} 句`)
         await new Promise((r) => setTimeout(r, 700))
         job = await api.fetchPolishJob(projectId, recordingId)
       }
-      setSuggestions(job.suggestions ?? [])
+      setSuggestions(visibleSuggestions(job.suggestions ?? []))
       if (job.status === 'error') throw new Error(job.error || 'AI 纠错失败')
       if (job.status === 'cancelled') {
         setPolishStage('')
@@ -1070,10 +1078,15 @@ function TranscriptPanel({
   async function acceptSuggestion(item: PolishSuggestion) {
     if (!localSentences.some((s) => s.id === item.sentence_id)) return
     const snapshot = localSentences
+    decidedRef.current.add(item.sentence_id)
     setSuggestions((list) => list.filter((x) => x.sentence_id !== item.sentence_id))
     setLocalSentences((list) =>
       list.map((x) => (x.id === item.sentence_id ? { ...x, text: item.after } : x)),
     )
+    // 先告诉后端这条已处理，避免轮询把它当成新建议重新塞回列表。
+    void api
+      .dismissPolishSuggestion(projectId, recordingId, item.sentence_id)
+      .catch(() => undefined)
     try {
       const res = await api.updateSentence(projectId, recordingId, item.sentence_id, item.after, undefined, {
         advance_to: 1,
@@ -1082,6 +1095,7 @@ function TranscriptPanel({
       setVersion(res.current || version)
       onError('')
     } catch (e) {
+      decidedRef.current.delete(item.sentence_id)
       setLocalSentences(snapshot)
       setSuggestions((list) => [...list, item].sort((a, b) => a.index - b.index))
       onError(`采纳失败：${String(e)}`)
@@ -1089,7 +1103,11 @@ function TranscriptPanel({
   }
 
   function dismissSuggestion(item: PolishSuggestion) {
+    decidedRef.current.add(item.sentence_id)
     setSuggestions((list) => list.filter((x) => x.sentence_id !== item.sentence_id))
+    void api
+      .dismissPolishSuggestion(projectId, recordingId, item.sentence_id)
+      .catch(() => undefined)
   }
 
   async function renameSpeaker(from: string, to: string) {
