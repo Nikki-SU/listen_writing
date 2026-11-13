@@ -31,9 +31,11 @@ def assign_speakers(audio_path: str, sentences: list[dict]) -> bool:
             end = int(s["end_ms"] * SAMPLE_RATE / 1000)
             feats.append(_sentence_feature(pcm, start, end))
         X = np.vstack(feats)
-        X = _standardize(X)
-        k, labels = _choose_k(X)
-        names = _label_names(labels, k)
+        labels = _pitch_groups(X)
+        if labels is None:
+            X = _standardize(X)
+            k, labels = _choose_k(X)
+        names = _label_names(labels, int(labels.max()) + 1)
         for s, label in zip(sentences, labels):
             s["speaker"] = names[int(label)]
         return True
@@ -52,10 +54,48 @@ def assign_from_features(features: list[np.ndarray]) -> list[str]:
         return []
     if len(features) < 3:
         return ["Speaker 1"] * len(features)
-    X = _standardize(np.vstack(features))
-    k, labels = _choose_k(X)
-    names = _label_names(labels, k)
+    X = np.vstack(features)
+    labels = _pitch_groups(X)
+    if labels is None:
+        X = _standardize(X)
+        k, labels = _choose_k(X)
+    names = _label_names(labels, int(labels.max()) + 1)
     return [names[int(label)] for label in labels]
+
+
+# 基频分档：男/女声差 60–120Hz，同一人不同句子只差十几 Hz。
+_PITCH_MIN_GAP_HZ = 20.0
+_PITCH_MIN_GAP_RATIO = 0.12
+
+
+def _pitch_groups(X: np.ndarray) -> np.ndarray | None:
+    """先看基频是否天然分成两档；分得出就返回 0/1 标签，否则返回 None。
+
+    这是实时录音里最可靠的一步：MFCC 在只有零点几秒的短句上很不稳定，
+    而男/女声的基频差距远大于同一人不同句子的自然起伏。先按基频分档，
+    既不会把单人录音拆成两个人，也不会把男女声都标成 Speaker 1。
+    """
+    pitch = X[:, -2]  # 特征最后一段是 [中位基频, 基频标准差]
+    voiced = np.where(pitch > 0)[0]
+    if len(voiced) < 4:
+        return None
+    values = np.sort(pitch[voiced])
+    gaps = np.diff(values)
+    split = int(np.argmax(gaps))
+    gap = float(gaps[split])
+    low, high = values[: split + 1], values[split + 1:]
+    if len(low) < 2 or len(high) < 2:
+        return None
+    median = float(np.median(values))
+    if gap < max(_PITCH_MIN_GAP_HZ, _PITCH_MIN_GAP_RATIO * median):
+        return None
+    # 间隙还要明显大于两档自身的起伏，否则只是同一人音高的自然波动。
+    if gap < 1.2 * max(float(low.std()), float(high.std())):
+        return None
+    threshold = (low[-1] + high[0]) / 2
+    labels = np.zeros(len(pitch), dtype=int)
+    labels[pitch >= threshold] = 1
+    return labels
 
 
 def _load_pcm(path: str) -> np.ndarray:

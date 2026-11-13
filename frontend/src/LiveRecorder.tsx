@@ -298,20 +298,22 @@ export default function LiveRecorder({
                 <span style={{ fontSize: 11, color: '#b0b6c0', width: 44, flexShrink: 0, paddingTop: 2 }}>
                   {fmt(s.start_ms / 1000)}
                 </span>
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: '#245c9c',
-                    background: '#eef5ff',
-                    borderRadius: 4,
-                    padding: '0 5px',
-                    height: 18,
-                    lineHeight: '18px',
-                    flexShrink: 0,
-                  }}
-                >
-                  {s.speaker || 'Speaker 1'}
-                </span>
+                {s.speaker && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: '#245c9c',
+                      background: '#eef5ff',
+                      borderRadius: 4,
+                      padding: '0 5px',
+                      height: 18,
+                      lineHeight: '18px',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {s.speaker}
+                  </span>
+                )}
                 <span style={{ fontSize: 13, lineHeight: 1.7 }}>{s.text}</span>
               </div>
             ))
