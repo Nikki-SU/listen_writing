@@ -9,6 +9,7 @@ import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { jobFor, useModels } from './useModels'
 import { BOOTSTRAP_FILES } from './bootstrapFiles'
+import { speakerColor } from './speakerColors'
 import type {
   Project,
   Recording,
@@ -160,6 +161,34 @@ export default function App() {
       }
     },
     [projectId, recordings, recordingId],
+  )
+
+  // 删除项目：项目下所有录音、音频、转写与历史版本一起删除，删前必须二次确认。
+  const handleDeleteProject = useCallback(
+    async (id: string) => {
+      const p = projects.find((x) => x.id === id)
+      if (
+        !window.confirm(
+          `删除项目「${p?.name || '未命名'}」？项目下所有录音、音频、转写和所有历史版本都会一起删除，无法恢复。`,
+        )
+      ) {
+        return
+      }
+      try {
+        await api.deleteProject(id)
+        setProjects((prev) => prev.filter((x) => x.id !== id))
+        if (projectId === id) {
+          setProjectId(null)
+          setRecordings([])
+          setRecordingId(null)
+          setDetail(null)
+        }
+        setError('')
+      } catch (e) {
+        setError(String(e))
+      }
+    },
+    [projects, projectId],
   )
 
   useEffect(() => {
@@ -487,7 +516,12 @@ export default function App() {
       >
         <ProjectCreator onCreate={onCreateProject} />
 
-        <ProjectList projects={projects} activeId={projectId} onSelect={setProjectId} />
+        <ProjectList
+          projects={projects}
+          activeId={projectId}
+          onSelect={setProjectId}
+          onDelete={handleDeleteProject}
+        />
 
         {projectId && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }}>
@@ -622,10 +656,12 @@ function ProjectList({
   projects,
   activeId,
   onSelect,
+  onDelete,
 }: {
   projects: Project[]
   activeId: string | null
   onSelect: (id: string) => void
+  onDelete: (id: string) => void
 }) {
   if (projects.length === 0) {
     return <div style={{ color: '#aaa', fontSize: 13 }}>还没有项目</div>
@@ -637,6 +673,9 @@ function ProjectList({
           key={p.id}
           onClick={() => onSelect(p.id)}
           style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
             padding: '8px 10px',
             cursor: 'pointer',
             borderRadius: 6,
@@ -645,7 +684,28 @@ function ProjectList({
             marginBottom: 4,
           }}
         >
-          {p.name}
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {p.name}
+          </span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete(p.id)
+            }}
+            title="删除项目（连同其下所有录音与版本）"
+            style={{
+              fontSize: 11,
+              padding: '1px 6px',
+              color: '#b00020',
+              background: '#fff',
+              border: '1px solid #f0c9cc',
+              borderRadius: 4,
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            删除
+          </button>
         </li>
       ))}
     </ul>
@@ -737,6 +797,8 @@ function TranscriptPanel({
   const [roster, setRoster] = useState<string[]>(detail.speakers ?? [])
   const [newSpeakerOpen, setNewSpeakerOpen] = useState(false)
   const [newSpeakerName, setNewSpeakerName] = useState('')
+  // 重新跑说话人聚类（历史录音没有自动分人时也能补上，不需要重新转写）。
+  const [detectingSpeakers, setDetectingSpeakers] = useState(false)
   // 多句合并：点句子自行涂色分组（涂色且连续为一组），最后一次性合并所有组（ASR 常按逗号切碎）。
   const [mergeMode, setMergeMode] = useState(false)
   // 间隔上色合并：顶部选择画笔颜色（蓝 / 白 / 橙），点句子涂色；蓝、橙各代表一组，白色不参与合并，同色且连续才成组。
@@ -1158,6 +1220,28 @@ function TranscriptPanel({
     }
   }
 
+  async function detectSpeakersNow() {
+    if (detectingSpeakers) return
+    const hasLabels = speakers.some((sp) => localSentences.some((s) => s.speaker === sp))
+    if (hasLabels && !window.confirm('重新识别会覆盖当前发言人标注，并生成一个新版本。继续？')) return
+    setDetectingSpeakers(true)
+    try {
+      const res = await api.detectSpeakers(projectId, recordingId)
+      setLocalSentences(res.sentences)
+      setRoster(res.speakers)
+      if (res.current) setVersion(res.current)
+      if (res.detected <= 1) {
+        onError('这次只识别出 1 位发言人：如果是单一说话人，这是正确结果；男女对话请确认音频里两人可听见。')
+      } else {
+        onError('')
+      }
+    } catch (e) {
+      onError(`识别发言人失败：${String(e).replace(/^Error:\s*/, '')}`)
+    } finally {
+      setDetectingSpeakers(false)
+    }
+  }
+
   function paintWithBrush(id: string) {
     setPaintColors((marks) => {
       const next = { ...marks }
@@ -1203,6 +1287,10 @@ function TranscriptPanel({
 
   const speakers = [
     ...new Set([...roster, ...localSentences.map((s) => s.speaker).filter(Boolean)]),
+  ] as string[]
+  // 配色按句子里的出场顺序：与正文里看到的顺序一致，改名单也不会换色。
+  const speakerOrder = [
+    ...new Set([...localSentences.map((s) => s.speaker).filter(Boolean), ...roster]),
   ] as string[]
 
   /** 从当前选区取出句子内的字符区间（只统计文字，不含任何按钮）。 */
@@ -2126,7 +2214,14 @@ function TranscriptPanel({
                     setSpeakerEdit(sp)
                     setSpeakerDraft(sp)
                   }}
-                  style={{ fontSize: 12, padding: '2px 10px', borderRadius: 12, background: '#eef4ff', color: '#1a73e8', border: '1px solid #d6e4ff' }}
+                  style={{
+                    fontSize: 12,
+                    padding: '2px 10px',
+                    borderRadius: 12,
+                    background: speakerColor(sp, speakerOrder).bg,
+                    color: speakerColor(sp, speakerOrder).fg,
+                    border: `1px solid ${speakerColor(sp, speakerOrder).border}`,
+                  }}
                   title="点击改名；改名后可选择并入其他发言人"
                 >
                   {sp}
@@ -2171,6 +2266,22 @@ function TranscriptPanel({
                 + 新增发言人
               </button>
             )}
+            <button
+              onClick={() => void detectSpeakersNow()}
+              disabled={transcribe.status !== 'done' || detectingSpeakers || localSentences.length < 3}
+              title="按音色重新分一次说话人（历史录音也能补上，不需要重新转写）；会覆盖当前标注并生成新版本"
+              style={{
+                fontSize: 12,
+                padding: '2px 10px',
+                borderRadius: 12,
+                background: '#fff',
+                color: '#0f766e',
+                border: '1px dashed #9bd8cf',
+                cursor: transcribe.status !== 'done' || detectingSpeakers ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {detectingSpeakers ? '识别中…' : speakers.length > 0 ? '重新识别发言人' : '自动识别发言人'}
+            </button>
             <span style={{ color: '#aaa' }}>（点名字改名；先加人，再逐句指派）</span>
             <button
               onClick={() => {
@@ -2347,7 +2458,18 @@ function TranscriptPanel({
                 ) : (
                   <>
                     {s.speaker && (
-                      <span style={{ fontSize: 11, color: '#4285f4', background: '#eef4ff', borderRadius: 4, padding: '1px 6px', alignSelf: 'flex-start', flexShrink: 0 }}>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: speakerColor(s.speaker, speakerOrder).fg,
+                          background: speakerColor(s.speaker, speakerOrder).bg,
+                          border: `1px solid ${speakerColor(s.speaker, speakerOrder).border}`,
+                          borderRadius: 4,
+                          padding: '1px 6px',
+                          alignSelf: 'flex-start',
+                          flexShrink: 0,
+                        }}
+                      >
                         {s.speaker}
                       </span>
                     )}

@@ -1592,6 +1592,82 @@ class Handler(BaseHTTPRequestHandler):
             "current": version["version"],
         })
 
+    def _detect_speakers(self, project_id: str, recording_id: str):
+        """对已有录音重新跑一次本地说话人聚类。
+
+        历史录音转写时还没有自动分人（speaker 全是空），或者自动结果不准，
+        都可以用这个接口按音频重新分一次，不必重新转写。
+        """
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if (recording.get("transcribe") or {}).get("status") != "done":
+            self._send_json({"error": "请等转写完成后再识别发言人"}, status=409)
+            return
+        sentences = storage.load_sentences(project_id, recording_id)
+        if len(sentences) < 3:
+            self._send_json({"error": "句子太少（至少 3 句）才能识别发言人"}, status=409)
+            return
+        audio_path = str(recording.get("audio_path") or "")
+        if not audio_path or not Path(audio_path).is_file():
+            self._send_json({"error": "音频文件已丢失，无法识别发言人"}, status=409)
+            return
+
+        before = [_sentence_snapshot(s) for s in sentences]
+        if not diarize.assign_speakers(audio_path, sentences):
+            self._send_json({"error": "未能识别出多个说话人（可能是单人录音或音频太短）"}, status=409)
+            return
+
+        roster: list[str] = []
+        for s in sentences:
+            sp = str(s.get("speaker") or "")
+            if sp and sp not in roster:
+                roster.append(sp)
+        storage.save_sentences(project_id, recording_id, sentences)
+        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+        storage.update_recording(project_id, recording_id, speakers=roster)
+
+        changed = [
+            (b, _sentence_snapshot(s))
+            for b, s in zip(before, sentences)
+            if b.get("speaker", "") != s.get("speaker", "")
+        ]
+        current = storage.ensure_current_version(project_id, recording_id) or {}
+        if not changed:
+            self._send_json({
+                "sentences": sentences,
+                "speakers": roster,
+                "version": None,
+                "current": current.get("current", ""),
+                "detected": len(roster),
+            })
+            return
+
+        diff = [
+            {
+                "sentence_id": after["id"],
+                "index": after["index"],
+                "op": "replace",
+                "before": b,
+                "after": after,
+            }
+            for b, after in changed
+        ]
+        message = f"自动识别发言人（{len(roster)} 人）"
+        nick = storage.get_settings()["identity"]["nick"]
+        version = storage.commit_version(
+            project_id, recording_id, sentences, diff, message=message, author_nick=nick,
+            redactions=storage.get_redactions(project_id, recording_id),
+        )
+        self._send_json({
+            "sentences": sentences,
+            "speakers": roster,
+            "version": version,
+            "current": version["version"],
+            "detected": len(roster),
+        })
+
     def _merge_sentences(self, project_id: str, recording_id: str):
         """手动合并相邻句子：ASR 常按逗号/停顿切句，用户批量勾选后合成一句。"""
         recording = storage.get_recording(project_id, recording_id)
@@ -2599,6 +2675,11 @@ class Handler(BaseHTTPRequestHandler):
             self._resegment_recording(*m)
             return
 
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/speakers/detect$")
+        if m:
+            self._detect_speakers(*m)
+            return
+
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/sentences/merge$")
         if m:
             self._merge_sentences(*m)
@@ -2656,6 +2737,21 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             peers.remove_peer(unquote(m[0]))
             self._send_json({"peers": peers.peers()})
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)$")
+        if m:
+            pid = m[0]
+            if storage.get_project(pid) is None:
+                self._send_json({"error": "project not found"}, status=404)
+                return
+            # 先让这个项目里还在跑的 AI 任务停下，否则线程会在删除后把目录又写回来。
+            with _ai_jobs_lock:
+                for key, job in _ai_jobs.items():
+                    if key.startswith((f"polish:{pid}/", f"resegment:{pid}/")):
+                        job["cancel"] = True
+            storage.delete_project(pid)
+            self._send_json({"status": "deleted"})
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions/([^/]+)$")

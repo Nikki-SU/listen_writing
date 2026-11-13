@@ -311,6 +311,28 @@ export async function deleteRecording(projectId: string, recordingId: string): P
   )
 }
 
+/** 删除整个项目（所有录音与版本一起删除）。 */
+export async function deleteProject(projectId: string): Promise<void> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}`, {
+      method: 'DELETE',
+    }),
+  )
+}
+
+/** 对已有录音重新识别发言人（只跑聚类，不重新转写）。 */
+export async function detectSpeakers(
+  projectId: string,
+  recordingId: string,
+): Promise<{ sentences: Sentence[]; speakers: string[]; current: string; detected: number }> {
+  return json(
+    await fetch(
+      `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/speakers/detect`,
+      { method: 'POST' },
+    ),
+  )
+}
+
 export async function listVersions(
   projectId: string,
   recordingId: string,

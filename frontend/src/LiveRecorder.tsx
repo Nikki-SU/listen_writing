@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import * as api from './api'
+import { speakerColor } from './speakerColors'
 import type { Recording, Sentence } from './types'
 
 const TARGET_RATE = 16000
@@ -217,6 +218,9 @@ export default function LiveRecorder({
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight })
   }, [sentences.length])
 
+  // 不同发言人用不同颜色：按出场顺序分配，与详情页保持同一套配色规则。
+  const speakerOrder = [...new Set(sentences.map((s) => s.speaker).filter(Boolean))] as string[]
+
   return (
     <div
       style={{
@@ -302,8 +306,8 @@ export default function LiveRecorder({
                   <span
                     style={{
                       fontSize: 11,
-                      color: '#245c9c',
-                      background: '#eef5ff',
+                      color: speakerColor(s.speaker, speakerOrder).fg,
+                      background: speakerColor(s.speaker, speakerOrder).bg,
                       borderRadius: 4,
                       padding: '0 5px',
                       height: 18,

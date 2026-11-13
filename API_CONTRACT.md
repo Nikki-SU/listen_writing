@@ -19,6 +19,7 @@
 | U-1 | 后端 | `POST /api/restart` | 无 | `{"status":"restarting"}` | 更新本地文件后重启后端：回包后进程以**退出码 86** 结束，启动器据此重装依赖并重启；不是 86 时启动器正常退出 |
 | P-1 | 后端 | `POST /api/projects` | `{"name":"项目名","description":"说明"}` | `{"project":{...}}` | 创建项目（description 可空） |
 | P-2 | 后端 | `GET /api/projects` | 无 | `{"projects":[{...}]}` | 列出全部项目（按创建倒序） |
+| P-3 | 后端 | `DELETE /api/projects/{project_id}` | 无 | `{"status":"deleted"}` | 删除整个项目（目录下所有录音、音频、转写、历史版本一并删除）；项目不存在 404。删除前会先把该项目里仍在跑的 AI 任务置为取消 |
 | R-1 | 后端 | `POST /api/projects/{project_id}/recordings?name=...&format=...` | **raw 音频字节**（非 JSON）+ **query 参数** `name`（原文件名，UTF-8 百分号编码）、`format`（取值见下方白名单） | `{"recording":{...}}` | 上传录音，落 `audio.{ext}` 后**异步启动转写** |
 | R-3 | 后端 | `GET /api/projects/{project_id}/recordings` | 无 | `{"recordings":[{...}]}` | 列出项目下录音（仅元数据，按创建倒序） |
 | R-2 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}` | 无 | `{"recording":{...},"transcribe":{...},"sentences":[...],"redactions":[...],"speakers":["发言人1"]}` | 录音详情 + 转写状态 + 分句列表 + 脱敏标记 + 发言人花名册；`recording.version` 为当前版本 `{stage,seq,current}`，`recording.asr_model` 为实际用过的转写档位 |
@@ -31,6 +32,7 @@
 | R-10 | 后端 | `POST /api/projects/{project_id}/redaction` | `{"categories":[{id,name,placeholder,color,enabled}…]}` | `{"categories":[...]}` | 保存类别模板（增删/改名/占位符/颜色/启停）；类别名不能为空、id 不能重复 |
 | R-11 | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/redactions` | 无 | `{"marks":[RedactionMark…]}` | 录音的脱敏标记（坐标基于原句文字；另随 R-2 详情返回） |
 | R-12 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/redactions` | `{"marks":[{sentence_id,start,end,category_id}…]}` | `{"marks":[...],"version":{...},"current":"2.1"}` | 新增标记；越界/与已有标记重叠/类别不存在返回 400；首次标记把版本推进到阶段 2 |
+| R-8a | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/speakers/detect` | `{}` | `{"sentences":[...],"speakers":["Speaker 1","Speaker 2"],"version":{...},"current":"0.4","detected":2}` | 对已有录音**重新跑一次本地说话人聚类**（不重新转写）：历史录音没自动分人的可以补上；有变化才提交新版本；只识别出 1 人也可返回（`detected=1`），句子太少/音频丢失 409 |
 | R-13 | 后端 | `DELETE /api/projects/{project_id}/recordings/{recording_id}/redactions/{mark_id}` | 无 | `{"marks":[...],"version":{...},"current":"2.2"}` | 移除标记，同样提交版本留痕 |
 | R-14 | 后端 | `POST /api/projects/{project_id}/recordings/{recording_id}/polish` | `{"model":"可选，缺省取设置里的 llm_model"}` | `202 {"status":"running","processed":0,"total":480,"message":"…","suggestions":[…]}` | AI 语义纠错改为后台任务：**立即返回 202**，前端用 R-14a 轮询。只返回建议、**不改正文**；用户逐条用 R-7（`advance_to=1,source=ai_polish`）采纳。运行时未安装返回 503（正文为可读原因），转写未完成/无句子 409，模型非法 400；同一录音已在跑时重复 POST 返回当前进度（202） |
 | R-14a | 后端 | `GET /api/projects/{project_id}/recordings/{recording_id}/polish` | - | `{"status":"idle\|running\|done\|error\|cancelled","processed":120,"total":480,"message":"已检查 120/480 句…","suggestions":[…],"model":"qwen3-4b","error":""}` | 轮询 AI 纠错进度：每批结束 `suggestions` 追加、`processed` 前进，`done` 后即完整结果。任务在内存中，后端重启后返回 `idle` |

@@ -113,6 +113,15 @@ def get_project(project_id: str) -> dict | None:
     return _read_json(project_dir(project_id) / "project.json")
 
 
+def delete_project(project_id: str) -> bool:
+    """删除整个项目目录（含所有录音、音频、转写与版本）。"""
+    d = project_dir(project_id)
+    if not d.is_dir():
+        return False
+    shutil.rmtree(d)
+    return True
+
+
 # ---------- 录音 ----------
 
 
