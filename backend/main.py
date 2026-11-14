@@ -2000,16 +2000,28 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         total = len(items)
+        # 上一次是「被用户停止」且已经跑过一部分：保留建议并从停下的位置继续，
+        # 不把整篇重算一遍（用户明确要求停止后保留部分结果）。
+        seed: list[dict] = []
+        start = 0
+        decided: set[str] = set()
+        with _ai_jobs_lock:
+            old = _ai_jobs.get(key)
+            if old and old.get("status") == "cancelled" and 0 < int(old.get("processed") or 0) < total:
+                start = int(old["processed"])
+                seed = list(old.get("suggestions") or [])
+                decided = set(old.get("decided") or set())
+        remaining = items[start:]
         job = {
             "status": "running",
-            "processed": 0,
+            "processed": start,
             "total": total,
-            "message": "正在加载模型…",
+            "message": f"从第 {start + 1} 句继续校对…" if start else "正在加载模型…",
             "model": model_key,
             "error": "",
-            "suggestions": [],
+            "suggestions": [s for s in seed if s.get("sentence_id") not in decided],
             "cancel": False,
-            "decided": set(),
+            "decided": decided,
         }
         with _ai_jobs_lock:
             _ai_jobs[key] = job
@@ -2020,22 +2032,27 @@ class Handler(BaseHTTPRequestHandler):
 
         def on_batch(found: list[dict], processed: int) -> None:
             with _ai_jobs_lock:
-                decided = job.get("decided") or set()
-                kept = [s for s in found if s.get("sentence_id") not in decided]
-                job["suggestions"] = kept
-                job["processed"] = processed
-                job["message"] = f"已检查 {processed}/{total} 句，发现 {len(kept)} 条建议"
+                decided_now = job.get("decided") or set()
+                kept_prev = [s for s in seed if s.get("sentence_id") not in decided_now]
+                kept_new = [s for s in found if s.get("sentence_id") not in decided_now]
+                job["suggestions"] = kept_prev + kept_new
+                done = start + processed
+                job["processed"] = done
+                job["message"] = f"已检查 {done}/{total} 句，发现 {len(job['suggestions'])} 条建议"
 
         def run() -> None:
             try:
                 result = llm.polish(
-                    items, model_key, on_status, on_batch,
+                    remaining, model_key, on_status, on_batch,
                     should_stop=lambda: job.get("cancel", False),
                 )
             except llm.Cancelled:
                 with _ai_jobs_lock:
                     job["status"] = "cancelled"
-                    job["message"] = f"已停止，保留已完成的 {len(job.get('suggestions') or [])} 条建议"
+                    job["message"] = (
+                        f"已停止，保留 {len(job.get('suggestions') or [])} 条建议；"
+                        f"再点「AI 纠错」会从第 {job['processed'] + 1} 句继续"
+                    )
                 return
             except Exception as e:  # noqa: BLE001 - 下载/推理失败原因要原样告知用户
                 with _ai_jobs_lock:
@@ -2044,7 +2061,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with _ai_jobs_lock:
                 decided = job.get("decided") or set()
-                job["suggestions"] = [
+                kept_prev = [s for s in seed if s.get("sentence_id") not in decided]
+                job["suggestions"] = kept_prev + [
                     s for s in result if s.get("sentence_id") not in decided
                 ]
                 job["status"] = "done"
@@ -2122,17 +2140,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_ai_job_get(key), status=202)
                 return
             total = len(items)
+            # 停止后再次点「AI 整理断句」：从上次停下的片段继续，已整理好的部分保留。
+            seed: list[dict] = []
+            start = 0
+            with _ai_jobs_lock:
+                old = _ai_jobs.get(key)
+                if old and old.get("status") == "cancelled" and 0 < int(old.get("processed") or 0) < total:
+                    start = int(old["processed"])
+                    seed = list(old.get("sentences") or [])
+            remaining = items[start:]
             job = {
                 "status": "running",
-                "processed": 0,
+                "processed": start,
                 "total": total,
-                "message": "正在加载模型…",
+                "message": f"从第 {start + 1} 个片段继续整理…" if start else "正在加载模型…",
                 "model": model_key,
                 "error": "",
                 "suggestions": [],
-                "sentences": [],
+                "sentences": list(seed),
                 "before": len(sentences),
-                "after": 0,
+                "after": len(seed),
                 "signature": signature,
                 "cancel": False,
             }
@@ -2145,23 +2172,28 @@ class Handler(BaseHTTPRequestHandler):
 
             def on_batch(partial: list[dict], processed: int) -> None:
                 with _ai_jobs_lock:
-                    job["sentences"] = list(partial)
-                    job["processed"] = processed
-                    job["after"] = len(partial)
+                    combined = list(seed) + list(partial)
+                    done = start + processed
+                    job["sentences"] = combined
+                    job["processed"] = done
+                    job["after"] = len(combined)
                     job["message"] = (
-                        f"已整理 {processed}/{total} 个片段，{len(sentences)} 句 → {len(partial)} 句"
+                        f"已整理 {done}/{total} 个片段，{len(sentences)} 句 → {len(combined)} 句"
                     )
 
             def run() -> None:
                 try:
                     result = llm.resegment(
-                        items, model_key, on_status, on_batch,
+                        remaining, model_key, on_status, on_batch,
                         should_stop=lambda: job.get("cancel", False),
                     )
                 except llm.Cancelled:
                     with _ai_jobs_lock:
                         job["status"] = "cancelled"
-                        job["message"] = "已停止整理，下面是已完成的部分"
+                        job["message"] = (
+                            f"已停止，保留已整理的 {job['after']} 句；"
+                            f"再点「AI 整理断句」会从第 {job['processed'] + 1} 个片段继续"
+                        )
                     return
                 except Exception as e:  # noqa: BLE001 - 失败原因原样告知用户
                     with _ai_jobs_lock:
@@ -2169,11 +2201,12 @@ class Handler(BaseHTTPRequestHandler):
                         job["error"] = f"AI 整理断句失败：{e}"
                     return
                 with _ai_jobs_lock:
-                    job["sentences"] = result
+                    final_sentences = list(seed) + list(result)
+                    job["sentences"] = final_sentences
                     job["status"] = "done"
                     job["processed"] = total
-                    job["after"] = len(result)
-                    job["message"] = f"完成，{len(sentences)} 句 → {len(result)} 句"
+                    job["after"] = len(final_sentences)
+                    job["message"] = f"完成，{len(sentences)} 句 → {len(final_sentences)} 句"
 
             threading.Thread(target=run, daemon=True).start()
             self._send_json(_ai_job_get(key), status=202)

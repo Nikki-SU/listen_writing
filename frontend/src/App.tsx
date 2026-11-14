@@ -1045,7 +1045,10 @@ function TranscriptPanel({
       if (job.status === 'error') throw new Error(job.error || 'AI 纠错失败')
       if (job.status === 'cancelled') {
         setPolishStage('')
-        setAiNotice(`已停止 AI 纠错，保留已完成的 ${job.suggestions?.length ?? 0} 条建议`)
+        setAiNotice(
+          `已停止 AI 纠错，保留已完成的 ${job.suggestions?.length ?? 0} 条建议；` +
+            `再点「AI 纠错」会从第 ${job.processed + 1} 句继续。`,
+        )
         onError('')
         return
       }
@@ -1099,7 +1102,10 @@ function TranscriptPanel({
       setResegDone(job.status === 'done')
       setResegStage('')
       if (job.status === 'cancelled') {
-        setAiNotice('已停止整理断句，下面是已完成的部分（不能应用，避免丢掉未处理的句子）')
+        setAiNotice(
+          `已停止整理断句，保留已整理的 ${job.after} 句；` +
+            `再点「AI 整理断句」会从第 ${job.processed + 1} 个片段继续。`,
+        )
       } else {
         setAiNotice('')
       }
@@ -2371,7 +2377,7 @@ function TranscriptPanel({
             </div>
             {!resegmenting && !resegDone && (
               <div style={{ fontSize: 11, color: '#b26b00', marginBottom: 8 }}>
-                任务已停止，下面是已完成的部分；未处理的句子没有出现，不能直接应用。
+                任务已停止，下面是已完成的部分；再点「AI 整理断句」会从断点继续。未处理的句子还没整理，所以暂时不能应用。
               </div>
             )}
             <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
