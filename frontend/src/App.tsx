@@ -20,6 +20,7 @@ import {
   GearIcon,
   HistoryIcon,
   MicIcon,
+  PlayIcon,
   PlusIcon,
   StopIcon,
   TrashIcon,
@@ -833,6 +834,10 @@ function TranscriptPanel({
   const [resegOpen, setResegOpen] = useState(false)
   const [resegDone, setResegDone] = useState(false)
   const [editOrigin, setEditOrigin] = useState<'ai_polish' | null>(null)
+  // 纠错对照里的就地编辑：点铅笔进入反色编辑态，改完再点一次退出，勾勾采纳改后的文字。
+  const [polishEditId, setPolishEditId] = useState<string | null>(null)
+  const [polishDraft, setPolishDraft] = useState('')
+  const [polishEdited, setPolishEdited] = useState<Record<string, string>>({})
   const audioRef = useRef<HTMLAudioElement>(null)
   // 本轮已被用户接受/忽略的建议：轮询回来时过滤掉，避免「点了接受又弹回来」。
   const decidedRef = useRef<Set<string>>(new Set())
@@ -1029,6 +1034,9 @@ function TranscriptPanel({
     setPolishing(true)
     setSuggestions([])
     decidedRef.current = new Set()
+    setPolishEditId(null)
+    setPolishDraft('')
+    setPolishEdited({})
     setPolishStage('正在启动…')
     try {
       let job = await api.polishRecording(projectId, recordingId)
@@ -1142,20 +1150,23 @@ function TranscriptPanel({
     }
   }
 
-  async function acceptSuggestion(item: PolishSuggestion) {
+  // override：用户点铅笔手改后的文字。采纳时用手改版，而不是模型原建议。
+  async function acceptSuggestion(item: PolishSuggestion, override?: string) {
     if (!localSentences.some((s) => s.id === item.sentence_id)) return
+    const after = (override ?? item.after).trim() || item.after
     const snapshot = localSentences
     decidedRef.current.add(item.sentence_id)
     setSuggestions((list) => list.filter((x) => x.sentence_id !== item.sentence_id))
+    clearPolishEdit(item.sentence_id)
     setLocalSentences((list) =>
-      list.map((x) => (x.id === item.sentence_id ? { ...x, text: item.after } : x)),
+      list.map((x) => (x.id === item.sentence_id ? { ...x, text: after } : x)),
     )
     // 先告诉后端这条已处理，避免轮询把它当成新建议重新塞回列表。
     void api
       .dismissPolishSuggestion(projectId, recordingId, item.sentence_id)
       .catch(() => undefined)
     try {
-      const res = await api.updateSentence(projectId, recordingId, item.sentence_id, item.after, undefined, {
+      const res = await api.updateSentence(projectId, recordingId, item.sentence_id, after, undefined, {
         advance_to: 1,
         source: 'ai_polish',
       })
@@ -1169,9 +1180,40 @@ function TranscriptPanel({
     }
   }
 
+  function clearPolishEdit(sentenceId: string) {
+    setPolishEditId((id) => (id === sentenceId ? null : id))
+    setPolishEdited((prev) => {
+      if (!(sentenceId in prev)) return prev
+      const next = { ...prev }
+      delete next[sentenceId]
+      return next
+    })
+  }
+
+  // 点铅笔：进入反色编辑态；再点一次退出并把改动留在 polishEdited 里，等勾勾采纳。
+  function togglePolishEdit(sentenceId: string, current: string) {
+    if (polishEditId === sentenceId) {
+      const text = polishDraft.trim()
+      setPolishEdited((prev) => {
+        if (!text || text === current) {
+          if (!(sentenceId in prev)) return prev
+          const next = { ...prev }
+          delete next[sentenceId]
+          return next
+        }
+        return { ...prev, [sentenceId]: text }
+      })
+      setPolishEditId(null)
+      return
+    }
+    setPolishDraft(polishEdited[sentenceId] ?? current)
+    setPolishEditId(sentenceId)
+  }
+
   function dismissSuggestion(item: PolishSuggestion) {
     decidedRef.current.add(item.sentence_id)
     setSuggestions((list) => list.filter((x) => x.sentence_id !== item.sentence_id))
+    clearPolishEdit(item.sentence_id)
     void api
       .dismissPolishSuggestion(projectId, recordingId, item.sentence_id)
       .catch(() => undefined)
@@ -2122,23 +2164,58 @@ function TranscriptPanel({
               const tone = s.speaker ? speakerColor(s.speaker, speakerOrder) : null
               return (
                 <div key={s.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: '1px solid #f2f4f7', background: sug ? '#f7fdf9' : '#fff' }}>
-                  <div onClick={() => seek(s)} style={{ padding: '7px 10px', borderRight: '1px solid #f2f4f7', cursor: 'pointer' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                      <span style={{ fontSize: 11, color: '#9aa0a6' }}>{s.index + 1}</span>
-                      {tone && (
-                        <span style={{ fontSize: 11, color: tone.fg, background: tone.bg, borderRadius: 4, padding: '0 5px' }}>{s.speaker}</span>
-                      )}
-                      <span style={{ fontSize: 10, color: '#b0b6c0' }}>▶</span>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '7px 10px', borderRight: '1px solid #f2f4f7' }}>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        seek(s, true)
+                      }}
+                      title="只播这一句"
+                      aria-label="只播这一句"
+                      style={{ ...ICON_BTN, width: 24, height: 24, color: '#1d4ed8', background: '#eef4ff', border: '1px solid #dbe6ff', marginTop: 1 }}
+                    >
+                      <PlayIcon size={11} />
+                    </button>
+                    <div onClick={() => seek(s)} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                        <span style={{ fontSize: 11, color: '#9aa0a6' }}>{s.index + 1}</span>
+                        {tone && (
+                          <span style={{ fontSize: 11, color: tone.fg, background: tone.bg, borderRadius: 4, padding: '0 5px' }}>{s.speaker}</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 14, lineHeight: 1.7 }}>{renderText(s)}</div>
                     </div>
-                    <div style={{ fontSize: 14, lineHeight: 1.7 }}>{renderText(s)}</div>
                   </div>
-                  <div style={{ padding: '7px 10px' }}>
+                  <div style={{ padding: '7px 10px', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                     {sug ? (
                       <>
-                        <div style={{ fontSize: 14, color: '#1e7e34', lineHeight: 1.7 }}>{sug.after}</div>
-                        <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                        {polishEditId === s.id ? (
+                          <textarea
+                            autoFocus
+                            value={polishDraft}
+                            onChange={(e) => setPolishDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Escape') {
+                                setPolishEditId(null)
+                                setPolishDraft('')
+                              }
+                              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) togglePolishEdit(s.id, sug.after)
+                            }}
+                            title="直接修改 AI 修正后的这一句；改完再点一次铅笔退出"
+                            style={{ flex: 1, minWidth: 0, minHeight: 46, fontSize: 14, lineHeight: 1.7, padding: '4px 8px', boxSizing: 'border-box', resize: 'vertical', color: '#f8fafc', background: '#1f2937', border: '1px solid #111827', borderRadius: 6, caretColor: '#fff' }}
+                          />
+                        ) : (
+                          <div style={{ flex: 1, minWidth: 0, fontSize: 14, color: '#1e7e34', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
+                            {polishEdited[s.id] ?? sug.after}
+                            {polishEdited[s.id] != null && (
+                              <span style={{ fontSize: 10, color: '#8a8f98', marginLeft: 6 }}>已手改</span>
+                            )}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                           <button
-                            onClick={() => void acceptSuggestion(sug)}
+                            onClick={() => void acceptSuggestion(sug, polishEditId === s.id ? polishDraft : polishEdited[s.id])}
                             title="正确（采纳建议）"
                             style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 24, border: '1px solid #b7dfc2', color: '#1e7e34', background: '#fff', borderRadius: 4, cursor: 'pointer' }}
                           >
@@ -2152,11 +2229,22 @@ function TranscriptPanel({
                             <CrossIcon />
                           </button>
                           <button
-                            onClick={() => startEdit(s, sug.after, 'ai_polish')}
-                            title="自己改"
-                            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 24, color: '#5b6472', background: '#fff', border: '1px solid #dde3ea', borderRadius: 4, cursor: 'pointer' }}
+                            onClick={() => togglePolishEdit(s.id, sug.after)}
+                            title={polishEditId === s.id ? '退出编辑（保留修改）' : '自己改'}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              width: 26,
+                              height: 24,
+                              borderRadius: 4,
+                              cursor: 'pointer',
+                              color: polishEditId === s.id ? '#fff' : '#5b6472',
+                              background: polishEditId === s.id ? '#1f2937' : '#fff',
+                              border: '1px solid ' + (polishEditId === s.id ? '#111827' : '#dde3ea'),
+                            }}
                           >
-                            <EditIcon />
+                            {polishEditId === s.id ? <CheckIcon /> : <EditIcon />}
                           </button>
                         </div>
                       </>
