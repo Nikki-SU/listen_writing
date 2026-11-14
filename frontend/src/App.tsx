@@ -2199,7 +2199,7 @@ function TranscriptPanel({
               const tone = s.speaker ? speakerColor(s.speaker, speakerOrder) : null
               return (
                 <div key={s.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: '1px solid #f2f4f7', background: sug ? '#f7fdf9' : '#fff' }}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '7px 10px', borderRight: '1px solid #f2f4f7' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', borderRight: '1px solid #f2f4f7' }}>
                     <button
                       type="button"
                       onClick={(e) => {
@@ -2212,17 +2212,31 @@ function TranscriptPanel({
                     >
                       <PlayIcon size={11} />
                     </button>
-                    <div onClick={() => seek(s)} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                        <span style={{ fontSize: 11, color: '#9aa0a6' }}>{s.index + 1}</span>
-                        {tone && (
-                          <span style={{ fontSize: 11, color: tone.fg, background: tone.bg, borderRadius: 4, padding: '0 5px' }}>{s.speaker}</span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 14, lineHeight: 1.7 }}>{renderText(s)}</div>
+                    <span style={{ fontSize: 12, color: '#999', flexShrink: 0, paddingTop: 2, fontVariantNumeric: 'tabular-nums' }}>
+                      {fmtMs(s.start_ms)}
+                    </span>
+                    {tone && (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: tone.fg,
+                          background: tone.bg,
+                          border: `1px solid ${tone.border}`,
+                          borderRadius: 4,
+                          padding: '1px 6px',
+                          flexShrink: 0,
+                          whiteSpace: 'nowrap',
+                          marginTop: 2,
+                        }}
+                      >
+                        {s.speaker}
+                      </span>
+                    )}
+                    <div onClick={() => seek(s)} style={{ flex: 1, minWidth: 0, cursor: 'pointer', fontSize: 15, lineHeight: 1.7 }}>
+                      {renderText(s)}
                     </div>
                   </div>
-                  <div style={{ padding: '7px 10px', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <div style={{ padding: '8px 10px', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                     {sug ? (
                       <>
                         {polishEditId === s.id ? (
@@ -2238,10 +2252,10 @@ function TranscriptPanel({
                               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) togglePolishEdit(s.id, sug.after)
                             }}
                             title="直接修改 AI 修正后的这一句；改完再点一次铅笔退出"
-                            style={{ flex: 1, minWidth: 0, minHeight: 46, fontSize: 14, lineHeight: 1.7, padding: '4px 8px', boxSizing: 'border-box', resize: 'vertical', color: '#f8fafc', background: '#1f2937', border: '1px solid #111827', borderRadius: 6, caretColor: '#fff' }}
+                            style={{ flex: 1, minWidth: 0, minHeight: 48, fontSize: 15, lineHeight: 1.7, padding: '4px 8px', boxSizing: 'border-box', resize: 'vertical', color: '#f8fafc', background: '#1f2937', border: '1px solid #111827', borderRadius: 6, caretColor: '#fff' }}
                           />
                         ) : (
-                          <div style={{ flex: 1, minWidth: 0, fontSize: 14, color: '#1e7e34', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
+                          <div style={{ flex: 1, minWidth: 0, fontSize: 15, color: '#1e7e34', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
                             {polishEdited[s.id] ?? sug.after}
                             {polishEdited[s.id] != null && (
                               <span style={{ fontSize: 10, color: '#8a8f98', marginLeft: 6 }}>已手改</span>
