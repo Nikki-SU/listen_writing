@@ -9,7 +9,7 @@ import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { jobFor, useModels } from './useModels'
 import { BOOTSTRAP_FILES } from './bootstrapFiles'
-import { speakerColor } from './speakerColors'
+import { speakerColor, SPEAKER_PALETTE } from './speakerColors'
 import type {
   Project,
   Recording,
@@ -412,24 +412,24 @@ export default function App() {
         </div>
       )}
 
-      <header style={{ flexShrink: 0, textAlign: 'center', padding: '24px 24px 18px', position: 'relative' }}>
-        <div style={{ position: 'absolute', right: 24, top: 20, display: 'flex', gap: 8 }}>
-          <button onClick={() => setSettingsOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
-            设置
-          </button>
-          <button onClick={() => setGuideOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
-            启动设置
-          </button>
-        </div>
-        <h1 style={{ margin: 0, fontSize: 22, letterSpacing: '0.02em' }}>访谈录音台</h1>
+      <header
+        style={{
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '12px 24px 10px',
+          flexWrap: 'wrap',
+        }}
+      >
         <nav
           style={{
             display: 'inline-flex',
             gap: 4,
-            marginTop: 14,
             padding: 3,
             background: '#f2f4f7',
             borderRadius: 8,
+            flexShrink: 0,
           }}
         >
           {(
@@ -443,7 +443,7 @@ export default function App() {
               onClick={() => setView(key)}
               style={{
                 fontSize: 13,
-                padding: '6px 18px',
+                padding: '5px 14px',
                 border: 'none',
                 borderRadius: 6,
                 cursor: 'pointer',
@@ -457,20 +457,19 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <p
-          style={{
-            margin: '8px 0 0',
-            fontSize: 12,
-            color: '#8a8f98',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 6,
-          }}
-        >
+        <h1 style={{ margin: 0, fontSize: 18, letterSpacing: '0.02em' }}>访谈录音台</h1>
+        <span style={{ fontSize: 12, color: '#8a8f98', display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 6, height: 6, borderRadius: 3, background: '#34a853', flexShrink: 0 }} />
           本地后端已连接 · 录音不出本机
-        </p>
+        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button onClick={() => setSettingsOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
+            设置
+          </button>
+          <button onClick={() => setGuideOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
+            启动设置
+          </button>
+        </div>
       </header>
 
       {view === 'collab' ? (
@@ -506,7 +505,7 @@ export default function App() {
       <aside
         style={{
           ...cardStyle,
-          width: 300,
+          width: 260,
           flexShrink: 0,
           display: 'flex',
           flexDirection: 'column',
@@ -2086,51 +2085,6 @@ function TranscriptPanel({
           </div>
         )}
 
-        {reviewMode === 'polish' ? (
-          <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid #dce6f2', borderRadius: 8, background: '#fff' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #f0f0f0', position: 'sticky', top: 0, background: '#f8fbff', zIndex: 1 }}>
-              <span style={{ fontSize: 12, color: '#245c9c', fontWeight: 600 }}>AI 纠错 · 逐句对照</span>
-              <span style={{ fontSize: 11, color: '#7a869a' }}>
-                {polishing ? `已出 ${suggestions.length} 条 · ${polishStage || '处理中…'}` : `共 ${suggestions.length} 条`}
-              </span>
-              {polishing && (
-                <button onClick={() => void stopPolish()} style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', color: '#b00020' }}>停止</button>
-              )}
-              <button onClick={() => setPolishOpen(false)} style={{ marginLeft: polishing ? 0 : 'auto', fontSize: 11, padding: '2px 8px' }}>关闭</button>
-            </div>
-            {suggestions.length === 0 ? (
-              <div style={{ padding: 24, fontSize: 12, color: '#6b7280', textAlign: 'center' }}>
-                {polishing ? '正在分析，第一条建议出来后会显示在这里…' : '未发现需要修改的句子。'}
-              </div>
-            ) : (
-              suggestions.map((item) => {
-                const target = localSentences.find((s) => s.id === item.sentence_id)
-                return (
-                  <div key={item.sentence_id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, padding: '10px 12px', borderBottom: '1px solid #f0f0f0' }}>
-                    <div>
-                      <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 4 }}>
-                        原文 · 第 {item.index + 1} 句
-                        {target && (
-                          <button onClick={() => seek(target)} style={{ marginLeft: 6, fontSize: 10, padding: '0 6px' }}>▶ 播放</button>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 13.5, lineHeight: 1.75, color: '#8a3b3b', textDecoration: 'line-through' }}>{item.before}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: '#1e7e34', marginBottom: 4 }}>AI 建议</div>
-                      <div style={{ fontSize: 13.5, lineHeight: 1.75, color: '#1e7e34' }}>{item.after}</div>
-                      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                        <button onClick={() => void acceptSuggestion(item)} style={{ fontSize: 12, padding: '2px 12px', border: '1px solid #b7dfc2', color: '#1e7e34', borderRadius: 4 }}>正确</button>
-                        <button onClick={() => dismissSuggestion(item)} style={{ fontSize: 12, padding: '2px 12px', border: '1px solid #f0c9cc', color: '#b00020', borderRadius: 4 }}>错误</button>
-                        <button onClick={() => target && startEdit(target, item.after, 'ai_polish')} disabled={!target} style={{ fontSize: 12, padding: '2px 12px', borderRadius: 4 }}>自己改</button>
-                      </div>
-                    </div>
-                  </div>
-                )
-              })
-            )}
-          </div>
-        ) : (
         <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
         <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minWidth: 0, minHeight: 0 }}>
           {localSentences.map((s) => {
@@ -2276,8 +2230,54 @@ function TranscriptPanel({
           })}
         </ul>
 
+        {reviewMode === 'polish' && (
+          <aside style={{ flex: '1 1 0', minWidth: 240, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <h3 style={{ fontSize: 13, margin: '0 0 6px', flex: 1 }}>AI 纠错</h3>
+              <span style={{ fontSize: 11, color: '#7a869a' }}>
+                {polishing ? `已出 ${suggestions.length} 条` : `共 ${suggestions.length} 条`}
+              </span>
+              {polishing && (
+                <button onClick={() => void stopPolish()} style={{ fontSize: 11, padding: '2px 8px', color: '#b00020' }}>停止</button>
+              )}
+              <button onClick={() => setPolishOpen(false)} style={{ fontSize: 11, padding: '2px 8px' }}>关闭</button>
+            </div>
+            <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 8 }}>
+              {polishing ? polishStage || '正在分析，右侧会逐条出现建议…' : '点「正确」采纳建议，点「错误」保留原文。'}
+            </div>
+            <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+              {suggestions.length === 0 ? (
+                <div style={{ fontSize: 12, color: '#9aa0a6', marginTop: 18, textAlign: 'center' }}>
+                  {polishing ? '正在分析…' : '未发现需要修改的句子。'}
+                </div>
+              ) : (
+                suggestions.map((item) => {
+                  const target = localSentences.find((s) => s.id === item.sentence_id)
+                  return (
+                    <div key={item.sentence_id} style={{ border: '1px solid #e6ecf5', background: '#fff', borderRadius: 8, padding: 8, marginBottom: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                        <span style={{ fontSize: 11, color: '#8a94a6' }}>第 {item.index + 1} 句</span>
+                        {target && (
+                          <button onClick={() => seek(target)} style={{ fontSize: 10, padding: '0 6px' }}>▶ 播放</button>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#b0b6c0', textDecoration: 'line-through', lineHeight: 1.7 }}>{item.before}</div>
+                      <div style={{ fontSize: 13, color: '#1e7e34', lineHeight: 1.7, margin: '4px 0 6px' }}>{item.after}</div>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button onClick={() => void acceptSuggestion(item)} style={{ fontSize: 12, padding: '2px 12px', border: '1px solid #b7dfc2', color: '#1e7e34', borderRadius: 4 }}>正确</button>
+                        <button onClick={() => dismissSuggestion(item)} style={{ fontSize: 12, padding: '2px 12px', border: '1px solid #f0c9cc', color: '#b00020', borderRadius: 4 }}>错误</button>
+                        <button onClick={() => target && startEdit(target, item.after, 'ai_polish')} disabled={!target} style={{ fontSize: 12, padding: '2px 12px', borderRadius: 4 }}>自己改</button>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </aside>
+        )}
+
         {reviewMode === 'merge' && (
-          <aside style={{ width: '44%', minWidth: 280, flexShrink: 0, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <aside style={{ flex: '1 1 0', minWidth: 240, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <h3 style={{ fontSize: 13, margin: '0 0 6px' }}>合并预览（{mergeableGroups.length} 组）</h3>
             <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 8 }}>
               左边涂色 → 这里显示每组框住的句子和合并后的内容；点「合并全部」才写入新版本。
@@ -2293,9 +2293,10 @@ function TranscriptPanel({
                     .map((id) => localSentences.find((x) => x.id === id))
                     .filter((x): x is Sentence => Boolean(x))
                   const chars = items.reduce((n, x) => n + x.text.length, 0)
+                  const tone = SPEAKER_PALETTE[gi % SPEAKER_PALETTE.length]
                   return (
-                    <div key={gi} style={{ border: '1px solid #d6e4ff', background: '#f8fbff', borderRadius: 8, padding: 10, marginBottom: 8 }}>
-                      <div style={{ fontSize: 11, color: '#1a73e8', marginBottom: 6 }}>
+                    <div key={gi} style={{ border: `1px solid ${tone.border}`, background: tone.bg, borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, color: tone.fg, marginBottom: 6 }}>
                         第 {(items[0]?.index ?? 0) + 1}–{(items[items.length - 1]?.index ?? 0) + 1} 句 · {items.length} 句合一
                       </div>
                       {items.map((x) => (
@@ -2318,7 +2319,7 @@ function TranscriptPanel({
         )}
 
         {reviewMode === 'resegment' && resegPreview && (
-          <aside style={{ width: '44%', minWidth: 280, flexShrink: 0, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <aside style={{ flex: '1 1 0', minWidth: 240, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
               <h3 style={{ fontSize: 13, margin: '0 0 6px', flex: 1 }}>AI 整理断句预览</h3>
               <span style={{ fontSize: 11, color: resegPreview.after < resegPreview.before ? '#1e7e34' : '#7a869a' }}>
@@ -2335,14 +2336,15 @@ function TranscriptPanel({
               </div>
             )}
             <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-              {resegPreview.sentences.map((s) => {
+              {resegPreview.sentences.map((s, idx) => {
                 const srcIds = s.source_ids ?? [s.id]
                 const sources = srcIds
                   .map((id) => localSentences.find((x) => x.id === id))
                   .filter((x): x is Sentence => Boolean(x))
                 const merged = srcIds.length > 1
+                const tone = SPEAKER_PALETTE[idx % SPEAKER_PALETTE.length]
                 return (
-                  <div key={s.id} style={{ border: '1px solid #e6ecf5', borderRadius: 8, padding: 8, marginBottom: 8, background: merged ? '#f8fbff' : '#fff' }}>
+                  <div key={s.id} style={{ border: `1px solid ${merged ? tone.border : '#e6ecf5'}`, borderRadius: 8, padding: 8, marginBottom: 8, background: merged ? tone.bg : '#fff' }}>
                     {merged && (
                       <div style={{ marginBottom: 6 }}>
                         <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 3 }}>
@@ -2395,7 +2397,6 @@ function TranscriptPanel({
           </aside>
         )}
         </div>
-        )}
       </div>
 
       {showHistory && !reviewMode && (

@@ -78,6 +78,8 @@ export default function CollabPanel({
   const [newMode, setNewMode] = useState<'authoritative' | 'replica'>('authoritative')
   const [joinCode, setJoinCode] = useState('')
   const [joinRole, setJoinRole] = useState<'reader' | 'reviewer'>('reader')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [joinOpen, setJoinOpen] = useState(false)
 
   const [members, setMembers] = useState<CollabMember[]>([])
   const [roles, setRoles] = useState<Record<string, CollabRole>>({})
@@ -277,7 +279,7 @@ export default function CollabPanel({
 
   async function onCreate() {
     if (!identity.nick.trim()) {
-      setError('先在上面设置你的代号（昵称），再创建共享任务')
+      setError('先在「设置」里设置你的代号（昵称），再创建共享任务')
       return
     }
     await run(async () => {
@@ -289,7 +291,7 @@ export default function CollabPanel({
 
   async function onJoin() {
     if (!identity.nick.trim()) {
-      setError('先在上面设置你的代号（昵称），再加入共享任务')
+      setError('先在「设置」里设置你的代号（昵称），再加入共享任务')
       return
     }
     await run(async () => {
@@ -491,7 +493,7 @@ export default function CollabPanel({
     <div
       style={
         embedded
-          ? { display: 'flex', flex: 1, minHeight: 0, width: '100%' }
+          ? { display: 'flex', gap: 20, width: '100%', height: '100%', minHeight: 0 }
           : {
               position: 'fixed',
               inset: 0,
@@ -513,15 +515,12 @@ export default function CollabPanel({
         style={
           embedded
             ? {
-                background: '#fff',
-                border: '1px solid #eceef1',
-                borderRadius: 12,
-                width: '100%',
                 flex: 1,
+                width: '100%',
+                minWidth: 0,
                 minHeight: 0,
-                overflow: 'auto',
-                padding: 20,
-                boxSizing: 'border-box',
+                display: 'flex',
+                flexDirection: 'column',
               }
             : {
                 background: '#fff',
@@ -532,58 +531,136 @@ export default function CollabPanel({
                 boxShadow: '0 18px 60px rgba(0,0,0,.22)',
                 padding: 18,
                 boxSizing: 'border-box',
+                display: 'flex',
+                flexDirection: 'column',
               }
         }
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 17 }}>共享任务</h2>
-          <span style={{ fontSize: 11, color: '#8a8f98' }}>
-            一个配对码 = 一个共享任务（昵称 / 个人码在「设置」里修改）
-          </span>
-          {!embedded && (
+        {!embedded && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <h2 style={{ margin: 0, fontSize: 17 }}>共享任务</h2>
+            <span style={{ fontSize: 11, color: '#8a8f98' }}>
+              一个配对码 = 一个共享任务（昵称 / 个人码在「设置」里修改）
+            </span>
             <button onClick={onClose} style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}>
               关闭
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
         {error && <div style={{ color: '#b00020', fontSize: 12, marginBottom: 8 }}>{error}</div>}
         {notice && <div style={{ color: '#1e7e34', fontSize: 12, marginBottom: 8 }}>{notice}</div>}
 
-        {!selected ? (
-          <div style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <section
-              style={{
-                flex: '1 1 100%',
-                border: '1px dashed #d9e2ec',
-                borderRadius: 10,
-                background: '#fbfcfe',
-                padding: '8px 12px',
-                fontSize: 12,
-                color: '#6b7280',
-              }}
-            >
-              昵称与个人码已移到「设置」里：改完回到共享任务即可，不用在这里重复设一次。
-            </section>
+        <div style={{ display: 'flex', gap: 20, width: '100%', flex: 1, minHeight: 0 }}>
+          <aside
+            style={{
+              width: 260,
+              flexShrink: 0,
+              background: '#fff',
+              border: '1px solid #e8ebf0',
+              borderRadius: 12,
+              padding: 14,
+              display: 'flex',
+              flexDirection: 'column',
+              minHeight: 0,
+              overflow: 'hidden',
+              boxSizing: 'border-box',
+            }}
+          >
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+              <button
+                onClick={() => {
+                  setJoinOpen(false)
+                  setCreateOpen((v) => !v)
+                }}
+                style={{ flex: 1, fontSize: 12, padding: '5px 8px' }}
+              >
+                ＋ 新建
+              </button>
+              <button
+                onClick={() => {
+                  setCreateOpen(false)
+                  setJoinOpen((v) => !v)
+                }}
+                style={{ flex: 1, fontSize: 12, padding: '5px 8px' }}
+              >
+                加入
+              </button>
+            </div>
 
-            <section style={{ flex: '1 1 320px', minWidth: 280 }}>
-              <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>我的共享任务</h3>
+            {createOpen && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+                <input
+                  autoFocus
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="共享任务名称（如：XX 乡村访谈）"
+                  style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
+                />
+                <select
+                  value={newMode}
+                  onChange={(e) => setNewMode(e.target.value as 'authoritative' | 'replica')}
+                  style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
+                >
+                  <option value="authoritative">无副本（群主权威，只读播放）</option>
+                  <option value="replica">有副本（节点提交与三方合并）</option>
+                </select>
+                <button
+                  disabled={busy || !newName.trim()}
+                  onClick={() => void onCreate()}
+                  style={{ fontSize: 12, padding: '4px 12px' }}
+                >
+                  创建共享任务
+                </button>
+              </div>
+            )}
+
+            {joinOpen && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+                <input
+                  autoFocus
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="6 位配对码（由群主发给你）"
+                  style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
+                />
+                <select
+                  value={joinRole}
+                  onChange={(e) => setJoinRole(e.target.value as 'reader' | 'reviewer')}
+                  style={{ width: '100%', boxSizing: 'border-box', fontSize: 12 }}
+                >
+                  <option value="reader">只读</option>
+                  <option value="reviewer">审查者（仅看版本 2 之后）</option>
+                </select>
+                <button
+                  disabled={busy || joinCode.length !== 6}
+                  onClick={() => void onJoin()}
+                  style={{ fontSize: 12, padding: '4px 12px' }}
+                >
+                  加入共享任务
+                </button>
+              </div>
+            )}
+
+            <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {groups.length === 0 && <div style={{ fontSize: 12, color: '#999' }}>还没有共享任务，先建一个或输入配对码加入。</div>}
+                {groups.length === 0 && (
+                  <div style={{ fontSize: 12, color: '#999' }}>还没有共享任务，先建一个或输入配对码加入。</div>
+                )}
                 {groups.map((g) => (
                   <button
                     key={g.id}
                     onClick={() => void selectGroup(g.id)}
                     style={{
                       textAlign: 'left',
-                      border: '1px solid #e2e6ec',
+                      border: `1px solid ${selected?.id === g.id ? '#c7d7f2' : '#e2e6ec'}`,
                       borderRadius: 8,
-                      background: '#fbfcfe',
+                      background: selected?.id === g.id ? '#e8f0fe' : '#fbfcfe',
                       padding: '8px 10px',
                       cursor: 'pointer',
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 13, fontWeight: 600 }}>{g.name}</span>
                       <span style={{ fontSize: 11, color: '#8a8f98' }}>
                         {g.mode === 'replica' ? '有副本' : '无副本'} · {g.my_role_name}
@@ -597,55 +674,97 @@ export default function CollabPanel({
                   </button>
                 ))}
               </div>
-            </section>
 
-            <section style={{ flex: '1 1 240px', minWidth: 220 }}>
-              <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>新建共享任务</h3>
-              <input
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="共享任务名称（如：XX 乡村访谈）"
-                style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
-              />
-              <select
-                value={newMode}
-                onChange={(e) => setNewMode(e.target.value as 'authoritative' | 'replica')}
-                style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
-              >
-                <option value="authoritative">无副本（群主权威，只读播放）</option>
-                <option value="replica">有副本（节点提交与三方合并）</option>
-              </select>
-              <button disabled={busy || !newName.trim()} onClick={() => void onCreate()} style={{ fontSize: 12, padding: '4px 12px' }}>
-                创建
-              </button>
+              {selected && (
+                <div style={{ marginTop: 14, borderTop: '1px solid #f0f2f5', paddingTop: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: '#8a8f98', marginBottom: 6 }}>材料</div>
+                  {has('material') && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                      <select
+                        value={addProject}
+                        onChange={(e) => void onProjectChange(e.target.value)}
+                        style={{ width: '100%', boxSizing: 'border-box', fontSize: 11 }}
+                      >
+                        <option value="">选择项目</option>
+                        {projects.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={addRecording}
+                        onChange={(e) => setAddRecording(e.target.value)}
+                        style={{ width: '100%', boxSizing: 'border-box', fontSize: 11 }}
+                      >
+                        <option value="">选择录音</option>
+                        {recordings.map((r) => (
+                          <option key={r.id} value={r.id}>{r.name}</option>
+                        ))}
+                      </select>
+                      <button
+                        disabled={busy || !addRecording}
+                        onClick={() => void onAddMaterial()}
+                        style={{ fontSize: 11, padding: '3px 10px' }}
+                      >
+                        灌入当前版本
+                      </button>
+                      <span style={{ fontSize: 10, color: '#8a8f98' }}>
+                        材料是快照；之后原录音再改不会自动同步。
+                      </span>
+                    </div>
+                  )}
+                  {materials.length === 0 ? (
+                    <div style={{ fontSize: 12, color: '#999' }}>这个共享任务还没有材料。</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {materials.map((m) => (
+                        <button
+                          key={m.id}
+                          onClick={() => void openMaterial(m.id)}
+                          style={{
+                            textAlign: 'left',
+                            border: `1px solid ${materialView?.material.id === m.id ? '#c7d7f2' : '#e2e6ec'}`,
+                            borderRadius: 8,
+                            background: materialView?.material.id === m.id ? '#e8f0fe' : '#fbfcfe',
+                            padding: '7px 9px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <div style={{ fontSize: 12, fontWeight: 600 }}>{m.name}</div>
+                          <div style={{ fontSize: 10, color: '#8a8f98', marginTop: 2 }}>
+                            版本 {m.version} · 阶段 {m.stage} · {m.sentence_count} 句
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </aside>
 
-              <h3 style={{ fontSize: 13, margin: '16px 0 8px' }}>用配对码加入</h3>
-              <input
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                placeholder="6 位配对码（由群主发给你）"
-                style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
-              />
-              <select
-                value={joinRole}
-                onChange={(e) => setJoinRole(e.target.value as 'reader' | 'reviewer')}
-                style={{ width: '100%', boxSizing: 'border-box', marginBottom: 6 }}
-              >
-                <option value="reader">只读</option>
-                <option value="reviewer">审查者（仅看版本 2 之后）</option>
-              </select>
-              <button disabled={busy || joinCode.length !== 6} onClick={() => void onJoin()} style={{ fontSize: 12, padding: '4px 12px' }}>
-                加入
-              </button>
-            </section>
-          </div>
-        ) : (
-          <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-              <button onClick={() => { setSelected(null); setMaterialView(null) }} style={{ fontSize: 12, padding: '3px 10px' }}>
-                ← 共享任务
-              </button>
-              <span style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</span>
+          <section
+            style={{
+              flex: 1,
+              minWidth: 0,
+              background: '#fff',
+              border: '1px solid #e8ebf0',
+              borderRadius: 12,
+              padding: 14,
+              display: 'flex',
+              flexDirection: 'column',
+              minHeight: 0,
+              overflow: 'hidden',
+              boxSizing: 'border-box',
+            }}
+          >
+            {!selected ? (
+              <div style={{ margin: 'auto', fontSize: 13, color: '#8a8f98', textAlign: 'center' }}>
+                从左边选择一个共享任务，或新建/加入一个。
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <span style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</span>
               <span style={{ fontSize: 11, color: '#8a8f98' }}>
                 {selected.mode === 'replica' ? '有副本' : '无副本'} · 我是 {selected.my_role ? roles[selected.my_role]?.name || selected.my_role : ''}
               </span>
@@ -690,60 +809,11 @@ export default function CollabPanel({
               ))}
             </div>
 
+            <div className="scroll-hidden" style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
             {/* ---- 材料 ---- */}
-                        {/* ---- 材料：左边列表，右边详情/播放 ---- */}
             {tab === 'material' && (
-              <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-                <div style={{ width: 310, flexShrink: 0 }}>
-
-          <div>
-          {has('material') && (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
-              <select value={addProject} onChange={(e) => void onProjectChange(e.target.value)} style={{ fontSize: 12 }}>
-                <option value="">选择项目</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-              <select value={addRecording} onChange={(e) => setAddRecording(e.target.value)} style={{ fontSize: 12 }}>
-                <option value="">选择录音</option>
-                {recordings.map((r) => (
-                  <option key={r.id} value={r.id}>{r.name}</option>
-                ))}
-              </select>
-              <button
-                disabled={busy || !addRecording}
-                onClick={() => void onAddMaterial()}
-                style={{ fontSize: 12, padding: '3px 10px' }}
-              >
-                灌入当前版本
-              </button>
-              <span style={{ fontSize: 11, color: '#8a8f98' }}>材料是快照；之后原录音再改不会自动同步。</span>
-            </div>
-          )}
-          {materials.length === 0 ? (
-            <div style={{ fontSize: 12, color: '#999' }}>这个共享任务还没有材料。</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {materials.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => void openMaterial(m.id)}
-                  style={{ textAlign: 'left', border: '1px solid #e2e6ec', borderRadius: 8, background: '#fbfcfe', padding: '8px 10px', cursor: 'pointer' }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{m.name}</div>
-                  <div style={{ fontSize: 11, color: '#8a8f98', marginTop: 2 }}>
-                    版本 {m.version} · 阶段 {m.stage} · {m.sentence_count} 句 · {m.added_by} 灌入于 {fmtTime(m.added_at)}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-          </div>
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  {materialView ? (
-                    <>
+              materialView ? (
+                <>
 
               <div
                 onCopy={(e) => {
@@ -752,7 +822,6 @@ export default function CollabPanel({
                 style={{ position: 'relative', userSelect: materialView.review_mode ? 'none' : 'auto' }}
               >
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
-                  <button onClick={() => setMaterialView(null)} style={{ fontSize: 12, padding: '3px 10px' }}>← 材料列表</button>
                   <span style={{ fontSize: 13, fontWeight: 600 }}>{materialView.material.name}</span>
                   <span style={{ fontSize: 11, color: '#8a8f98' }}>
                     版本 {materialView.material.version} · 阶段 {materialView.material.stage} · {materialView.material.sentences.length} 句
@@ -999,12 +1068,10 @@ export default function CollabPanel({
                   )}
                 </div>
               </div>
-                    </>
-                  ) : (
-                    <div style={{ fontSize: 12, color: '#999' }}>选择左边一条材料查看转写与播放。</div>
-                  )}
-                </div>
-              </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: '#999' }}>从左边选择一条材料查看转写与播放。</div>
+              )
             )}
 
             {/* ---- 成员与权限 ---- */}
@@ -1342,7 +1409,7 @@ export default function CollabPanel({
                 >
                   我的个人码：<strong>{identity.device_code || '未设置'}</strong> · 我的代号：<strong>{identity.nick || '未设置'}</strong>
                   <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-                    还没设好？回到「共享任务」首页，在“我的身份”里改。
+                    还没设好？在「设置」里改昵称与个人码。
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
@@ -1394,8 +1461,11 @@ export default function CollabPanel({
                 </details>
               </div>
             )}
-          </>
-        )}
+            </div>
+              </>
+            )}
+          </section>
+        </div>
       </div>
     </div>
   )
