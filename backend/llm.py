@@ -526,15 +526,17 @@ def redact(
 
 
 _RESEGMENT_SYSTEM = (
-    "你是中文访谈转写稿的断句编辑。语音识别按停顿切出的碎片经常半句一断。"
-    "请只把确实属于同一句话的连续碎片合并；一条碎片如果已经是完整句子（尤其是已带句号、问号、"
-    "感叹号，或本身语义完整），就让它单独成句，不要为了凑长句硬并。"
+    "你是中文访谈转写稿的断句编辑。输入是按说话停顿切开的碎片，一个碎片往往只是半句话。"
+    "任务：把属于同一句话的连续碎片合并成完整句子；最终每一条都必须能独立成句，"
+    "以句号/问号/感叹号结尾，绝不能把逗号留在句末。"
+    "判断边界看语义与标点：碎片已带句末标点、语义明显完整、或说话人/停顿明显切换时才另起一句；"
+    "否则继续往下合并，不要保留「一个碎片就是一句」的原始切分。"
+    "每条 10–60 字为宜，超过约 80 字必须断开；不要跨发言人合并。"
+    "原文的语气词（嗯、呃、啊、那个）与重复一律保留，不改写、不删词、不增加原文没有的信息。"
     '只输出一个 JSON 数组，元素形如 {"ids": ["id1", "id2"], "text": "合并后的完整句子"}；'
     "从第一组到最后一组必须按输入顺序覆盖所有 id，每个 id 恰好出现一次，不能漏句、不能改顺序；"
-    "每组一般 1–4 条碎片，合并后不要超过约 60 字；"
-    "text 只做断句、补标点、去掉单独成片的语气词（呃、嗯、那个），不增加原文没有的信息，不改写事实。"
-    "示例：输入 a\\t呃那个 / b\\t我们明天 / c\\t早上九点开会 / d\\t你觉得呢 / e\\t可以"
-    '输出 [{"ids":["a","b","c"],"text":"我们明天早上九点开会。"},{"ids":["d","e"],"text":"你觉得呢？可以。"}]'
+    '示例：输入 a\\t呃那个 / b\\t我们明天 / c\\t早上九点开会 / d\\t你觉得呢 / e\\t可以'
+    '输出 [{"ids":["a","b","c"],"text":"呃那个，我们明天早上九点开会。"},{"ids":["d","e"],"text":"你觉得呢？可以。"}]'
     "不要输出解释，也不要包代码块。 /no_think"
 )
 
@@ -551,10 +553,6 @@ def _norm_text(text: str) -> str:
     """只保留文字与数字，用于校验 AI 没有增删事实。"""
     return re.sub(r"[\s\W_]+", "", text or "")
 
-
-# 整条碎片只是语气词时，允许 AI 在合并结果里丢掉它（如「呃那个」）。
-# 只认这类独立成片的词，不碰句中的「这个/那个」，避免误删指代。
-_FILLER_ONLY = re.compile(r"^(?:呃|额|嗯|啊|哦|噢|欸|诶|那个)+$")
 
 _PUNCT_RE = re.compile(r"[，。！？；：、,.!?;:]")
 # 已经带句末标点的碎片就是一句完整的话，绝不能再和下一句合并。
@@ -591,13 +589,11 @@ def join_sentences(parts: list[str]) -> str:
 
 
 def _merge_group(group: list[dict], text: str) -> dict:
-    content = [s for s in group if not _FILLER_ONLY.match(_norm_text(str(s.get("text") or "")))]
-    source = content or group
-    base = join_sentences([str(s.get("text") or "") for s in source])
+    base = join_sentences([str(s.get("text") or "") for s in group])
     candidate = (text or "").strip()
-    # 只接受“只动标点/空格/语气词”的改写；一旦与原文实体不一致就退回逐字拼接，
-    # 宁可句子不好读，也不能让 AI 悄悄改掉访谈内容。退回时用去掉语气词的 base，
-    # 避免「呃那个」这类独立语气词一直粘在句首。
+    # 只接受“只动标点”的改写；一旦与原文实体不一致就退回逐字拼接，
+    # 宁可句子不好读，也不能让 AI 悄悄改掉访谈内容。
+    # 语气词是访谈数据，即使整条碎片只是「呃那个」也保留，不做清理。
     merged_text = candidate if candidate and _norm_text(candidate) == _norm_text(base) else base
     if merged_text and merged_text[-1] in "，、；：,;:":
         merged_text = merged_text[:-1].rstrip()
@@ -662,13 +658,9 @@ def _rule_groups(items: list[dict]) -> list[list[dict]]:
     return groups
 
 
-def merge_fragments(sentences: list[dict]) -> list[dict]:
-    """规则版断句整理：只合并不改写，输出句数一定不会比输入多。"""
-    items = [s for s in sentences if str(s.get("text") or "").strip()]
-    result = [_merge_group(group, "") for group in _rule_groups(items)]
-    for i, s in enumerate(result):
-        s["index"] = i
-    return result
+def _rule_merge_run(run: list[dict]) -> list[dict]:
+    """把一段没被模型合并的碎片按停顿/长度规则并成句子。"""
+    return [_merge_group(group, "") for group in _rule_groups(run)]
 
 
 def resegment(
@@ -682,6 +674,8 @@ def resegment(
 
     服务端校验每个 id 恰好用一次且顺序不变；模型只提议分组与标点，
     文字内容仍以原文为准，避免长文整理时悄悄改写事实。
+    模型只肯给「一个碎片一组」时视为没合并，剩下的碎片按停顿/长度规则继续并，
+    保证最终每句都以句末标点结束（不会把逗号留在句尾）。
     `on_batch(已整理的句子, 已处理片段数)` 每批回调，供接口边跑边吐预览。
     """
     if not runtime_available():
@@ -716,16 +710,16 @@ def resegment(
             cursor = 0
             for g in groups:
                 ids = [str(x) for x in (g.get("ids") or []) if str(x) in pos]
-                # 只接受从当前游标开始的连续片段，乱序/漏 id 的分组一律跳过；
-                # 超过 8 条的分组视为模型“整段硬并”，同样跳过，保留原碎片。
+                # 只接受连续片段；超过 8 条的分组视为模型“整段硬并”，跳过。
                 if not ids or len(ids) > 8:
+                    continue
+                # 单碎片分组等于「没合并」：不直接采用，交给规则合并，
+                # 否则模型逐句返回原样时，界面看起来和整理前完全一样。
+                if len(ids) == 1:
                     continue
                 first = pos[ids[0]]
                 if first < cursor:
                     continue
-                while cursor < first:
-                    result.append({**batch[cursor], "source_ids": [batch[cursor]["id"]]})
-                    cursor += 1
                 valid = True
                 for offset, sid in enumerate(ids):
                     if pos[sid] != first + offset:
@@ -745,27 +739,59 @@ def resegment(
                     text = ""  # 模型给的 text 覆盖了被截掉的句子，只能退回逐字拼接
                 else:
                     text = str(g.get("text") or "")
+
+                # 模型这一组若仍以逗号/无标点收尾，说明还是半句：继续向后吃碎片，
+                # 直到遇到句末标点（或停顿/长度/发言人边界），不能把半句硬封成句号。
+                guess = (text or join_sentences([str(s.get("text") or "") for s in group])).strip()
+                if not _STRONG_END.search(guess):
+                    chars = len(_norm_text(guess))
+                    while first + len(group) < len(batch):
+                        nxt = batch[first + len(group)]
+                        prev = group[-1]
+                        gap = int(nxt.get("start_ms") or 0) - int(prev.get("end_ms") or 0)
+                        span = int(nxt.get("end_ms") or 0) - int(group[0].get("start_ms") or 0)
+                        speaker_changed = (
+                            bool(nxt.get("speaker"))
+                            and bool(prev.get("speaker"))
+                            and nxt["speaker"] != prev["speaker"]
+                        )
+                        add = len(_norm_text(str(nxt.get("text") or "")))
+                        if (
+                            gap > _RULE_MAX_GAP_MS
+                            or span > _RULE_MAX_SPAN_MS
+                            or chars + add > 60
+                            or speaker_changed
+                        ):
+                            break
+                        group.append(nxt)
+                        chars += add
+                        text = ""
+                        if _STRONG_END.search(str(nxt.get("text") or "").strip()):
+                            break
+
+                # 模型分组之前没覆盖的碎片：按停顿/长度规则合并。
+                # 若最后一段还是半句（末尾没有句末标点），把它接到本组前面，
+                # 避免在同一句话中间硬断成「……，」+「下一句。」。
+                consumed = len(group)
+                if first > cursor:
+                    rule_groups = _rule_groups(batch[cursor:first])
+                    tail: list[dict] = []
+                    if rule_groups and not _STRONG_END.search(
+                        str(rule_groups[-1][-1].get("text") or "").strip()
+                    ):
+                        tail = rule_groups.pop()
+                    for rg in rule_groups:
+                        result.append(_merge_group(rg, ""))
+                    if tail:
+                        group = tail + group
+                        text = ""
                 result.append(_merge_group(group, text))
-                cursor = first + len(group)
-            while cursor < len(batch):
-                result.append({**batch[cursor], "source_ids": [batch[cursor]["id"]]})
-                cursor += 1
+                cursor = first + consumed
+            if cursor < len(batch):
+                result.extend(_rule_merge_run(batch[cursor:]))
             if on_batch:
                 partial = [{**s, "index": i} for i, s in enumerate(result)]
                 on_batch(partial, min(start + len(batch), len(items)))
-
-    if len(result) >= len(items):
-        # 模型一条都没合并：长稿上这等于「整理前后一模一样」，界面看起来像坏了。
-        # 换用确定性的标点/停顿规则，保证输出确实更少、更长。
-        fallback = merge_fragments(items)
-        if len(fallback) < len(result):
-            if on_status:
-                on_status(
-                    f"模型没有给出可用的合并，已按标点与停顿规则整理：{len(items)} 句 → {len(fallback)} 句"
-                )
-            result = fallback
-            if on_batch:
-                on_batch(result, len(items))
 
     for i, s in enumerate(result):
         s["index"] = i
