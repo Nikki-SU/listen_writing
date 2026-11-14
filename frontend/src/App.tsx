@@ -38,9 +38,9 @@ type UpdateState = 'idle' | UpdatePhase
 const cardStyle = {
   background: '#fff',
   border: '1px solid #eceef1',
-  borderRadius: 12,
-  padding: 20,
-  boxShadow: '0 1px 3px rgba(16, 24, 40, 0.04)',
+  borderRadius: 10,
+  padding: 14,
+  boxShadow: 'none',
 }
 
 async function waitForBackend(timeoutMs: number): Promise<boolean> {
@@ -417,8 +417,8 @@ export default function App() {
           flexShrink: 0,
           display: 'flex',
           alignItems: 'center',
-          gap: 12,
-          padding: '12px 24px 10px',
+          gap: 8,
+          padding: '8px 12px 6px',
           flexWrap: 'wrap',
         }}
       >
@@ -479,9 +479,8 @@ export default function App() {
             flex: 1,
             minHeight: 0,
             width: '100%',
-            maxWidth: 1120,
-            margin: '0 auto',
-            padding: '0 24px 24px',
+            padding: '0 12px 12px',
+            gap: 12,
             boxSizing: 'border-box',
           }}
         >
@@ -493,11 +492,9 @@ export default function App() {
           display: 'flex',
           flex: 1,
           minHeight: 0,
-          gap: 20,
+          gap: 12,
           width: '100%',
-          maxWidth: 1120,
-          margin: '0 auto',
-          padding: '0 24px 24px',
+          padding: '0 12px 12px',
           boxSizing: 'border-box',
         }}
       >
@@ -2261,7 +2258,6 @@ function TranscriptPanel({
                           <button onClick={() => seek(target)} style={{ fontSize: 10, padding: '0 6px' }}>▶ 播放</button>
                         )}
                       </div>
-                      <div style={{ fontSize: 12, color: '#b0b6c0', textDecoration: 'line-through', lineHeight: 1.7 }}>{item.before}</div>
                       <div style={{ fontSize: 13, color: '#1e7e34', lineHeight: 1.7, margin: '4px 0 6px' }}>{item.after}</div>
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button onClick={() => void acceptSuggestion(item)} style={{ fontSize: 12, padding: '2px 12px', border: '1px solid #b7dfc2', color: '#1e7e34', borderRadius: 4 }}>正确</button>
@@ -2299,10 +2295,13 @@ function TranscriptPanel({
                       <div style={{ fontSize: 11, color: tone.fg, marginBottom: 6 }}>
                         第 {(items[0]?.index ?? 0) + 1}–{(items[items.length - 1]?.index ?? 0) + 1} 句 · {items.length} 句合一
                       </div>
-                      {items.map((x) => (
-                        <div key={x.id} style={{ fontSize: 12, color: '#5b6472', lineHeight: 1.7 }}>· {x.text}</div>
-                      ))}
-                      <div style={{ marginTop: 6, fontSize: 11, color: '#1e7e34' }}>→ 合并成一句（约 {chars} 字）</div>
+                      <div style={{ fontSize: 13, color: '#1e7e34', lineHeight: 1.75 }}>
+                        {items
+                          .map((x) => x.text.trim().replace(/[，。；：、,.!?;:…]+$/, ''))
+                          .join('，')}
+                        。
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 11, color: '#8a8f98' }}>约 {chars} 字</div>
                     </div>
                   )
                 })
@@ -2346,17 +2345,8 @@ function TranscriptPanel({
                 return (
                   <div key={s.id} style={{ border: `1px solid ${merged ? tone.border : '#e6ecf5'}`, borderRadius: 8, padding: 8, marginBottom: 8, background: merged ? tone.bg : '#fff' }}>
                     {merged && (
-                      <div style={{ marginBottom: 6 }}>
-                        <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 3 }}>
-                          由左边 {sources.length} 个碎片合并
-                        </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                          {sources.map((x) => (
-                            <span key={x.id} style={{ fontSize: 11, color: '#5b6472', background: '#f2f4f7', borderRadius: 4, padding: '1px 6px' }}>
-                              {x.text}
-                            </span>
-                          ))}
-                        </div>
+                      <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 4 }}>
+                        由左边 {sources.length} 个碎片合并
                       </div>
                     )}
                     <div style={{ fontSize: merged ? 13 : 12, color: merged ? '#1e7e34' : '#5b6472', lineHeight: 1.75 }}>
