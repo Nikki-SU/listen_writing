@@ -843,6 +843,8 @@ function TranscriptPanel({
   const decidedRef = useRef<Set<string>>(new Set())
   // 点句播放的“只播这一句”上限；长按或点整行时清空，改为连播
   const sentenceStopRef = useRef<number | null>(null)
+  // timeupdate 约 250ms 才触发一次，单句播放可能多播小半句；再用 rAF 逐帧卡停。
+  const sentenceStopRaf = useRef<number | null>(null)
   const playPressTimer = useRef<number | null>(null)
   const playLongPressed = useRef(false)
 
@@ -919,15 +921,48 @@ function TranscriptPanel({
     }
   }
 
+  function stopSentenceRaf() {
+    if (sentenceStopRaf.current != null) {
+      cancelAnimationFrame(sentenceStopRaf.current)
+      sentenceStopRaf.current = null
+    }
+  }
+
+  // 离开页面时别让 rAF 循环继续跑
+  useEffect(() => () => stopSentenceRaf(), [])
+
   function seek(s: Sentence, onlyThis = false) {
     setActiveId(s.id)
     const audio = audioRef.current
     if (!audio) return
-    sentenceStopRef.current = onlyThis ? s.end_ms : null
+    stopSentenceRaf()
+    const stopMs = onlyThis ? s.end_ms : null
+    sentenceStopRef.current = stopMs
     audio.currentTime = s.start_ms / 1000
-    void audio.play().catch(() => {
-      // 浏览器可能因权限/格式拒绝自动播放，用户可手点播放按钮
-    })
+    void audio
+      .play()
+      .then(() => {
+        // play() 真正开始后再逐帧检查，避免「播放还没起来就判定 paused 而退出」
+        if (stopMs == null || sentenceStopRef.current !== stopMs) return
+        const tick = () => {
+          const el = audioRef.current
+          if (!el || el.paused || sentenceStopRef.current !== stopMs) {
+            sentenceStopRaf.current = null
+            return
+          }
+          if (el.currentTime * 1000 >= stopMs) {
+            el.pause()
+            sentenceStopRef.current = null
+            sentenceStopRaf.current = null
+            return
+          }
+          sentenceStopRaf.current = requestAnimationFrame(tick)
+        }
+        sentenceStopRaf.current = requestAnimationFrame(tick)
+      })
+      .catch(() => {
+        // 浏览器可能因权限/格式拒绝自动播放，用户可手点播放按钮
+      })
   }
 
   // 句子前的 ▶：点一下只播这一句；长按从这一句开始连播
