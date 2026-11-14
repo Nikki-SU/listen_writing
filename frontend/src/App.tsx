@@ -2244,7 +2244,7 @@ function TranscriptPanel({
                               border: '1px solid ' + (polishEditId === s.id ? '#111827' : '#dde3ea'),
                             }}
                           >
-                            {polishEditId === s.id ? <CheckIcon /> : <EditIcon />}
+                            <EditIcon size={13} />
                           </button>
                         </div>
                       </>
