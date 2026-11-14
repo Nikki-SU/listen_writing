@@ -1288,6 +1288,43 @@ function TranscriptPanel({
     }
   }
 
+  // 点句子里的发言人标签：单击换下一位；Shift+点击把「同标签的连续一段」一起换。
+  // 循环顺序 = 花名册 + 未标注，听录音时单手就能逐句纠错。
+  async function cycleSentenceSpeaker(s: Sentence, batch: boolean) {
+    const base = speakers.length ? speakers : ['Speaker 1']
+    const cycle = [...base, '']
+    const current = s.speaker ?? ''
+    const next = cycle[(cycle.indexOf(current) + 1) % cycle.length]
+    let ids = [s.id]
+    if (batch) {
+      const i = localSentences.findIndex((x) => x.id === s.id)
+      if (i >= 0) {
+        let l = i
+        let r = i
+        while (l > 0 && (localSentences[l - 1].speaker ?? '') === current) l -= 1
+        while (r < localSentences.length - 1 && (localSentences[r + 1].speaker ?? '') === current) r += 1
+        ids = localSentences.slice(l, r + 1).map((x) => x.id)
+      }
+    }
+    const snapshot = localSentences
+    const idSet = new Set(ids)
+    setLocalSentences((list) => list.map((x) => (idSet.has(x.id) ? { ...x, speaker: next } : x)))
+    try {
+      const res = await api.updateSpeakers(projectId, recordingId, {
+        action: 'assign',
+        sentence_ids: ids,
+        speaker: next,
+      })
+      setLocalSentences(res.sentences)
+      if (res.speakers) setRoster(res.speakers)
+      setVersion(res.current || version)
+      onError('')
+    } catch (e) {
+      setLocalSentences(snapshot)
+      onError(`改发言人失败：${String(e)}`)
+    }
+  }
+
   async function addSpeaker() {
     const name = newSpeakerName.trim()
     if (!name) return
@@ -2110,7 +2147,7 @@ function TranscriptPanel({
             >
               {detectingSpeakers ? '识别中…' : speakers.length > 0 ? '重新识别发言人' : '自动识别发言人'}
             </button>
-            <span style={{ color: '#aaa' }}>（点名字改名；先加人，再逐句指派）</span>
+            <span style={{ color: '#aaa' }}>（点句子标签换下一位；Shift+点整段同标签一起换；点名字可改名/并入）</span>
             <button
               onClick={() => {
                 setMergeMode((v) => !v)
@@ -2215,23 +2252,28 @@ function TranscriptPanel({
                     <span style={{ fontSize: 12, color: '#999', flexShrink: 0, paddingTop: 2, fontVariantNumeric: 'tabular-nums' }}>
                       {fmtMs(s.start_ms)}
                     </span>
-                    {tone && (
-                      <span
-                        style={{
-                          fontSize: 11,
-                          color: tone.fg,
-                          background: tone.bg,
-                          border: `1px solid ${tone.border}`,
-                          borderRadius: 4,
-                          padding: '1px 6px',
-                          flexShrink: 0,
-                          whiteSpace: 'nowrap',
-                          marginTop: 2,
-                        }}
-                      >
-                        {s.speaker}
-                      </span>
-                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void cycleSentenceSpeaker(s, e.shiftKey)
+                      }}
+                      title="点一下换下一位发言人；Shift + 点击把这一整段同标签的句子一起换"
+                      style={{
+                        fontSize: 11,
+                        color: s.speaker ? tone?.fg ?? '#8a8f98' : '#8a8f98',
+                        background: s.speaker ? tone?.bg ?? '#f7f8fa' : '#f7f8fa',
+                        border: s.speaker ? `1px solid ${tone?.border ?? '#d7dce3'}` : '1px dashed #d7dce3',
+                        borderRadius: 4,
+                        padding: '1px 6px',
+                        flexShrink: 0,
+                        whiteSpace: 'nowrap',
+                        marginTop: 2,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {s.speaker || '未标注'}
+                    </button>
                     <div onClick={() => seek(s)} style={{ flex: 1, minWidth: 0, cursor: 'pointer', fontSize: 15, lineHeight: 1.7 }}>
                       {renderText(s)}
                     </div>
@@ -2413,22 +2455,29 @@ function TranscriptPanel({
                   </div>
                 ) : (
                   <>
-                    {s.speaker && (
-                      <span
-                        style={{
-                          fontSize: 11,
-                          color: speakerColor(s.speaker, speakerOrder).fg,
-                          background: speakerColor(s.speaker, speakerOrder).bg,
-                          border: `1px solid ${speakerColor(s.speaker, speakerOrder).border}`,
-                          borderRadius: 4,
-                          padding: '1px 6px',
-                          alignSelf: 'flex-start',
-                          flexShrink: 0,
-                        }}
-                      >
-                        {s.speaker}
-                      </span>
-                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void cycleSentenceSpeaker(s, e.shiftKey)
+                      }}
+                      title="点一下换下一位发言人；Shift + 点击把这一整段同标签的句子一起换"
+                      style={{
+                        fontSize: 11,
+                        color: s.speaker ? speakerColor(s.speaker, speakerOrder).fg : '#8a8f98',
+                        background: s.speaker ? speakerColor(s.speaker, speakerOrder).bg : '#f7f8fa',
+                        border: s.speaker
+                          ? `1px solid ${speakerColor(s.speaker, speakerOrder).border}`
+                          : '1px dashed #d7dce3',
+                        borderRadius: 4,
+                        padding: '1px 6px',
+                        alignSelf: 'flex-start',
+                        flexShrink: 0,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {s.speaker || '未标注'}
+                    </button>
                     <span
                       id={`stext-${s.id}`}
                       onMouseUp={() => void markSelection(s)}

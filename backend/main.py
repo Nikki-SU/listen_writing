@@ -1539,11 +1539,12 @@ class Handler(BaseHTTPRequestHandler):
                 roster.append(into)
             message = f"发言人「{source}」并入「{into}」"
         elif action == "assign":
+            # speaker 允许为空：前端点标签循环时，「未标注」也是一站（清空误标）。
+            if "speaker" not in data:
+                self._send_json({"error": "speaker 不能缺失"}, status=400)
+                return
             speaker = str(data.get("speaker") or "").strip()
             ids = data.get("sentence_ids")
-            if not speaker:
-                self._send_json({"error": "speaker 不能为空"}, status=400)
-                return
             if not isinstance(ids, list) or not ids:
                 self._send_json({"error": "sentence_ids 不能为空"}, status=400)
                 return
@@ -1556,9 +1557,10 @@ class Handler(BaseHTTPRequestHandler):
             if not changed:
                 self._send_json({"error": "所选句子已经是该发言人"}, status=409)
                 return
-            if speaker not in roster:
+            if speaker and speaker not in roster:
                 roster.append(speaker)
-            message = f"第 {'、'.join(str(s['index'] + 1) for s in sentences if s['id'] in id_set)} 句改标为「{speaker}」"
+            label = speaker or "未标注"
+            message = f"第 {'、'.join(str(s['index'] + 1) for s in sentences if s['id'] in id_set)} 句改标为「{label}」"
         else:
             self._send_json({"error": "action must be create / rename / merge / assign"}, status=400)
             return

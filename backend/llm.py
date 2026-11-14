@@ -258,11 +258,17 @@ def split_think(text: str) -> str:
 
 
 _POLISH_SYSTEM = (
-    "你是中文访谈转写稿的校对员。逐句检查输入，修正明显的同音字/错别字、漏字、重复词、"
-    "标点与语病，删掉无意义的语气词（呃、呃那个）；不改变说话人原意，不删信息，不做文风改写。"
+    "你是中文访谈转写稿的语音识别校对员。任务只有一个：修正语音识别听错、听漏造成的文字错误，"
+    "让句子语义恢复正确；不做文字润色，也不把口语改成书面语。"
+    "必须修正：同音/近音字误识别、明显错字，导致词不达意或语义不通"
+    "（如「饭政治议题」应为「泛政治议题」）。"
+    "必须原样保留：语气词与口头语（嗯、呃、啊、哦、那个、就是说）、停顿、重复、口吃、"
+    "方言词和说话人的用词习惯——这些是访谈数据本身，绝不能删、不能合并、不能换成同义书面词。"
+    "只允许补标点；不能为了通顺而增删词语、调整语序或改写句子。"
     '只输出一个 JSON 数组，元素形如 {"id": "句子 id", "text": "修改后的完整句子"}；'
-    "只包含确实改动过的句子，没改的句子不要出现；全部无需修改就输出 []。"
-    '示例：输入 "a\\t我们门今天开会呃" 输出 [{"id":"a","text":"我们今天开会"}]。'
+    "只包含确实改动了识别错误的句子；没改的句子不要出现；全部无需修改就输出 []。"
+    '示例：输入 "a\\t这个饭政治议题很敏感" 输出 [{"id":"a","text":"这个泛政治议题很敏感"}]。'
+    '示例：输入 "b\\t呃我觉得嗯这个问题啊" 输出 []（语气词和停顿原样保留，不需要修改）。'
     "不要输出解释，也不要包代码块。 /no_think"
 )
 
@@ -766,23 +772,37 @@ def resegment(
     return result
 
 
+# 语气词是访谈数据本身，纠错可以改错字但不能把它们删掉。
+# 小模型即使收到「保留语气词」的指令，仍常顺手把口语清理掉，这里做硬性拦截。
+_FILLER_CHARS = re.compile(r"[嗯呃额啊哦噢欸诶]")
+
+
 def _safe_polish(before: str, after: str) -> bool:
     """纠错建议的改动幅度守卫。
 
-    允许同音字、错别字、标点、语气词的修改；不允许把半句补成另一句、
-    也不允许整句改写。用长度比例 + 字符相似度双重约束，宁可少给建议。
+    允许同音字、错别字的修正与补标点；不允许删语气词、增删字、把半句补成另一句，
+    也不允许整句改写。用语气词守恒 + 等长替换 + 字符相似度三重约束，宁可少给建议。
     """
     a = _norm_text(before)
     b = _norm_text(after)
     if not a or not b:
         return False
+    # 语气词不只要保留，位置也不能挪（删字/插字会让它们整体位移）。
+    if [(m.start(), m.group()) for m in _FILLER_CHARS.finditer(a)] != [
+        (m.start(), m.group()) for m in _FILLER_CHARS.finditer(b)
+    ]:
+        return False
     if a == b:
         # 只动了标点：允许补标点，不允许把句末标点删掉（会把稿子越改越难读）。
         return len(_PUNCT_RE.findall(after)) > len(_PUNCT_RE.findall(before))
-    ratio = len(b) / len(a)
-    if ratio < 0.5 or ratio > 1.7:
+    if len(a) != len(b):
+        # 只接受等长替换（同音字/错字）；增字、删字都可能改掉访谈内容，宁可不给建议。
         return False
-    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.5
+    matcher = difflib.SequenceMatcher(None, a, b)
+    # 只允许「原地替换」；出现 delete/insert 说明语序或字数被动过，一律丢弃。
+    if any(op not in ("equal", "replace") for op, _, _, _, _ in matcher.get_opcodes()):
+        return False
+    return matcher.ratio() >= 0.5
 
 
 def polish(
