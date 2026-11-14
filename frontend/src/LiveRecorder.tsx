@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import * as api from './api'
 import { speakerColor } from './speakerColors'
+import { ICON_BTN, CloseIcon, RefreshIcon } from './icons'
 import type { Recording, Sentence } from './types'
 
 const TARGET_RATE = 16000
@@ -345,10 +346,14 @@ export default function LiveRecorder({
           {status === 'error' && (
             <button
               onClick={() => void start()}
+              title="重试"
+              aria-label="重试"
               style={{
                 flex: 1,
-                fontSize: 13,
-                padding: '8px 16px',
+                height: 36,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 background: '#1f6feb',
                 color: '#fff',
                 border: 'none',
@@ -356,7 +361,7 @@ export default function LiveRecorder({
                 cursor: 'pointer',
               }}
             >
-              重试
+              <RefreshIcon />
             </button>
           )}
           {(status === 'init' || status === 'stopping') && (
@@ -373,9 +378,11 @@ export default function LiveRecorder({
                 onClose()
               }
             }}
-            style={{ fontSize: 13, padding: '8px 16px' }}
+            title="取消录音"
+            aria-label="取消录音"
+            style={{ ...ICON_BTN, height: 36, alignSelf: 'center' }}
           >
-            取消
+            <CloseIcon size={14} />
           </button>
         </div>
       </div>

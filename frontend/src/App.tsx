@@ -10,7 +10,21 @@ import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { jobFor, useModels } from './useModels'
 import { BOOTSTRAP_FILES } from './bootstrapFiles'
 import { speakerColor, SPEAKER_PALETTE } from './speakerColors'
-import { CheckIcon, CrossIcon, EditIcon } from './icons'
+import {
+  ICON_BTN,
+  CheckIcon,
+  CloseIcon,
+  CrossIcon,
+  DownloadIcon,
+  EditIcon,
+  GearIcon,
+  HistoryIcon,
+  MicIcon,
+  PlusIcon,
+  StopIcon,
+  TrashIcon,
+  UploadIcon,
+} from './icons'
 import type {
   Project,
   Recording,
@@ -464,8 +478,8 @@ export default function App() {
           本地后端已连接 · 录音不出本机
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button onClick={() => setSettingsOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
-            设置
+          <button onClick={() => setSettingsOpen(true)} title="设置" aria-label="设置" style={{ ...ICON_BTN, height: 28 }}>
+            <GearIcon />
           </button>
           <button onClick={() => setGuideOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
             启动设置
@@ -536,15 +550,19 @@ export default function App() {
               />
               <button
                 onClick={() => setLiveOpen(true)}
-                style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}
+                title="实时录音"
+                aria-label="实时录音"
+                style={{ ...ICON_BTN, marginLeft: 'auto' }}
               >
-                实时录音
+                <MicIcon />
               </button>
               <button
                 onClick={() => fileInputRef.current?.click()}
-                style={{ fontSize: 12, padding: '4px 10px' }}
+                title="上传录音"
+                aria-label="上传录音"
+                style={ICON_BTN}
               >
-                上传录音
+                <UploadIcon />
               </button>
             </div>
             <RecordingList recordings={recordings} activeId={recordingId} onSelect={setRecordingId} onDelete={handleDeleteRecording} />
@@ -614,8 +632,8 @@ function ProjectCreator({ onCreate }: { onCreate: (name: string) => void }) {
 
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} style={{ fontSize: 13, padding: '6px 10px' }}>
-        + 新建项目
+      <button onClick={() => setOpen(true)} title="新建项目" aria-label="新建项目" style={{ ...ICON_BTN, width: '100%', height: 30 }}>
+        <PlusIcon />
       </button>
     )
   }
@@ -690,18 +708,10 @@ function ProjectList({
               onDelete(p.id)
             }}
             title="删除项目（连同其下所有录音与版本）"
-            style={{
-              fontSize: 11,
-              padding: '1px 6px',
-              color: '#b00020',
-              background: '#fff',
-              border: '1px solid #f0c9cc',
-              borderRadius: 4,
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
+            aria-label="删除项目"
+            style={{ ...ICON_BTN, width: 22, height: 20, color: '#b00020', border: '1px solid #f0c9cc' }}
           >
-            删除
+            <TrashIcon size={12} />
           </button>
         </li>
       ))}
@@ -749,18 +759,10 @@ function RecordingList({
               onDelete(r.id)
             }}
             title="删除这条录音"
-            style={{
-              fontSize: 11,
-              padding: '1px 6px',
-              border: '1px solid #f0d0d0',
-              borderRadius: 4,
-              background: '#fff',
-              color: '#b00020',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
+            aria-label="删除这条录音"
+            style={{ ...ICON_BTN, width: 22, height: 20, color: '#b00020', border: '1px solid #f0d0d0' }}
           >
-            删除
+            <TrashIcon size={12} />
           </button>
         </li>
       ))}
@@ -1527,21 +1529,29 @@ function TranscriptPanel({
           )}
           <button
             onClick={() => void saveExport(projectId, recordingId, 'md', version || undefined, onError)}
-            style={{ fontSize: 12, padding: '4px 10px' }}
+            title="导出 Markdown"
+            aria-label="导出 Markdown"
+            style={{ ...ICON_BTN, width: 'auto', padding: '0 6px', gap: 4 }}
           >
-            导出 MD
+            <DownloadIcon />
+            <span style={{ fontSize: 10 }}>MD</span>
           </button>
           <button
             onClick={() => void saveExport(projectId, recordingId, 'json', version || undefined, onError)}
-            style={{ fontSize: 12, padding: '4px 10px' }}
+            title="导出 JSON"
+            aria-label="导出 JSON"
+            style={{ ...ICON_BTN, width: 'auto', padding: '0 6px', gap: 4 }}
           >
-            导出 JSON
+            <DownloadIcon />
+            <span style={{ fontSize: 10 }}>JSON</span>
           </button>
           <button
             onClick={() => setShowHistory((v) => !v)}
-            style={{ fontSize: 12, padding: '4px 10px' }}
+            title={showHistory ? '收起版本历史' : '版本历史'}
+            aria-label="版本历史"
+            style={{ ...ICON_BTN, background: showHistory ? '#eef5ff' : '#fff' }}
           >
-            {showHistory ? '收起版本' : '版本历史'}
+            <HistoryIcon />
           </button>
           <button
             onClick={() => {
@@ -2096,9 +2106,9 @@ function TranscriptPanel({
                   AI 修改{polishing ? ` · ${polishStage || '处理中…'}` : ` · ${suggestions.length} 条`}
                 </span>
                 {polishing && (
-                  <button onClick={() => void stopPolish()} title="停止纠错" style={{ fontSize: 11, padding: '1px 8px', color: '#b00020' }}>停止</button>
+                  <button onClick={() => void stopPolish()} title="停止纠错" aria-label="停止纠错" style={{ ...ICON_BTN, width: 22, height: 20, color: '#b00020' }}><StopIcon size={11} /></button>
                 )}
-                <button onClick={() => setPolishOpen(false)} title="关闭纠错对照" style={{ fontSize: 11, padding: '1px 8px' }}>关闭</button>
+                <button onClick={() => setPolishOpen(false)} title="关闭纠错对照" aria-label="关闭纠错对照" style={{ ...ICON_BTN, width: 22, height: 20 }}><CloseIcon size={11} /></button>
               </div>
             </div>
             {localSentences.map((s) => {
@@ -2390,7 +2400,7 @@ function TranscriptPanel({
               {resegmenting ? (
                 <>
                   <button onClick={() => setResegOpen(false)} style={{ fontSize: 12, padding: '6px 12px' }}>转到后台</button>
-                  <button onClick={() => void stopResegment()} style={{ fontSize: 12, padding: '6px 12px', color: '#b00020' }}>停止</button>
+                  <button onClick={() => void stopResegment()} title="停止整理" aria-label="停止整理" style={{ ...ICON_BTN, width: 28, height: 28, color: '#b00020' }}><StopIcon size={12} /></button>
                 </>
               ) : (
                 <>
@@ -2400,9 +2410,11 @@ function TranscriptPanel({
                       setResegPreview(null)
                       setResegDone(false)
                     }}
-                    style={{ fontSize: 12, padding: '6px 12px' }}
+                    title="关闭预览"
+                    aria-label="关闭预览"
+                    style={{ ...ICON_BTN, width: 28, height: 28 }}
                   >
-                    关闭
+                    <CloseIcon size={12} />
                   </button>
                   <button
                     onClick={() => void applyResegment()}

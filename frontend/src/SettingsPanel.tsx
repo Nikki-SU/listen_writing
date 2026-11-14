@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import * as api from './api'
 import { jobFor, useModels } from './useModels'
 import type { AppSettings, ModelJob, ModelOption, ModelStatus, SettingsPayload } from './types'
+import { ICON_BTN, DownloadIcon, RefreshIcon, StopIcon } from './icons'
 
 // 设置弹层：身份 + 模型。模型选项由后端 S-1 返回（唯一权威），
 // 前端只渲染，不重复维护标签与最低配置。切换模型对“之后的转写/AI 任务”生效，
@@ -333,17 +334,21 @@ function ModelRow({
           {running && onCancel && job && (
             <button
               onClick={() => onCancel(job.id)}
-              style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', color: '#b00020' }}
+              title="停止下载"
+              aria-label="停止下载"
+              style={{ ...ICON_BTN, marginLeft: 'auto', width: 24, height: 22, color: '#b00020' }}
             >
-              停止下载
+              <StopIcon size={11} />
             </button>
           )}
           {!ready && !running && (
             <button
               onClick={onDownload}
-              style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', cursor: 'pointer' }}
+              title={failed ? '重试下载' : stopped ? '继续下载（断点续传）' : '下载模型'}
+              aria-label="下载模型"
+              style={{ ...ICON_BTN, marginLeft: 'auto', width: 24, height: 22 }}
             >
-              {failed ? '重试' : stopped ? '继续下载' : '下载'}
+              {failed ? <RefreshIcon size={12} /> : <DownloadIcon size={12} />}
             </button>
           )}
         </div>
