@@ -1265,6 +1265,16 @@ function TranscriptPanel({
   const mergeableGroups = mergeGroups.filter((g) => g.length > 1)
   const mergeReducible = mergeableGroups.reduce((n, g) => n + g.length - 1, 0)
 
+  // 右侧改为对照/合并栏：同一时间只显示一种评审模式，避免三个面板抢位置。
+  const reviewMode: 'polish' | 'merge' | 'resegment' | null =
+    resegOpen && (resegmenting || resegPreview)
+      ? 'resegment'
+      : polishOpen && (polishing || suggestions.length > 0)
+        ? 'polish'
+        : mergeMode
+          ? 'merge'
+          : null
+
   async function mergeAllGroups() {
     if (paintCount === 0) return
     const groups = mergeableGroups
@@ -1706,281 +1716,6 @@ function TranscriptPanel({
           style={{ width: '100%', height: 36, marginBottom: 10 }}
         />
 
-        {resegOpen && resegPreview && (
-          <div
-            onClick={() => setResegOpen(false)}
-            style={{
-              position: 'fixed',
-              inset: 0,
-              zIndex: 60,
-              background: 'rgba(16, 24, 40, 0.32)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: 24,
-              boxSizing: 'border-box',
-            }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              className="scroll-hidden"
-              style={{
-                width: 860,
-                maxWidth: '100%',
-                maxHeight: '82vh',
-                overflowY: 'auto',
-                background: '#fff',
-                borderRadius: 12,
-                padding: 20,
-                boxShadow: '0 12px 40px rgba(16, 24, 40, 0.18)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-                <h3 style={{ margin: 0, fontSize: 16, flex: 1 }}>AI 整理断句预览</h3>
-                <span style={{ fontSize: 12, color: resegPreview.after < resegPreview.before ? '#1e7e34' : '#7a869a' }}>
-                  {resegPreview.before} 句 → {resegPreview.after} 句
-                </span>
-              </div>
-              <p style={{ fontSize: 12, color: '#8a8f98', lineHeight: 1.7, margin: '8px 0 12px' }}>
-                断句整理不是逐句改写，而是把左边几个停顿碎片合并成一句；只动断句与标点，不增删内容。
-                应用后写入新版本，可在版本历史里回退。
-              </p>
-              {resegStage && (
-                <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
-                  {resegStage}（结果会边整理边出现在下面；关掉窗口任务仍在后台继续）
-                </div>
-              )}
-              {!resegmenting && !resegDone && (
-                <div style={{ fontSize: 12, color: '#b26b00', marginBottom: 10 }}>
-                  任务已停止，下面是已完成的部分；未处理的句子没有出现在结果里，所以不能直接应用。
-                </div>
-              )}
-              <div
-                className="scroll-hidden"
-                style={{ maxHeight: '52vh', overflowY: 'auto', borderTop: '1px solid #f1f3f5' }}
-              >
-                {resegPreview.sentences.map((s) => {
-                  const srcIds = s.source_ids ?? [s.id]
-                  const sources = srcIds
-                    .map((id) => localSentences.find((x) => x.id === id))
-                    .filter((x): x is Sentence => Boolean(x))
-                  const merged = srcIds.length > 1
-                  return (
-                    <div
-                      key={s.id}
-                      style={{ padding: '8px 0', borderBottom: '1px solid #f6f7f9' }}
-                    >
-                      {merged && (
-                        <div style={{ marginBottom: 6 }}>
-                          <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 3 }}>
-                            左边这 {sources.length} 个碎片合并为一句
-                            {sources.length > 0 ? `（${sources.reduce((n, x) => n + x.text.length, 0)} 字）` : ''}
-                          </div>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                            {sources.length > 0 ? (
-                              sources.map((x) => (
-                                <span
-                                  key={x.id}
-                                  style={{
-                                    fontSize: 11,
-                                    color: '#5b6472',
-                                    background: '#f2f4f7',
-                                    borderRadius: 4,
-                                    padding: '1px 6px',
-                                    lineHeight: 1.7,
-                                  }}
-                                >
-                                  {x.text}
-                                </span>
-                              ))
-                            ) : (
-                              <span style={{ fontSize: 11, color: '#b0b6c0' }}>（原句已不在当前稿中）</span>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                        <span
-                          style={{
-                            fontSize: 11,
-                            color: merged ? '#1e7e34' : '#b0b6c0',
-                            flexShrink: 0,
-                            paddingTop: 4,
-                            width: 44,
-                          }}
-                        >
-                          {merged ? '合并后' : '未改动'}
-                        </span>
-                        <div
-                          style={{
-                            fontSize: merged ? 13.5 : 12.5,
-                            color: merged ? '#1e7e34' : '#5b6472',
-                            lineHeight: 1.75,
-                          }}
-                        >
-                          {s.text}
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-                {resegmenting ? (
-                  <>
-                    <button
-                      onClick={() => setResegOpen(false)}
-                      style={{ fontSize: 13, padding: '6px 14px' }}
-                    >
-                      转到后台
-                    </button>
-                    <button
-                      onClick={() => void stopResegment()}
-                      style={{ fontSize: 13, padding: '6px 14px', color: '#b00020' }}
-                    >
-                      停止
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      onClick={() => {
-                        setResegOpen(false)
-                        setResegPreview(null)
-                        setResegDone(false)
-                      }}
-                      style={{ fontSize: 13, padding: '6px 14px' }}
-                    >
-                      关闭
-                    </button>
-                    <button
-                      onClick={() => void applyResegment()}
-                      disabled={!resegDone}
-                      style={{
-                        fontSize: 13,
-                        padding: '6px 14px',
-                        background: resegDone ? '#245c9c' : '#e3e8ef',
-                        color: resegDone ? '#fff' : '#9aa0a6',
-                        border: 'none',
-                        borderRadius: 4,
-                      }}
-                    >
-                      应用并生成新版本
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {polishOpen && (
-          <div
-            style={{
-              marginBottom: 10,
-              border: '1px solid #dce6f2',
-              background: '#f8fbff',
-              borderRadius: 8,
-              padding: 10,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <span style={{ fontSize: 12, color: '#245c9c', fontWeight: 600 }}>
-                AI 纠错建议
-              </span>
-              <span style={{ fontSize: 11, color: '#7a869a' }}>
-                {polishModel ? `模型 ${polishModel}` : ''}
-              </span>
-              <span style={{ fontSize: 11, color: '#7a869a' }}>
-                {polishing ? `已出 ${suggestions.length} 条` : `共 ${suggestions.length} 条`}
-              </span>
-              {polishing && (
-                <button
-                  onClick={() => void stopPolish()}
-                  style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', color: '#b00020' }}
-                >
-                  停止
-                </button>
-              )}
-              {!polishing && (
-                <button
-                  onClick={() => void runPolish()}
-                  style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px' }}
-                >
-                  重新分析
-                </button>
-              )}
-              <button
-                onClick={() => setPolishOpen(false)}
-                style={{ fontSize: 11, padding: '2px 8px' }}
-              >
-                关闭
-              </button>
-            </div>
-            {polishing && (
-              <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.7, marginBottom: 8 }}>
-                {polishStage || '正在本地分析…'}
-                {suggestions.length > 0 ? ` · 已出 ${suggestions.length} 条建议` : ''}
-                。可以关掉这个面板，任务会在后台继续，不影响先录新的音。
-              </div>
-            )}
-            {!polishing && suggestions.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#6b7280' }}>
-                未发现需要修改的句子。你也可以再点一次「AI 纠错」重新分析。
-              </div>
-            ) : suggestions.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {suggestions.map((item) => {
-                  const target = localSentences.find((s) => s.id === item.sentence_id)
-                  return (
-                    <div
-                      key={item.sentence_id}
-                      style={{ border: '1px solid #e6ecf5', background: '#fff', borderRadius: 6, padding: 8 }}
-                    >
-                      <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 4 }}>
-                        第 {item.index + 1} 句
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                        <div>
-                          <div style={{ fontSize: 10, color: '#9aa0a6', marginBottom: 2 }}>原文</div>
-                          <div style={{ fontSize: 12, color: '#b00020', textDecoration: 'line-through', lineHeight: 1.7 }}>
-                            {item.before}
-                          </div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 10, color: '#9aa0a6', marginBottom: 2 }}>AI 建议</div>
-                          <div style={{ fontSize: 12.5, color: '#1e7e34', lineHeight: 1.7 }}>{item.after}</div>
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                        <button
-                          onClick={() => void acceptSuggestion(item)}
-                          style={{ fontSize: 11, padding: '2px 10px', border: '1px solid #b7dfc2', color: '#1e7e34', borderRadius: 4 }}
-                        >
-                          接受
-                        </button>
-                        <button
-                          onClick={() => target && startEdit(target, item.after, 'ai_polish')}
-                          disabled={!target}
-                          style={{ fontSize: 11, padding: '2px 10px', borderRadius: 4 }}
-                        >
-                          自己改
-                        </button>
-                        <button
-                          onClick={() => dismissSuggestion(item)}
-                          style={{ fontSize: 11, padding: '2px 10px', borderRadius: 4 }}
-                        >
-                          忽略
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : null}
-          </div>
-        )}
-
         {redactMode && (
           <div style={{ marginBottom: 10, fontSize: 12 }}>
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
@@ -2342,19 +2077,62 @@ function TranscriptPanel({
             </span>
             <span style={{ color: '#888', fontSize: 11 }}>点句子涂当前画笔颜色；蓝、橙各成一组，白色不合并</span>
             <button
-              onClick={() => void mergeAllGroups()}
-              disabled={paintCount === 0 || mergeReducible === 0 || merging}
-              style={{ marginLeft: 'auto', fontSize: 12, padding: '3px 12px' }}
+              onClick={() => setPaintColors({})}
+              disabled={paintCount === 0}
+              style={{ marginLeft: 'auto', fontSize: 12, padding: '3px 10px' }}
             >
-              {merging ? '合并中…' : '合并全部'}
-            </button>
-            <button onClick={() => setPaintColors({})} disabled={paintCount === 0} style={{ fontSize: 12, padding: '3px 10px' }}>
               清除涂色
             </button>
           </div>
         )}
 
-        <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
+        {reviewMode === 'polish' ? (
+          <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid #dce6f2', borderRadius: 8, background: '#fff' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #f0f0f0', position: 'sticky', top: 0, background: '#f8fbff', zIndex: 1 }}>
+              <span style={{ fontSize: 12, color: '#245c9c', fontWeight: 600 }}>AI 纠错 · 逐句对照</span>
+              <span style={{ fontSize: 11, color: '#7a869a' }}>
+                {polishing ? `已出 ${suggestions.length} 条 · ${polishStage || '处理中…'}` : `共 ${suggestions.length} 条`}
+              </span>
+              {polishing && (
+                <button onClick={() => void stopPolish()} style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px', color: '#b00020' }}>停止</button>
+              )}
+              <button onClick={() => setPolishOpen(false)} style={{ marginLeft: polishing ? 0 : 'auto', fontSize: 11, padding: '2px 8px' }}>关闭</button>
+            </div>
+            {suggestions.length === 0 ? (
+              <div style={{ padding: 24, fontSize: 12, color: '#6b7280', textAlign: 'center' }}>
+                {polishing ? '正在分析，第一条建议出来后会显示在这里…' : '未发现需要修改的句子。'}
+              </div>
+            ) : (
+              suggestions.map((item) => {
+                const target = localSentences.find((s) => s.id === item.sentence_id)
+                return (
+                  <div key={item.sentence_id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, padding: '10px 12px', borderBottom: '1px solid #f0f0f0' }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 4 }}>
+                        原文 · 第 {item.index + 1} 句
+                        {target && (
+                          <button onClick={() => seek(target)} style={{ marginLeft: 6, fontSize: 10, padding: '0 6px' }}>▶ 播放</button>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 13.5, lineHeight: 1.75, color: '#8a3b3b', textDecoration: 'line-through' }}>{item.before}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 11, color: '#1e7e34', marginBottom: 4 }}>AI 建议</div>
+                      <div style={{ fontSize: 13.5, lineHeight: 1.75, color: '#1e7e34' }}>{item.after}</div>
+                      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                        <button onClick={() => void acceptSuggestion(item)} style={{ fontSize: 12, padding: '2px 12px', border: '1px solid #b7dfc2', color: '#1e7e34', borderRadius: 4 }}>正确</button>
+                        <button onClick={() => dismissSuggestion(item)} style={{ fontSize: 12, padding: '2px 12px', border: '1px solid #f0c9cc', color: '#b00020', borderRadius: 4 }}>错误</button>
+                        <button onClick={() => target && startEdit(target, item.after, 'ai_polish')} disabled={!target} style={{ fontSize: 12, padding: '2px 12px', borderRadius: 4 }}>自己改</button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        ) : (
+        <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
+        <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minWidth: 0, minHeight: 0 }}>
           {localSentences.map((s) => {
             const active = s.id === activeId
             const color = mergeMode ? paintColors[s.id] : undefined
@@ -2497,9 +2275,130 @@ function TranscriptPanel({
             )
           })}
         </ul>
+
+        {reviewMode === 'merge' && (
+          <aside style={{ width: '44%', minWidth: 280, flexShrink: 0, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <h3 style={{ fontSize: 13, margin: '0 0 6px' }}>合并预览（{mergeableGroups.length} 组）</h3>
+            <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 8 }}>
+              左边涂色 → 这里显示每组框住的句子和合并后的内容；点「合并全部」才写入新版本。
+            </div>
+            <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+              {mergeableGroups.length === 0 ? (
+                <div style={{ fontSize: 12, color: '#9aa0a6', marginTop: 20 }}>
+                  还没有分组：在左边用蓝 / 橙画笔点选连续句子（白色表示不合并）。
+                </div>
+              ) : (
+                mergeableGroups.map((ids, gi) => {
+                  const items = ids
+                    .map((id) => localSentences.find((x) => x.id === id))
+                    .filter((x): x is Sentence => Boolean(x))
+                  const chars = items.reduce((n, x) => n + x.text.length, 0)
+                  return (
+                    <div key={gi} style={{ border: '1px solid #d6e4ff', background: '#f8fbff', borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, color: '#1a73e8', marginBottom: 6 }}>
+                        第 {(items[0]?.index ?? 0) + 1}–{(items[items.length - 1]?.index ?? 0) + 1} 句 · {items.length} 句合一
+                      </div>
+                      {items.map((x) => (
+                        <div key={x.id} style={{ fontSize: 12, color: '#5b6472', lineHeight: 1.7 }}>· {x.text}</div>
+                      ))}
+                      <div style={{ marginTop: 6, fontSize: 11, color: '#1e7e34' }}>→ 合并成一句（约 {chars} 字）</div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+            <button
+              onClick={() => void mergeAllGroups()}
+              disabled={mergeReducible === 0 || merging}
+              style={{ marginTop: 8, fontSize: 12, padding: '6px 12px' }}
+            >
+              {merging ? '合并中…' : `合并全部（可减少 ${mergeReducible} 句）`}
+            </button>
+          </aside>
+        )}
+
+        {reviewMode === 'resegment' && resegPreview && (
+          <aside style={{ width: '44%', minWidth: 280, flexShrink: 0, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <h3 style={{ fontSize: 13, margin: '0 0 6px', flex: 1 }}>AI 整理断句预览</h3>
+              <span style={{ fontSize: 11, color: resegPreview.after < resegPreview.before ? '#1e7e34' : '#7a869a' }}>
+                {resegPreview.before} 句 → {resegPreview.after} 句
+              </span>
+            </div>
+            <div style={{ fontSize: 11, color: '#8a8f98', lineHeight: 1.7, marginBottom: 8 }}>
+              左边几个停顿碎片合并成一句；只动断句与标点，不增删内容。
+              {resegStage ? ` ${resegStage}` : ''}
+            </div>
+            {!resegmenting && !resegDone && (
+              <div style={{ fontSize: 11, color: '#b26b00', marginBottom: 8 }}>
+                任务已停止，下面是已完成的部分；未处理的句子没有出现，不能直接应用。
+              </div>
+            )}
+            <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+              {resegPreview.sentences.map((s) => {
+                const srcIds = s.source_ids ?? [s.id]
+                const sources = srcIds
+                  .map((id) => localSentences.find((x) => x.id === id))
+                  .filter((x): x is Sentence => Boolean(x))
+                const merged = srcIds.length > 1
+                return (
+                  <div key={s.id} style={{ border: '1px solid #e6ecf5', borderRadius: 8, padding: 8, marginBottom: 8, background: merged ? '#f8fbff' : '#fff' }}>
+                    {merged && (
+                      <div style={{ marginBottom: 6 }}>
+                        <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 3 }}>
+                          由左边 {sources.length} 个碎片合并
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                          {sources.map((x) => (
+                            <span key={x.id} style={{ fontSize: 11, color: '#5b6472', background: '#f2f4f7', borderRadius: 4, padding: '1px 6px' }}>
+                              {x.text}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ fontSize: merged ? 13 : 12, color: merged ? '#1e7e34' : '#5b6472', lineHeight: 1.75 }}>
+                      {s.text}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              {resegmenting ? (
+                <>
+                  <button onClick={() => setResegOpen(false)} style={{ fontSize: 12, padding: '6px 12px' }}>转到后台</button>
+                  <button onClick={() => void stopResegment()} style={{ fontSize: 12, padding: '6px 12px', color: '#b00020' }}>停止</button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => {
+                      setResegOpen(false)
+                      setResegPreview(null)
+                      setResegDone(false)
+                    }}
+                    style={{ fontSize: 12, padding: '6px 12px' }}
+                  >
+                    关闭
+                  </button>
+                  <button
+                    onClick={() => void applyResegment()}
+                    disabled={!resegDone}
+                    style={{ fontSize: 12, padding: '6px 12px', background: resegDone ? '#245c9c' : '#e3e8ef', color: resegDone ? '#fff' : '#9aa0a6', border: 'none', borderRadius: 4, flex: 1 }}
+                  >
+                    应用并生成新版本
+                  </button>
+                </>
+              )}
+            </div>
+          </aside>
+        )}
+        </div>
+        )}
       </div>
 
-      {showHistory && (
+      {showHistory && !reviewMode && (
         <VersionPanel
           projectId={projectId}
           recordingId={recordingId}

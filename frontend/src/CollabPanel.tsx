@@ -68,8 +68,6 @@ export default function CollabPanel({
 }) {
   const [groups, setGroups] = useState<CollabGroupSummary[]>([])
   const [identity, setIdentity] = useState<{ nick: string; device_code: string }>({ nick: '', device_code: '' })
-  const [nickDraft, setNickDraft] = useState('')
-  const [deviceDraft, setDeviceDraft] = useState('')
   const [selected, setSelected] = useState<CollabGroupSummary | null>(null)
   const [tab, setTab] = useState<Tab>('material')
   const [error, setError] = useState('')
@@ -168,34 +166,6 @@ export default function CollabPanel({
     const data = await api.listGroups()
     setGroups(data.groups)
     setIdentity(data.identity)
-    setNickDraft(data.identity.nick)
-    setDeviceDraft(data.identity.device_code)
-  }
-
-  // 代号（昵称）与个人码都由用户自己定：个人码用于把同一人的多台设备合并，
-  // 不需要知道对方 IP。保存走已有的设置接口，立即落盘并刷新本机身份。
-  async function saveIdentity(fields: { nick?: string; device_code?: string }) {
-    const next = { ...identity, ...fields }
-    if (!next.nick.trim()) {
-      setError('代号（昵称）不能为空：共享任务里其他人看到的就是这个名字')
-      return
-    }
-    if (
-      fields.device_code !== undefined &&
-      (fields.device_code.trim().length < 4 ||
-        fields.device_code.trim().length > 64 ||
-        !/^[A-Za-z0-9._:-]+$/.test(fields.device_code.trim()))
-    ) {
-      setError('个人码需为 4–64 位，只能包含字母、数字和 . _ : -')
-      return
-    }
-    await run(async () => {
-      const s = await api.updateSettings({ identity: next })
-      setIdentity(s.identity)
-      setNickDraft(s.identity.nick)
-      setDeviceDraft(s.identity.device_code)
-      setNotice('身份已保存')
-    })
   }
 
   async function loadPeers() {
@@ -568,7 +538,7 @@ export default function CollabPanel({
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
           <h2 style={{ margin: 0, fontSize: 17 }}>共享任务</h2>
           <span style={{ fontSize: 11, color: '#8a8f98' }}>
-            一个配对码 = 一个群 = 一个共享任务 · 我 {identity.nick || '未设代号'} · 个人码 {identity.device_code || '—'}
+            一个配对码 = 一个共享任务（昵称 / 个人码在「设置」里修改）
           </span>
           {!embedded && (
             <button onClick={onClose} style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}>
@@ -585,48 +555,15 @@ export default function CollabPanel({
             <section
               style={{
                 flex: '1 1 100%',
-                border: '1px solid #e2e6ec',
+                border: '1px dashed #d9e2ec',
                 borderRadius: 10,
                 background: '#fbfcfe',
-                padding: '10px 12px',
+                padding: '8px 12px',
+                fontSize: 12,
+                color: '#6b7280',
               }}
             >
-              <h3 style={{ fontSize: 13, margin: '0 0 8px' }}>我的身份（进入共享任务前先设好）</h3>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 6 }}>
-                <span style={{ fontSize: 12, color: '#6b7280', width: 88 }}>代号（昵称）</span>
-                <input
-                  value={nickDraft}
-                  onChange={(e) => setNickDraft(e.target.value)}
-                  placeholder="比如：老王 / 访谈员-李"
-                  style={{ fontSize: 12, width: 170 }}
-                />
-                <button
-                  disabled={busy || !nickDraft.trim() || nickDraft.trim() === identity.nick}
-                  onClick={() => void saveIdentity({ nick: nickDraft.trim() })}
-                  style={{ fontSize: 11, padding: '3px 10px' }}
-                >
-                  保存代号
-                </button>
-              </div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12, color: '#6b7280', width: 88 }}>个人码</span>
-                <input
-                  value={deviceDraft}
-                  onChange={(e) => setDeviceDraft(e.target.value)}
-                  placeholder="自己定：如 li-2026"
-                  style={{ fontSize: 12, width: 170 }}
-                />
-                <button
-                  disabled={busy || !deviceDraft.trim() || deviceDraft.trim() === identity.device_code}
-                  onClick={() => void saveIdentity({ device_code: deviceDraft.trim() })}
-                  style={{ fontSize: 11, padding: '3px 10px' }}
-                >
-                  保存个人码
-                </button>
-                <span style={{ fontSize: 11, color: '#8a8f98' }}>
-                  不同设备填同一个个人码，局域网内自动合并为同一个人；不需要知道 IP。
-                </span>
-              </div>
+              昵称与个人码已移到「设置」里：改完回到共享任务即可，不用在这里重复设一次。
             </section>
 
             <section style={{ flex: '1 1 320px', minWidth: 280 }}>
@@ -754,55 +691,60 @@ export default function CollabPanel({
             </div>
 
             {/* ---- 材料 ---- */}
-            {tab === 'material' && !materialView && (
-              <div>
-                {has('material') && (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
-                    <select value={addProject} onChange={(e) => void onProjectChange(e.target.value)} style={{ fontSize: 12 }}>
-                      <option value="">选择项目</option>
-                      {projects.map((p) => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
-                    <select value={addRecording} onChange={(e) => setAddRecording(e.target.value)} style={{ fontSize: 12 }}>
-                      <option value="">选择录音</option>
-                      {recordings.map((r) => (
-                        <option key={r.id} value={r.id}>{r.name}</option>
-                      ))}
-                    </select>
-                    <button
-                      disabled={busy || !addRecording}
-                      onClick={() => void onAddMaterial()}
-                      style={{ fontSize: 12, padding: '3px 10px' }}
-                    >
-                      灌入当前版本
-                    </button>
-                    <span style={{ fontSize: 11, color: '#8a8f98' }}>材料是快照；之后原录音再改不会自动同步。</span>
-                  </div>
-                )}
-                {materials.length === 0 ? (
-                  <div style={{ fontSize: 12, color: '#999' }}>这个共享任务还没有材料。</div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {materials.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => void openMaterial(m.id)}
-                        style={{ textAlign: 'left', border: '1px solid #e2e6ec', borderRadius: 8, background: '#fbfcfe', padding: '8px 10px', cursor: 'pointer' }}
-                      >
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{m.name}</div>
-                        <div style={{ fontSize: 11, color: '#8a8f98', marginTop: 2 }}>
-                          版本 {m.version} · 阶段 {m.stage} · {m.sentence_count} 句 · {m.added_by} 灌入于 {fmtTime(m.added_at)}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+                        {/* ---- 材料：左边列表，右边详情/播放 ---- */}
+            {tab === 'material' && (
+              <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+                <div style={{ width: 310, flexShrink: 0 }}>
 
-            {/* ---- 材料详情 ---- */}
-            {tab === 'material' && materialView && (
+          <div>
+          {has('material') && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+              <select value={addProject} onChange={(e) => void onProjectChange(e.target.value)} style={{ fontSize: 12 }}>
+                <option value="">选择项目</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <select value={addRecording} onChange={(e) => setAddRecording(e.target.value)} style={{ fontSize: 12 }}>
+                <option value="">选择录音</option>
+                {recordings.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+              <button
+                disabled={busy || !addRecording}
+                onClick={() => void onAddMaterial()}
+                style={{ fontSize: 12, padding: '3px 10px' }}
+              >
+                灌入当前版本
+              </button>
+              <span style={{ fontSize: 11, color: '#8a8f98' }}>材料是快照；之后原录音再改不会自动同步。</span>
+            </div>
+          )}
+          {materials.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#999' }}>这个共享任务还没有材料。</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {materials.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => void openMaterial(m.id)}
+                  style={{ textAlign: 'left', border: '1px solid #e2e6ec', borderRadius: 8, background: '#fbfcfe', padding: '8px 10px', cursor: 'pointer' }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{m.name}</div>
+                  <div style={{ fontSize: 11, color: '#8a8f98', marginTop: 2 }}>
+                    版本 {m.version} · 阶段 {m.stage} · {m.sentence_count} 句 · {m.added_by} 灌入于 {fmtTime(m.added_at)}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {materialView ? (
+                    <>
+
               <div
                 onCopy={(e) => {
                   if (materialView.review_mode) e.preventDefault()
@@ -1054,6 +996,12 @@ export default function CollabPanel({
                         </div>
                       )}
                     </div>
+                  )}
+                </div>
+              </div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#999' }}>选择左边一条材料查看转写与播放。</div>
                   )}
                 </div>
               </div>
