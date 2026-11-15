@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / 前端
+node_modules/
+dist/
+
+# 系统 / IDE
+.DS_Store
+*.log
+
+# 敏感数据（绝不能入库）
+.env
+*.pem
+*.key
+
+# 运行时数据（用户录音 / 转写稿 / 版本，人可读文本但属于用户私有数据，绝不能进公共库）
+data/
+
+# 启动器测试产物（真实源在 bootstrap/、backend/）
+.runtime/
+/start.sh
+/start-windows.bat
+/start-mac.command
+/requirements.txt
+/README.md

@@ -1,0 +1,42 @@
+# ASR 转写（阶段 0 初始转写）
+faster-whisper==1.2.1
+
+# 关键传递依赖必须锁死版本（不能交给 pip 自动挑最新）：
+# 实测 av 19 移除了 open(metadata_errors=...) 参数，faster-whisper 1.2.1 直接报
+# "open() got an unexpected keyword argument 'metadata_errors'"，转写全挂。
+# 升级任何一条前，必须重新跑一遍真实转写（见 DEPENDENCIES.md「升级纪律」）。
+ctranslate2==4.8.1
+av==17.1.0
+tokenizers==0.22.1
+huggingface-hub>=0.21,<2
+
+# SenseVoice Small（PRD 第 7 节第二档）：sherpa-onnx int8 推理
+sherpa-onnx==2.0.1
+
+# Qwen3-ASR-0.6B（PRD 第 7 节第三档）：官方 Transformers 权重
+# torch 不写在这里：PyPI 默认包在 Linux 上会拖入 CUDA/NVIDIA 依赖（数 GB），
+# 由启动器单独从 CPU wheel 源安装；失败时该档在设置页如实标为未内置。
+#
+# 必须停在 5.13.1：5.14+ 要求 tokenizers>=0.23.1，而公开 PyPI / 清华镜像
+# 目前最高只有 tokenizers 0.22.1，装到用户机器上会直接 ResolutionImpossible
+# （与网络、代理无关，是版本约束死锁）。5.13.1 要求 tokenizers<=0.23.0,>=0.22.0，
+# 且已包含 qwen3_asr 与 apply_transcription_request，三档可同时安装。
+transformers==5.13.1
+
+# Qwen3-ASR 的 apply_transcription_request 内部走 apply_chat_template，
+# transformers 把 jinja2 放在 chat-template extra 里，不装就会在转写时
+# 报 "apply_chat_template requires jinja2 to be installed"。
+jinja2==3.1.6
+
+# 其余由 faster-whisper / sherpa-onnx 自动带入（此处仅登记备查）
+# numpy                # 音频解码与 VAD
+# onnxruntime          # VAD 可选依赖
+
+# AI 语义纠错（阶段 1，可选）：llama-cpp-python 不随本文件安装。
+# 官方 PyPI 只有源码包，用户机器没有编译工具链会装不上；启动器单独执行：
+#   pip install llama-cpp-python==0.3.36 \
+#     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+# 预编译 wheel 覆盖 win_amd64 / macosx_11_0_arm64 / manylinux x86_64；
+# Intel Mac 等没有 wheel 的平台会装失败，此时 AI 纠错如实提示「运行时未安装」，
+# 不影响录音、转写、校对、脱敏。
+
