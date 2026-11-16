@@ -8,6 +8,7 @@ import type {
   CodingStore,
   CollabAccess,
   CollabApproval,
+  CollabChatMessage,
   CollabGroupSummary,
   CollabGrant,
   CollabMaterial,
@@ -468,6 +469,50 @@ export async function listGroups(): Promise<{
   identity: { nick: string; device_code: string }
 }> {
   return json(await fetch(`${BACKEND}/api/groups`))
+}
+
+export async function listGroupMessages(groupId: string): Promise<{
+  messages: CollabChatMessage[]
+  my_device: string
+}> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/messages`))
+}
+
+export async function sendGroupMessage(
+  groupId: string,
+  msg: {
+    kind: 'text' | 'file' | 'material'
+    text?: string
+    material_id?: string
+    file_name?: string
+    file_path?: string
+    file_size?: number
+  },
+): Promise<CollabChatMessage> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(msg),
+    }),
+  )
+}
+
+/** 上传聊天附件（文件是文件，不进材料体系）。 */
+export async function uploadChatFile(groupId: string, file: File): Promise<{
+  file_name: string; file_path: string; file_size: number
+}> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/chat/upload?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      body: await file.arrayBuffer(),
+    }),
+  )
+}
+
+/** 聊天附件下载 URL（浏览器直接打开即下载，Content-Disposition 由后端给）。 */
+export function chatFileUrl(groupId: string, stored: string, name: string): string {
+  return `${BACKEND}/api/groups/${groupId}/chat/${encodeURIComponent(stored)}?name=${encodeURIComponent(name)}`
 }
 
 export async function createGroup(

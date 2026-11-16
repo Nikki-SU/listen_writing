@@ -505,6 +505,107 @@ def update_roles(group_id: str, role: str, caps: list[str], name: str, device_co
     return {"roles": group["roles"]}
 
 
+# ---------- 群聊 ----------
+
+
+def messages_path(group_id: str) -> Path:
+    return group_dir(group_id) / "messages.json"
+
+
+def chat_dir(group_id: str) -> Path:
+    return group_dir(group_id) / "chat"
+
+
+def _load_messages(group_id: str) -> list[dict]:
+    data = storage._read_json(messages_path(group_id))
+    return data if isinstance(data, list) else []
+
+
+def list_messages(group_id: str, device_code: str) -> dict:
+    """群聊消息：所有群成员（含只读 / 审查者）都可看、可发——聊天是沟通，不改变文档。"""
+    group = load_group(group_id)
+    member = _require(group, device_code, "view")
+    return {
+        "messages": _load_messages(group_id),
+        "my_device": member.get("device_code", device_code),
+    }
+
+
+def send_message(
+    group_id: str,
+    device_code: str,
+    kind: str,
+    text: str,
+    material_id: str = "",
+    file_name: str = "",
+    file_path: str = "",
+    file_size: int = 0,
+) -> dict:
+    """发一条聊天消息。
+
+    kind：
+      - text     纯文字
+      - file     普通附件（文件是文件，不进材料体系；可下载，不在聊天里打开）
+      - material 某人从工作区灌入材料的事件卡片（材料本体仍走灌入流程）
+    所有群成员（含只读）都能发——聊天是沟通，不改变文档与权限。
+    """
+    group = load_group(group_id)
+    actor = _require(group, device_code, "view")
+    if kind not in ("text", "file", "material"):
+        raise CollabError("消息类型只能是 text / file / material", status=400)
+    if kind == "text" and not text.strip():
+        raise CollabError("文字消息不能为空", status=400)
+    if kind == "file" and not file_path:
+        raise CollabError("文件消息缺少文件", status=400)
+    if kind == "material" and not any(m.get("id") == material_id for m in group.get("materials", [])):
+        raise CollabError("引用的材料不在这个群里", status=404)
+    msg = {
+        "id": storage.new_id(),
+        "kind": kind,
+        "by": actor.get("device_code", device_code),
+        "nick": actor.get("nick", ""),
+        "at": _now(),
+        "text": (text or "").strip()[:4000],
+        "material_id": material_id if kind == "material" else "",
+        "file_name": file_name if kind == "file" else "",
+        "file_path": file_path if kind == "file" else "",
+        "file_size": int(file_size) if kind == "file" else 0,
+    }
+    msgs = _load_messages(group_id)
+    msgs.append(msg)
+    _write_json(messages_path(group_id), msgs[-1000:])
+    _log(group, actor, "chat_message", file_name if kind == "file" else "", "发消息")
+    return msg
+
+
+def save_chat_file(group_id: str, device_code: str, name: str, body: bytes) -> dict:
+    """把聊天附件落到群组的 chat/ 目录；文件与材料分离，不进材料体系。"""
+    group = load_group(group_id)
+    _require(group, device_code, "view")
+    if not body:
+        raise CollabError("空文件", status=400)
+    if len(body) > 100 * 1024 * 1024:
+        raise CollabError("附件不能超过 100MB", status=413)
+    safe = Path(name).name or "file"
+    stored = f"{storage.new_id()}-{safe}"
+    d = chat_dir(group_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / stored).write_bytes(body)
+    return {"file_name": safe, "file_path": stored, "file_size": len(body)}
+
+
+def chat_file_path(group_id: str, device_code: str, stored: str) -> Path:
+    """下载附件：校验是本群 chat 目录内的文件，防目录穿越。"""
+    group = load_group(group_id)
+    _require(group, device_code, "view")
+    if Path(stored).name != stored:
+        raise CollabError("非法文件名", status=400)
+    p = chat_dir(group_id) / stored
+    if not p.is_file():
+        raise CollabError("文件不存在", status=404)
+    return p
+
+
 # ---------- 材料 ----------
 
 

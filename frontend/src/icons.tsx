@@ -114,3 +114,8 @@ export function PlusIcon({ size = 14 }: { size?: number }) {
 export function RefreshIcon({ size = 14 }: { size?: number }) {
   return <Glyph size={size} d="M20 11a8 8 0 1 0-2.3 5.6M20 5v6h-6" />
 }
+
+/** 加入：箭头进入一个开口框。 */
+export function EnterIcon({ size = 14 }: { size?: number }) {
+  return <Glyph size={size} d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M14 8l4 4-4 4M18 12H9" />
+}

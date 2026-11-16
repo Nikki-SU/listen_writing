@@ -176,6 +176,21 @@ export type CollabMaterialDetail = {
   review_mode: boolean
 }
 
+export type CollabChatMessage = {
+  id: string
+  kind: 'text' | 'file' | 'material'
+  by: string
+  nick: string
+  at: string
+  text: string
+  material_id: string
+  file_name: string
+  file_path: string
+  file_size: number
+  /** 是不是我自己发的（前端按 device 比对） */
+  mine?: boolean
+}
+
 export type CollabProposal = {
   id: string
   material_id: string

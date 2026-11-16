@@ -883,6 +883,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         for pattern, fn in (
+            (r"^/api/groups/([^/]+)/messages$", lambda g: collab.list_messages(g, device)),
+            (r"^/api/groups/([^/]+)/chat/([^/]+)$", lambda g, f: self._stream_file(
+                collab.chat_file_path(g, device, f), "application/octet-stream",
+                (parse_qs(urlparse(self.path).query).get("name") or [""])[0],
+            )),
             (r"^/api/groups/([^/]+)/materials$", lambda g: collab.list_materials(g, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)/versions/([^/]+)$", lambda g, mid, v: collab.get_material_version(g, mid, v, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)/coding/coders$", lambda g, mid: collab.list_material_coders(g, mid, device)),
@@ -2377,8 +2382,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._stream_file(audio_path, AUDIO_MIME.get(recording.get("format", ""), "application/octet-stream"))
 
-    def _stream_file(self, audio_path: Path, mime: str):
-        """支持 Range 的文件流；本地音频与协作材料播放共用。"""
+    def _stream_file(self, audio_path: Path, mime: str, download_name: str = ""):
+        """支持 Range 的文件流；本地音频与协作材料播放共用。download_name 给定时作为附件下载。"""
         size = audio_path.stat().st_size
         start, end, status = 0, size - 1, 200
         range_header = self.headers.get("Range") or ""
@@ -2408,6 +2413,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
+        if download_name:
+            from urllib.parse import quote
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(download_name)}")
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -2565,6 +2573,31 @@ class Handler(BaseHTTPRequestHandler):
                 data.get("days"),
                 str(data.get("note") or ""),
             ))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/messages$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.send_message(
+                m[0], device,
+                str(data.get("kind") or "text"),
+                str(data.get("text") or ""),
+                str(data.get("material_id") or ""),
+                str(data.get("file_name") or ""),
+                str(data.get("file_path") or ""),
+                data.get("file_size") or 0,
+            ))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/chat/upload$")
+        if m:
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("name") or ["file"])[0]
+            device = self._collab_device()
+            self._collab_call(lambda: collab.save_chat_file(m[0], device, name, self._read_body()))
             return
 
         m = _match(path, r"^/api/groups/([^/]+)/materials$")

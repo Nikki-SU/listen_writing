@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
+import {
+  DownloadIcon,
+  EnterIcon,
+  GearIcon,
+  PlusIcon,
+  UploadIcon,
+  CloseIcon,
+} from './icons'
 import GroupCodingPanel from './coding/GroupCodingPanel'
 import GroupAnalysisPanel from './coding/GroupAnalysisPanel'
 import ComparePanel from './coding/ComparePanel'
 import type {
   CollabAccess,
   CollabApproval,
+  CollabChatMessage,
   CollabGrant,
   CollabGroupSummary,
   CollabMaterial,
@@ -45,6 +54,12 @@ const TABS = [
 
 type Tab = (typeof TABS)[number][0]
 
+const ICON_BTN: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  border: '1px solid #e3e6ea', borderRadius: 6, background: '#fff',
+  cursor: 'pointer', padding: 0,
+}
+
 function errText(e: unknown): string {
   return String(e)
 }
@@ -73,6 +88,8 @@ export default function CollabPanel({
   const [identity, setIdentity] = useState<{ nick: string; device_code: string }>({ nick: '', device_code: '' })
   const [selected, setSelected] = useState<CollabGroupSummary | null>(null)
   const [tab, setTab] = useState<Tab>('material')
+  // 中栏两态：协作（材料/转写/编码）/ 审批（提案/播放）。低频管理收进右栏群设置。
+  const [mainView, setMainView] = useState<'collab' | 'approve'>('collab')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
@@ -119,6 +136,16 @@ export default function CollabPanel({
   const [addRecording, setAddRecording] = useState('')
   const [recordings, setRecordings] = useState<Recording[]>([])
 
+  // 右栏群聊：文件是文件（附件可下载），材料是材料（另行从工作区灌入）。
+  const [chatOpen, setChatOpen] = useState(true)
+  const [chatMsgs, setChatMsgs] = useState<CollabChatMessage[]>([])
+  const [chatMyDevice, setChatMyDevice] = useState('')
+  const [chatDraft, setChatDraft] = useState('')
+  const [chatSending, setChatSending] = useState(false)
+  const chatFileRef = useRef<HTMLInputElement>(null)
+  const chatEndRef = useRef<HTMLDivElement>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
   const [materialView, setMaterialView] = useState<CollabMaterialDetail | null>(null)
   // 材料里除了“转写”还应能直接进入“编码 / 对比”：数据都在群组里，多人可共享。
   const [materialMode, setMaterialMode] = useState<'transcript' | 'coding' | 'analysis' | 'compare'>('transcript')
@@ -146,9 +173,16 @@ export default function CollabPanel({
   const allProposalsSelected =
     mergeableProposals.length > 0 && mergeableProposals.every((p) => proposalSel.includes(p.id))
   // 提案只对能提交/合并的人生效；只读与审查者连 tab 都不显示，避免拿到他人原文。
-  const visibleTabs = TABS.filter(
-    ([key]) => key !== 'proposals' || has('submit') || has('merge'),
-  )
+  const visibleTabs: (typeof TABS)[number][] = mainView === 'collab'
+    ? TABS.filter(([key]) => key === 'material')
+    : TABS.filter(([key]) => (key === 'proposals' && (has('submit') || has('merge'))) || key === 'approvals')
+  // 协作/审批切换时把 tab 落到该视图的第一个可见项，避免停在隐藏 tab 上。
+  function switchMainView(v: 'collab' | 'approve') {
+    setMainView(v)
+    setMaterialView(null)
+    if (v === 'collab') setTab('material')
+    else setTab(has('submit') || has('merge') ? 'proposals' : 'approvals')
+  }
   const burnApproval = useMemo(() => {
     const a = materialView?.approval
     if (!selected || !a || a.mode !== 'burn' || a.status !== 'approved') return null
@@ -244,6 +278,59 @@ export default function CollabPanel({
       }
     } else {
       setAccess([])
+    }
+    try {
+      const chat = await api.listGroupMessages(id)
+      setChatMsgs(chat.messages)
+      setChatMyDevice(chat.my_device)
+    } catch {
+      setChatMsgs([])
+    }
+  }
+
+  async function sendChat() {
+    if (!selected || chatSending || !chatDraft.trim()) return
+    setChatSending(true)
+    const text = chatDraft.trim()
+    setChatDraft('')
+    try {
+      const msg = await api.sendGroupMessage(selected.id, { kind: 'text', text })
+      setChatMsgs((prev) => [...prev, msg])
+    } catch (e) {
+      setError(`发送失败：${errText(e)}`)
+    } finally {
+      setChatSending(false)
+    }
+  }
+
+  async function sendChatFile(file: File) {
+    if (!selected || chatSending) return
+    setChatSending(true)
+    try {
+      const meta = await api.uploadChatFile(selected.id, file)
+      const msg = await api.sendGroupMessage(selected.id, { kind: 'file', ...meta })
+      setChatMsgs((prev) => [...prev, msg])
+    } catch (e) {
+      setError(`上传失败：${errText(e)}`)
+    } finally {
+      setChatSending(false)
+    }
+  }
+
+  async function sendMaterialCard() {
+    if (!selected || !materialView || chatSending) return
+    setChatSending(true)
+    try {
+      const msg = await api.sendGroupMessage(selected.id, {
+        kind: 'material',
+        material_id: materialView.material.id,
+        text: materialView.material.name,
+      })
+      setChatMsgs((prev) => [...prev, msg])
+    } catch (e) {
+      setError(`发送失败：${errText(e)}`)
+    } finally {
+      setChatSending(false)
     }
   }
 
@@ -572,24 +659,22 @@ export default function CollabPanel({
               boxSizing: 'border-box',
             }}
           >
-            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>群组</span>
+              <span style={{ flex: 1 }} />
               <button
-                onClick={() => {
-                  setJoinOpen(false)
-                  setCreateOpen((v) => !v)
-                }}
-                style={{ flex: 1, fontSize: 12, padding: '5px 8px' }}
+                onClick={() => { setJoinOpen(false); setCreateOpen((v) => !v) }}
+                title="新建群组" aria-label="新建群组"
+                style={{ ...ICON_BTN, width: 24, height: 24, color: createOpen ? '#245c9c' : '#5b6472' }}
               >
-                ＋ 新建
+                <PlusIcon size={14} />
               </button>
               <button
-                onClick={() => {
-                  setCreateOpen(false)
-                  setJoinOpen((v) => !v)
-                }}
-                style={{ flex: 1, fontSize: 12, padding: '5px 8px' }}
+                onClick={() => { setCreateOpen(false); setJoinOpen((v) => !v) }}
+                title="加入群组" aria-label="加入群组"
+                style={{ ...ICON_BTN, width: 24, height: 24, color: joinOpen ? '#245c9c' : '#5b6472' }}
               >
-                加入
+                <EnterIcon size={14} />
               </button>
             </div>
 
@@ -786,6 +871,21 @@ export default function CollabPanel({
                   {requests.filter((r) => r.status === 'pending').length} 条管理员任免待你决定
                 </span>
               )}
+            </div>
+
+            {/* 协作 / 审批：两个高频视图；低频管理收进右栏群设置 */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+              {([['collab', '协作'], ['approve', '审批']] as const).map(([key, label]) => (
+                <button key={key} onClick={() => switchMainView(key)}
+                  style={{
+                    fontSize: 12, padding: '4px 14px', borderRadius: 6, cursor: 'pointer',
+                    border: `1px solid ${mainView === key ? '#8ab4f8' : '#e3e6ea'}`,
+                    background: mainView === key ? '#e8f0fe' : '#fff',
+                    color: mainView === key ? '#245c9c' : '#5b6472',
+                  }}>
+                  {label}
+                </button>
+              ))}
             </div>
 
             <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #eee', marginBottom: 12 }}>
@@ -1536,8 +1636,110 @@ export default function CollabPanel({
               </>
             )}
           </section>
+
+          {/* 右栏：群聊（辅助）。文件是文件：附件可下载、不在聊天打开；
+              材料是材料：从工作区另行灌入，聊天里只给入口。 */}
+          {chatOpen ? (
+            <aside style={{
+              width: 220, flexShrink: 0, background: '#fff', border: '1px solid #e8ebf0',
+              borderRadius: 12, padding: 12, display: 'flex', flexDirection: 'column',
+              minHeight: 0, boxSizing: 'border-box',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>群聊</span>
+                <span style={{ flex: 1 }} />
+                <button onClick={() => setSettingsOpen(true)} title="群聊设置" aria-label="群聊设置" style={{ ...ICON_BTN, width: 24, height: 24 }}><GearIcon size={13} /></button>
+                <button onClick={() => setChatOpen(false)} title="折叠" aria-label="折叠群聊" style={{ ...ICON_BTN, width: 24, height: 24 }}>▾</button>
+              </div>
+              <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+                {chatMsgs.length === 0 && <div style={{ fontSize: 12, color: '#999', lineHeight: 1.6 }}>还没有消息。说点什么，或发个文件。</div>}
+                {chatMsgs.map((m) => {
+                  const mine = m.by === chatMyDevice
+                  return (
+                    <div key={m.id} style={{ marginBottom: 10, display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
+                      <div style={{ maxWidth: '92%', background: mine ? '#e8f0fe' : '#f4f6f8', borderRadius: 8, padding: '6px 9px', fontSize: 12, color: '#2b3138' }}>
+                        {!mine && <div style={{ fontSize: 10, color: '#8a8f98', marginBottom: 2 }}>{m.nick || m.by.slice(0, 6)}</div>}
+                        {m.kind === 'text' && <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.text}</div>}
+                        {m.kind === 'file' && (
+                          <a href={api.chatFileUrl(selected?.id || '', m.file_path, m.file_name)} target="_blank" rel="noreferrer"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#245c9c', textDecoration: 'none' }}>
+                            <DownloadIcon size={13} />
+                            <span>{m.file_name}</span>
+                            <span style={{ fontSize: 10, color: '#8a8f98' }}>{Math.round(m.file_size / 1024)}KB</span>
+                          </a>
+                        )}
+                        {m.kind === 'material' && (
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#245c9c' }}>
+                            <span style={{ fontSize: 10, border: '1px solid #8ab4f8', borderRadius: 4, padding: '0 4px' }}>材料</span>
+                            <span>{m.text || '一份材料'}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+                <div ref={chatEndRef} />
+              </div>
+              {/* 灌材料入口：材料从工作区有意识灌入，这里只告诉用户去哪灌 */}
+              <div style={{ fontSize: 11, color: '#8a8f98', margin: '6px 0 4px', lineHeight: 1.5 }}>
+                材料请在左侧「材料」区从工作区灌入；灌入后可在这里发一条提示。
+              </div>
+              <div style={{ display: 'flex', gap: 5, alignItems: 'center', marginTop: 4 }}>
+                <input
+                  ref={chatFileRef}
+                  type="file"
+                  hidden
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void sendChatFile(f); e.target.value = '' }}
+                />
+                <button onClick={() => chatFileRef.current?.click()} disabled={chatSending} title="发文件" aria-label="发文件" style={{ ...ICON_BTN, width: 28, height: 28 }}><UploadIcon size={13} /></button>
+                {materialView && (
+                  <button onClick={() => void sendMaterialCard()} disabled={chatSending} title="把当前材料提示到群里" aria-label="分享材料提示" style={{ ...ICON_BTN, width: 28, height: 28, color: '#245c9c' }}>⊕</button>
+                )}
+                <input
+                  value={chatDraft}
+                  onChange={(e) => setChatDraft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendChat() } }}
+                  placeholder="说点什么…"
+                  disabled={chatSending}
+                  style={{ flex: 1, minWidth: 0, fontSize: 12, padding: '5px 7px', border: '1px solid #e3e6ea', borderRadius: 6 }}
+                />
+              </div>
+            </aside>
+          ) : (
+            <button
+              onClick={() => setChatOpen(true)}
+              title="展开群聊" aria-label="展开群聊"
+              style={{ ...ICON_BTN, width: 30, flexShrink: 0, alignSelf: 'stretch', minHeight: 60, color: '#245c9c' }}
+            >▸</button>
+          )}
         </div>
       </div>
+
+      {/* 群聊/群组设置（本群相关）：低频管理从此处进入，不默认铺在主界面 */}
+      {settingsOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(16,24,40,.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          onClick={() => setSettingsOpen(false)}>
+          <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e8ebf0', padding: '18px 20px', width: 360, maxWidth: '100%' }}
+            onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14 }}>
+              <span style={{ fontSize: 15, fontWeight: 600 }}>群聊设置</span>
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setSettingsOpen(false)} title="关闭" aria-label="关闭" style={{ ...ICON_BTN, width: 26, height: 26 }}><CloseIcon size={14} /></button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {([['members', '成员与权限'], ['access', '访问留痕'], ['devices', '我的设备']] as const).map(([key, label]) => (
+                <button key={key} onClick={() => { setMainView('approve'); setTab(key); setSettingsOpen(false) }}
+                  style={{ display: 'flex', alignItems: 'center', fontSize: 13, padding: '9px 12px', border: '1px solid #e3e6ea', borderRadius: 8, background: '#fff', cursor: 'pointer', color: '#3b4250' }}>
+                  <span style={{ flex: 1, textAlign: 'left' }}>{label}</span><span style={{ color: '#9aa0a6' }}>→</span>
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: '#9aa0a6', marginTop: 12, lineHeight: 1.6 }}>
+              这些是不常用的管理操作，需要时才进来。
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
