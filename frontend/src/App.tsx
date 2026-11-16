@@ -8,7 +8,7 @@ import ModelSetup from './ModelSetup'
 import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { jobFor, useModels } from './useModels'
-import { BOOTSTRAP_FILES } from './bootstrapFiles'
+import { BOOTSTRAP_FILES, BUNDLE_VERSION } from './bootstrapFiles'
 import { speakerColor, SPEAKER_PALETTE } from './speakerColors'
 import CodingPanel from './coding/CodingPanel'
 import AnalysisPanel from './coding/AnalysisPanel'
@@ -48,7 +48,6 @@ import {
   applyUpdate,
   backendOutdated,
   ensureWritePermission,
-  isOutdated,
   loadDirHandle,
   markBundleApplied,
   pickDirectory,
@@ -143,12 +142,10 @@ export default function App() {
       const v = await api.fetchVersion()
       setProjects(await api.listProjects())
       setError('')
-      // 两种更新分开处理（用户明确要求）：
-      //  1) 后端代码落后（backend 段旧）→ 需要写本地文件 + 可能重启，走 onUpdate 流程（需用户点击授权写）。
-      //  2) 只有前端落后 → 纯页面改版，只需提示用户刷新；绝不写文件、绝不重启后端。
+      // 后端代码落后才需要写本地文件 + 可能重启（需用户点击授权写）。
+      // 纯前端更新走下面的 version.json 探测，只提示刷新，不碰后端。
       const backendBehind = backendOutdated(v)
       setUpd((prev) => (backendBehind ? (prev === 'idle' ? 'available' : prev) : 'idle'))
-      setNeedRefresh(!backendBehind && isOutdated(v))
     } catch (e) {
       setError(String(e))
     }
@@ -157,6 +154,27 @@ export default function App() {
   useEffect(() => {
     void boot()
   }, [boot])
+
+  // 前端更新探测：no-store 拉取随每次部署生成的 version.json，和本页面编译时的版本比。
+  // 线上前端版本更高 = 已部署新版但用户还开着旧页面 → 提示刷新（与后端版本无关）。
+  useEffect(() => {
+    let alive = true
+    const check = async () => {
+      try {
+        const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' })
+        if (!res.ok) return
+        const v = (await res.json()) as { frontend?: number }
+        if (alive && typeof v.frontend === 'number' && v.frontend > BUNDLE_VERSION.frontend) {
+          setNeedRefresh(true)
+        }
+      } catch {
+        // 探测失败就安静跳过，不打扰用户
+      }
+    }
+    void check()
+    const timer = setInterval(() => void check(), 60_000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [])
 
   // 后端离线期间每 2 秒探测一次：用户跑完启动器后页面自动连上，无需手动刷新
   useEffect(() => {

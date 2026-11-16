@@ -77,3 +77,10 @@ export const BOOTSTRAP_FILES: BootstrapFile[] = ${JSON.stringify(files, null, 2)
 
 writeFileSync(join(frontendDir, 'src', 'bootstrapFiles.ts'), ts)
 console.log(`embed-backend: ${files.length} files -> src/bootstrapFiles.ts`)
+
+// 线上版本标记：随每次构建写到 public/version.json，部署后是静态资源。
+// 页面用它（no-store 拉取）和自己编译时的 BUNDLE_VERSION 比对，判断“前端是否有新版已部署”。
+// 注意：这跟后端返回的版本无关，纯前端部署更新也能被探测到。
+const versionJson = JSON.stringify({ frontend: bundleVersion.frontend, backend: bundleVersion.backend })
+writeFileSync(join(frontendDir, 'public', 'version.json'), versionJson)
+console.log(`embed-backend: version.json -> frontend ${bundleVersion.frontend}`)
