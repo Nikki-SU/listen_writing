@@ -160,6 +160,8 @@ def create_recording(project_id: str, name: str, fmt: str) -> dict:
         "format": fmt,
         "duration_sec": 0.0,
         "created_at": _now_iso(),
+        # 最后内容修改时间：仅写操作刷新，查看（GET）不动；列表据此排序（微信式）。
+        "updated_at": _now_iso(),
         "transcribe": {"status": "pending", "progress": 0, "error": ""},
     }
     _write_json(recording_dir(project_id, recording["id"]) / "recording.json", recording)
@@ -188,7 +190,8 @@ def list_recordings(project_id: str) -> list[dict]:
             r = _read_json(d / "recording.json")
             if r:
                 recordings.append(r)
-    recordings.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    # 按最后内容修改倒序（查看不计入）；老数据无该字段时回退 created_at。
+    recordings.sort(key=lambda r: r.get("updated_at") or r.get("created_at", ""), reverse=True)
     return recordings
 
 
@@ -206,6 +209,8 @@ def update_recording(project_id: str, recording_id: str, **fields) -> dict | Non
     if recording is None:
         return None
     recording.update(fields)
+    # 任何写操作都刷新“最后修改时间”；查看路径不经过这里，所以查看不算修改。
+    recording["updated_at"] = _now_iso()
     _write_json(recording_dir(project_id, recording_id) / "recording.json", recording)
     return recording
 

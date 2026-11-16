@@ -21,6 +21,47 @@ body {
   display: none; /* Chrome / Safari / Edge */
 }
 
+/* 顶栏：身份 → 工作空间 → 模式 → 工具，单行不换行，高度固定（工作台外壳永不滚、不跳变） */
+.app-header {
+  flex-shrink: 0; display: flex; align-items: center; gap: 14px;
+  height: 48px; padding: 0 14px; background: #fff;
+  border-bottom: 1px solid #e8ebf0; white-space: nowrap; overflow: hidden;
+}
+.app-brand { display: inline-flex; align-items: center; gap: 9px; flex-shrink: 0; }
+.app-mark {
+  width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #245c9c; color: #fff;
+}
+.app-title { font-size: 15px; font-weight: 600; letter-spacing: .02em; color: #1f2937; }
+.app-health { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; cursor: help; }
+.app-health.up { background: #34a853; box-shadow: 0 0 0 3px rgba(52,168,83,.14); }
+.app-health.down { background: #ea4335; box-shadow: 0 0 0 3px rgba(234,67,53,.14); }
+.seg-nav {
+  display: inline-flex; gap: 2px; padding: 3px; flex-shrink: 0;
+  background: #f2f4f7; border-radius: 8px;
+}
+.seg-nav button {
+  font-size: 13px; padding: 5px 14px; border: none; border-radius: 6px;
+  cursor: pointer; background: transparent; color: #6b7280; line-height: 1.4;
+}
+.seg-nav button.on { background: #fff; color: #1f2937; font-weight: 600; box-shadow: 0 1px 3px rgba(16,24,40,.12); }
+.seg-nav button:disabled { cursor: not-allowed; opacity: .45; }
+.mode-nav { margin-left: auto; }
+.app-tools { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* 材料行状态点：颜色即状态，hover 的 title 才给文字 */
+.mat-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 2px rgba(0,0,0,.04); }
+/* 转写稿工具栏：导出格式标签（去掉下载图标的迷惑，文字本身就是格式） */
+.export-tag {
+  font-size: 10px; padding: 2px 6px; border: 1px solid #e3e6ea; border-radius: 4px;
+  background: #fff; color: #5f6368; cursor: pointer; line-height: 1.5;
+}
+.export-tag:hover { background: #f5f8ff; border-color: #b8d0f0; color: #245c9c; }
+.text-tool {
+  font-size: 12px; padding: 4px 10px; border: 1px solid #ddd; border-radius: 4px;
+  background: #fff; cursor: pointer;
+}
+
 /* 工作区统一五等列：所有页面共用同一套横轴，不允许再嵌套第二套比例。
  * 五个轨道等宽；面板只能占整数列。外部边距/间距固定，不改列宽。
  */

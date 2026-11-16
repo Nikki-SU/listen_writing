@@ -20,7 +20,6 @@ import {
   CheckIcon,
   CloseIcon,
   CrossIcon,
-  DownloadIcon,
   EditIcon,
   GearIcon,
   HistoryIcon,
@@ -86,6 +85,17 @@ function statusLabel(status: string): string {
       return '转写失败'
     default:
       return status
+  }
+}
+
+/** 状态只用颜色说话：黄=待转写 / 蓝=转写中 / 红=失败 / 绿=完成。文字只在 hover 的 title 里。 */
+function statusColor(status: string): string {
+  switch (status) {
+    case 'pending': return '#e8a317'
+    case 'transcribing': return '#245c9c'
+    case 'done': return '#34a853'
+    case 'error': return '#d93025'
+    default: return '#c4c7c9'
   }
 }
 
@@ -425,9 +435,6 @@ export default function App() {
     }
   }
 
-  if (health === 'down' && !restarting) {
-    return <BootstrapGuide onRetry={() => void boot()} />
-  }
   if (guideOpen) {
     return (
       <BootstrapGuide
@@ -490,26 +497,22 @@ export default function App() {
         </div>
       )}
 
-      <header
-        style={{
-          flexShrink: 0,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '8px 12px 6px',
-          flexWrap: 'wrap',
-        }}
-      >
-        <nav
-          style={{
-            display: 'inline-flex',
-            gap: 4,
-            padding: 3,
-            background: '#f2f4f7',
-            borderRadius: 8,
-            flexShrink: 0,
-          }}
-        >
+      <header className="app-header">
+        {/* 左：软件标志 + 标题（身份区，固定） */}
+        <div className="app-brand">
+          <span className="app-mark" aria-hidden="true"><MicIcon size={16} /></span>
+          <span className="app-title">访谈录音台</span>
+        </div>
+
+        {/* 连接状态：绿=已连接，红=未连接；细节只在 hover 的 title 里 */}
+        <span
+          className={`app-health ${health === 'ok' ? 'up' : 'down'}`}
+          title={health === 'ok' ? '本地后端已连接 · 录音不出本机' : '本地后端未连接'}
+          aria-label={health === 'ok' ? '已连接' : '未连接'}
+        />
+
+        {/* 中：工作空间（我的录音 / 共享任务） */}
+        <nav className="seg-nav" aria-label="工作空间">
           {(
             [
               ['workspace', '我的录音'],
@@ -518,39 +521,48 @@ export default function App() {
           ).map(([key, label]) => (
             <button
               key={key}
+              className={view === key ? 'on' : ''}
+              disabled={health !== 'ok'}
               onClick={() => setView(key)}
-              style={{
-                fontSize: 13,
-                padding: '5px 14px',
-                border: 'none',
-                borderRadius: 6,
-                cursor: 'pointer',
-                background: view === key ? '#fff' : 'transparent',
-                color: view === key ? '#1f2937' : '#6b7280',
-                boxShadow: view === key ? '0 1px 3px rgba(16,24,40,.12)' : 'none',
-                fontWeight: view === key ? 600 : 400,
-              }}
             >
               {label}
             </button>
           ))}
         </nav>
-        <h1 style={{ margin: 0, fontSize: 18, letterSpacing: '0.02em' }}>访谈录音台</h1>
-        <span style={{ fontSize: 12, color: '#8a8f98', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ width: 6, height: 6, borderRadius: 3, background: '#34a853', flexShrink: 0 }} />
-          本地后端已连接 · 录音不出本机
-        </span>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+
+        {/* 右：当前模式（转写/编码/分析），常驻，不随是否选中录音而出现/消失 */}
+        <nav className="seg-nav mode-nav" aria-label="工作模式">
+          {(
+            [
+              ['transcript', '转写'],
+              ['coding', '编码'],
+              ['analysis', '分析'],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              className={view === 'workspace' && workspaceMode === key ? 'on' : ''}
+              disabled={view !== 'workspace' || health !== 'ok'}
+              onClick={() => setWorkspaceMode(key)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="app-tools">
           <button onClick={() => setSettingsOpen(true)} title="设置" aria-label="设置" style={{ ...ICON_BTN, height: 28 }}>
             <GearIcon />
           </button>
-          <button onClick={() => setGuideOpen(true)} style={{ fontSize: 12, padding: '4px 10px', color: '#666' }}>
-            启动设置
+          <button onClick={() => setGuideOpen(true)} title="启动设置" style={{ ...ICON_BTN, height: 28, width: 'auto', padding: '0 8px' }}>
+            启动
           </button>
         </div>
       </header>
 
-      {view === 'collab' ? (
+      {health === 'down' && !restarting ? (
+        <BootstrapGuide onRetry={() => void boot()} />
+      ) : view === 'collab' ? (
         <main className="workspace-grid">
           <section className="workspace-card" style={{ gridColumn: 'span 5', display: 'flex', minHeight: 0, minWidth: 0 }}>
             <CollabPanel projects={projects} embedded onClose={() => setView('workspace')} />
@@ -567,27 +579,6 @@ export default function App() {
             boxSizing: 'border-box',
           }}
         >
-          {detail && (
-            <div className="coding-modebar">
-              {(
-                [
-                  ['transcript', '转写'],
-                  ['coding', '编码'],
-                  ['analysis', '分析'],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={workspaceMode === key ? 'active' : ''}
-                  onClick={() => setWorkspaceMode(key)}
-                >
-                  {label}
-                </button>
-              ))}
-              <span className="coding-modebar-note">同一条录音 · 音频与转写稿一体的任务工作区</span>
-            </div>
-          )}
           {error && <div className="workspace-error">{error}</div>}
           <main className="workspace-grid">
             {/* 第 1 列：项目 + 任务（录音） */}
@@ -607,7 +598,7 @@ export default function App() {
               {projectId && (
                 <div className="task-rail-tasks">
                   <div className="rail-label-row">
-                    <span className="rail-label">任务</span>
+                    <span className="rail-label">材料</span>
                     <span className="rail-count">{recordings.length}</span>
                     <input
                       ref={fileInputRef}
@@ -636,7 +627,6 @@ export default function App() {
                       <UploadIcon />
                     </button>
                   </div>
-                  <div className="rail-hint">一条录音就是一个任务；可双击或点铅笔改名</div>
                   <RecordingList
                     recordings={recordings}
                     activeId={recordingId}
@@ -790,7 +780,11 @@ function ProjectList({
             marginBottom: 4,
           }}
         >
-          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {/* 展开指示：一次只展开一个项目（选中即展开，其余折叠） */}
+          <span style={{ color: '#9aa0a6', fontSize: 11, width: 10, flexShrink: 0, textAlign: 'center' }}>
+            {p.id === activeId ? '▾' : '▸'}
+          </span>
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name}>
             {p.name}
           </span>
           <button
@@ -798,7 +792,7 @@ function ProjectList({
               e.stopPropagation()
               onDelete(p.id)
             }}
-            title="删除项目（连同其下所有录音与版本）"
+            title="删除项目（连同其下所有材料与版本）"
             aria-label="删除项目"
             style={{ ...ICON_BTN, width: 22, height: 20, color: '#b00020', border: '1px solid #f0c9cc' }}
           >
@@ -838,7 +832,7 @@ function RecordingList({
   }
 
   if (recordings.length === 0) {
-    return <div style={{ color: '#aaa', fontSize: 13 }}>暂无任务，上传录音以开始</div>
+    return <div style={{ color: '#aaa', fontSize: 13 }}>还没有材料，上传录音以开始</div>
   }
   return (
     <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
@@ -862,6 +856,13 @@ function RecordingList({
               gap: 6,
             }}
           >
+            {/* 状态只用颜色：黄/蓝/红/绿；文字退到 hover 的 title */}
+            <span
+              className="mat-status"
+              style={{ background: statusColor(r.transcribe.status) }}
+              title={statusLabel(r.transcribe.status)}
+              aria-label={statusLabel(r.transcribe.status)}
+            />
             {renaming ? (
               <input
                 autoFocus
@@ -894,21 +895,20 @@ function RecordingList({
                   e.stopPropagation()
                   startRename(r)
                 }}
-                title="重命名这个任务"
-                aria-label="重命名这个任务"
+                title="重命名"
+                aria-label="重命名"
                 style={{ ...ICON_BTN, width: 22, height: 20, color: '#5b6472' }}
               >
                 <EditIcon size={12} />
               </button>
             )}
-            <span style={{ color: '#999', fontSize: 11, flexShrink: 0 }}>{statusLabel(r.transcribe.status)}</span>
             <button
               onClick={(e) => {
                 e.stopPropagation()
                 onDelete(r.id)
               }}
-              title="删除这条录音"
-              aria-label="删除这条录音"
+              title="删除这条材料"
+              aria-label="删除这条材料"
               style={{ ...ICON_BTN, width: 22, height: 20, color: '#b00020', border: '1px solid #f0d0d0' }}
             >
               <TrashIcon size={12} />
@@ -1838,31 +1838,22 @@ function TranscriptPanel({
               v{version}
             </span>
           )}
-          {coding && (
-            <span
-              title="编码区间锚定在正文的字符位置上；编码模式下不修改文字，避免编码错位。要改文字请切回「转写」。"
-              style={{ fontSize: 11, color: '#8a5a00', background: '#fff8e6', border: '1px solid #f0d9a8', borderRadius: 10, padding: '2px 8px' }}
-            >
-              编码模式 · 正文只读
-            </span>
-          )}
+          {/* 编码模式不给编辑入口，正文自然只读，不需要写“正文只读”声明 */}
           <button
             onClick={() => void saveExport(projectId, recordingId, 'md', version || undefined, onError)}
-            title="导出 Markdown"
-            aria-label="导出 Markdown"
-            style={{ ...ICON_BTN, width: 'auto', padding: '0 6px', gap: 4 }}
+            title="导出为 Markdown"
+            aria-label="导出为 Markdown"
+            className="export-tag"
           >
-            <DownloadIcon />
-            <span style={{ fontSize: 10 }}>MD</span>
+            MD
           </button>
           <button
             onClick={() => void saveExport(projectId, recordingId, 'json', version || undefined, onError)}
-            title="导出 JSON"
-            aria-label="导出 JSON"
-            style={{ ...ICON_BTN, width: 'auto', padding: '0 6px', gap: 4 }}
+            title="导出为 JSON"
+            aria-label="导出为 JSON"
+            className="export-tag"
           >
-            <DownloadIcon />
-            <span style={{ fontSize: 10 }}>JSON</span>
+            JSON
           </button>
           <button
             onClick={() => setShowHistory((v) => !v)}
@@ -1927,20 +1918,21 @@ function TranscriptPanel({
           </button>
             </>
           )}
-          <button
-            onClick={() => setRedactMode((v) => !v)}
-            style={{
-              fontSize: 12,
-              padding: '4px 10px',
-              background: redactMode ? '#fff4e0' : '#fff',
-              border: `1px solid ${redactMode ? '#f0b429' : '#ddd'}`,
-              color: redactMode ? '#8a5a00' : '#555',
-              borderRadius: 4,
-            }}
-            title="进入脱敏态：选中文字后点类别即可标记；导出时替换为占位符"
-          >
-            {redactMode ? '退出脱敏' : '脱敏'}
-          </button>
+          {/* 编码模式下正文天然是脱敏后的稿子，不提供脱敏入口 */}
+          {!coding && (
+            <button
+              onClick={() => setRedactMode((v) => !v)}
+              className="text-tool"
+              style={{
+                background: redactMode ? '#fff4e0' : '#fff',
+                borderColor: redactMode ? '#f0b429' : '#ddd',
+                color: redactMode ? '#8a5a00' : '#555',
+              }}
+              title="进入脱敏态：选中文字后点类别即可标记；导出时替换为占位符"
+            >
+              {redactMode ? '退出脱敏' : '脱敏'}
+            </button>
+          )}
         </div>
 
         {((polishing && !polishOpen) ||
@@ -2708,6 +2700,25 @@ function TranscriptPanel({
                           <EditIcon />
                         </button>
                       )}
+                      {/* 句尾色点：这一句挂了哪几个码，一眼可见（NVivo 式） */}
+                      {coding && (() => {
+                        const codes = Array.from(
+                          new Map(
+                            coding.sentenceCodings(s.id)
+                              .map((e) => coding.store.codes.find((c) => c.id === e.code_id))
+                              .filter((c): c is NonNullable<typeof c> => Boolean(c))
+                              .map((c) => [c.id, c]),
+                          ).values(),
+                        )
+                        if (!codes.length) return null
+                        return (
+                          <span style={{ display: 'inline-flex', gap: 3, alignSelf: 'flex-start', flexShrink: 0, paddingTop: 4 }} title={codes.map((c) => c.name).join('、')}>
+                            {codes.map((c) => (
+                              <span key={c.id} style={{ width: 8, height: 8, borderRadius: 2, background: c.color }} />
+                            ))}
+                          </span>
+                        )
+                      })()}
                     </div>
                   )
                 }
@@ -2716,21 +2727,20 @@ function TranscriptPanel({
                     <span
                       title={`本句编码密度 ${Math.round(coding.coverageOf(s) * 100)}%`}
                       style={{
-                        width: 5,
+                        width: 6,
                         alignSelf: 'stretch',
                         minHeight: 20,
                         borderRadius: 3,
                         flexShrink: 0,
-                        background: coding.sentenceCodings(s.id).length
-                          ? (() => {
-                              const r = coding.coverageOf(s)
-                              const from = r < 0.5 ? [46, 160, 67] : [234, 179, 8]
-                              const to = r < 0.5 ? [234, 179, 8] : [220, 38, 38]
-                              const k = r < 0.5 ? r * 2 : (r - 0.5) * 2
-                              const c = from.map((v, i) => Math.round(v + (to[i] - v) * k))
-                              return `rgb(${c[0]}, ${c[1]}, ${c[2]})`
-                            })()
-                          : 'transparent',
+                        // 密度条常驻：随密度从淡绿连续过渡到深红，相邻句形成渐变带，而非有色/无色直白跳变。
+                        background: (() => {
+                          const r = coding.coverageOf(s)
+                          const from = r < 0.5 ? [46, 160, 67] : [234, 179, 8]
+                          const to = r < 0.5 ? [234, 179, 8] : [220, 38, 38]
+                          const k = r < 0.5 ? r * 2 : (r - 0.5) * 2
+                          const c = from.map((v, i) => Math.round(v + (to[i] - v) * k))
+                          return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${0.12 + r * 0.88})`
+                        })(),
                       }}
                     />
                   ) : undefined

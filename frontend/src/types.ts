@@ -36,6 +36,8 @@ export type Recording = {
   format: string
   duration_sec: number
   created_at: string
+  /** 最后内容修改时间（查看不更新），列表据此排序。老数据可能没有。 */
+  updated_at?: string
   transcribe: TranscribeStatus
   version?: RecordingVersion
   speakers?: string[]
