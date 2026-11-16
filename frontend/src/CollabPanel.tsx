@@ -164,6 +164,8 @@ export default function CollabPanel({
   const [editSentence, setEditSentence] = useState<Sentence | null>(null)
   const [editText, setEditText] = useState('')
   const [localEdits, setLocalEdits] = useState<Record<string, string>>({})
+  // 本地分支里勾选提交为 PR 的句子（Git: 从本地分支挑部分 commit 发 PR）。
+  const [localSel, setLocalSel] = useState<string[]>([])
   const [localEditing, setLocalEditing] = useState<Sentence | null>(null)
   const [localText, setLocalText] = useState('')
   // 播放逻辑与本地录音共用同一个 hook（播放器行为只有一份，杜绝两套）。
@@ -182,8 +184,14 @@ export default function CollabPanel({
   const myRole = selected?.my_role || ''
   const myCaps = (roles[myRole]?.caps || []) as string[]
   const has = (cap: string) => myCaps.includes(cap)
+  // 审批分两种：待我审批（别人提交的）/ 我提交的PR。Git 模型：审批别人 vs 被别人审批。
+  const [prView, setPrView] = useState<'review' | 'mine'>('review')
+  const isMyProposal = (p: CollabProposal) => p.by_device === identity.device_code
+  const reviewProposals = proposals.filter((p) => !isMyProposal(p))
+  const myProposals = proposals.filter((p) => isMyProposal(p))
+  const visibleProposals = prView === 'mine' ? myProposals : reviewProposals
   // 待处理提案：pending 与 conflict 都能批量合并（conflict 由服务端严格判断）。
-  const mergeableProposals = proposals.filter(
+  const mergeableProposals = (prView === 'mine' ? myProposals : reviewProposals).filter(
     (p) => p.status === 'pending' || p.status === 'conflict',
   )
   const allProposalsSelected =
@@ -379,6 +387,26 @@ export default function CollabPanel({
     setLocalEdits((prev) => ({ ...prev, [localEditing.id]: localText }))
     setLocalEditing(null)
     setLocalText('')
+  }
+
+  // 把本地分支里勾选的改动提交为 PR（逐句提案），提交后这些改动不再算本地未提交。
+  async function submitSelectedAsPR() {
+    if (!selected || !materialView || localSel.length === 0) return
+    await run(async () => {
+      for (const sid of localSel) {
+        const after = localEdits[sid]
+        if (after === undefined) continue
+        await api.createProposal(selected.id, materialView.material.id, sid, after)
+      }
+      setLocalEdits((prev) => {
+        const next = { ...prev }
+        for (const sid of localSel) delete next[sid]
+        return next
+      })
+      setLocalSel([])
+      setNotice(`已提交 ${localSel.length} 条改动为 PR，等待审批`)
+      await loadGroup(selected.id)
+    })
   }
 
   function localSentences(): Sentence[] {
@@ -1122,6 +1150,40 @@ renderBody={(s) => {
                     ))}
                   </div>
 
+                  {!materialView.review_mode && has('submit') && Object.keys(localEdits).length > 0 && (
+                    <div style={{ marginTop: 10, border: '1px solid #dce6f2', borderRadius: 8, padding: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6 }}>
+                        本地分支（{Object.keys(localEdits).length} 处未提交改动）
+                      </div>
+                      <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 6 }}>
+                        勾选要提交为 PR 的改动；也可以只提交一部分。
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
+                        {materialView.material.sentences.filter((s) => localEdits[s.id] !== undefined).map((s) => (
+                          <label key={s.id} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 12, cursor: 'pointer' }}>
+                            <input type="checkbox" checked={localSel.includes(s.id)}
+                              onChange={() => setLocalSel((prev) => prev.includes(s.id) ? prev.filter((x) => x !== s.id) : [...prev, s.id])}
+                              style={{ margin: '2px 0 0' }} />
+                            <span>
+                              <span style={{ color: '#8a8f98' }}>第 {s.index + 1} 句：</span>
+                              <span style={{ color: '#b00020', textDecoration: 'line-through' }}>{s.text}</span>
+                              <span style={{ color: '#666' }}> → </span>
+                              <span style={{ color: '#1e7e34' }}>{localEdits[s.id]}</span>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button disabled={busy || localSel.length === 0} onClick={() => void submitSelectedAsPR()} style={{ fontSize: 11, padding: '2px 10px' }}>
+                          提交所选为 PR（{localSel.length}）
+                        </button>
+                        <button disabled={busy} onClick={() => setLocalSel(materialView.material.sentences.filter((s) => localEdits[s.id] !== undefined).map((s) => s.id))} style={{ fontSize: 11, padding: '2px 10px' }}>
+                          全选
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {selected.mode === 'replica' && has('merge') && !materialView.review_mode && (
                     <div style={{ marginTop: 10 }}>
                       <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4 }}>
@@ -1153,6 +1215,24 @@ renderBody={(s) => {
                       >
                         提交节点合并（{Object.keys(localEdits).length} 句本地修改）
                       </button>
+                      {Object.keys(localEdits).length > 0 && (
+                        <button
+                          disabled={busy}
+                          onClick={() =>
+                            void run(async () => {
+                              setLocalEdits({})
+                              setLocalEditing(null)
+                              setMergeConflicts(null)
+                              setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
+                              setNotice('已丢弃本地改动，对齐到主分支最新版本')
+                            })
+                          }
+                          style={{ fontSize: 11, padding: '2px 10px', marginLeft: 6 }}
+                          title="丢弃本地分支的修改，重新拉取主分支最新版本"
+                        >
+                          对齐主分支（丢弃本地）
+                        </button>
+                      )}
                       {mergeConflicts && (
                         <div style={{ marginTop: 8, border: '1px solid #f0d6a8', background: '#fffaf0', borderRadius: 8, padding: 8 }}>
                           <div style={{ fontSize: 11, color: '#8a5a00', marginBottom: 6 }}>冲突句（同一句在群组与本地都被改过）</div>
@@ -1368,6 +1448,16 @@ renderBody={(s) => {
             {/* ---- 提案 ---- */}
             {tab === 'proposals' && (
               <div>
+                <div className="seg-nav" style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
+                  <button className={prView === 'review' ? 'on' : ''} onClick={() => { setPrView('review'); setProposalSel([]) }}
+                    style={{ fontSize: 12, padding: '4px 12px', borderRadius: 4, cursor: 'pointer', border: '1px solid ' + (prView === 'review' ? '#8ab4f8' : '#ddd'), background: prView === 'review' ? '#eef5ff' : '#fff', color: prView === 'review' ? '#245c9c' : '#666' }}>
+                    待我审批{reviewProposals.filter((p) => p.status === 'pending' || p.status === 'conflict').length > 0 ? ` (${reviewProposals.filter((p) => p.status === 'pending' || p.status === 'conflict').length})` : ''}
+                  </button>
+                  <button className={prView === 'mine' ? 'on' : ''} onClick={() => { setPrView('mine'); setProposalSel([]) }}
+                    style={{ fontSize: 12, padding: '4px 12px', borderRadius: 4, cursor: 'pointer', border: '1px solid ' + (prView === 'mine' ? '#8ab4f8' : '#ddd'), background: prView === 'mine' ? '#eef5ff' : '#fff', color: prView === 'mine' ? '#245c9c' : '#666' }}>
+                    我提交的 PR{myProposals.filter((p) => p.status === 'pending' || p.status === 'conflict').length > 0 ? ` (${myProposals.filter((p) => p.status === 'pending' || p.status === 'conflict').length})` : ''}
+                  </button>
+                </div>
                 {has('merge') && mergeableProposals.length > 0 && (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
                     <button
@@ -1401,11 +1491,11 @@ renderBody={(s) => {
                     </button>
                   </div>
                 )}
-                {proposals.length === 0 ? (
-                  <div style={{ fontSize: 12, color: '#999' }}>还没有修改提案。</div>
+                {visibleProposals.length === 0 ? (
+                  <div style={{ fontSize: 12, color: '#999' }}>{prView === 'mine' ? '你还没有提交过 PR。' : '没有待你审批的提案。'}</div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {proposals.map((p) => (
+                    {visibleProposals.map((p) => (
                       <div key={p.id} style={{ border: '1px solid #eee', borderRadius: 8, padding: 8 }}>
                         <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4, display: 'flex', gap: 6, alignItems: 'center' }}>
                           {(p.status === 'pending' || p.status === 'conflict') && has('merge') && (

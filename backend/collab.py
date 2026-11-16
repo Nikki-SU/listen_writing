@@ -932,6 +932,9 @@ def create_proposal(group_id: str, material_id: str, sentence_id: str, after: st
         "index": int(target.get("index", 0)),
         "before": target.get("text", ""),
         "after": after,
+        # kind 标记改动性质：text=录音客观事实（有审批权者可自提自批）；
+        # coding=编码主观判断（必须他人审批、集体决策）。当前提案都是 text。
+        "kind": "text",
         "by_device": actor.get("device_code"),
         "by": actor.get("nick", ""),
         "created_at": _now(),
@@ -1023,12 +1026,21 @@ def _writeback(material: dict, message: str, diff: list[dict]) -> None:
 
 def decide_proposal(group_id: str, proposal_id: str, accept: bool, device_code: str) -> dict:
     group = load_group(group_id)
+    # 审批人必须本人有 merge 权限；无审批权者不能批任何提案。
     actor = _require(group, device_code, "merge")
     proposal = next((p for p in group.get("proposals", []) if p.get("id") == proposal_id), None)
     if proposal is None:
         raise CollabError("提案不存在", status=404)
     if proposal.get("status") not in ("pending", "conflict"):
         raise CollabError("该提案已经处理过", status=409)
+    # 编码是主观判断，必须集体决策：即使群主也不能批准自己提交的编码提案。
+    # 录音文字是客观事实，有审批权者（群主/管理员）可以自提自批。
+    if (
+        accept
+        and proposal.get("kind") == "coding"
+        and proposal.get("by_device") == actor.get("device_code")
+    ):
+        raise CollabError("编码改动需要他人审批，不能由提交者本人合并", status=403)
     material = next((m for m in group.get("materials", []) if m.get("id") == proposal.get("material_id")), None)
     if material is None:
         raise CollabError("材料不存在", status=404)
@@ -1094,6 +1106,8 @@ def merge_proposals(
         if p.get("status") in ("pending", "conflict")
         and (not wanted or str(p.get("id")) in wanted)
         and (not mine_only or p.get("by_device") == device_code)
+        # 编码改动必须他人审批：本人提交的编码提案不进入可合并列表。
+        and not (p.get("kind") == "coding" and p.get("by_device") == device_code)
     ]
     if not candidates:
         raise CollabError("没有可合并的提案", status=409)
