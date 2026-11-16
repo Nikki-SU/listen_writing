@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
 import { TranscriptAudio, TranscriptList } from './TranscriptBody'
 import { useSentencePlayer } from './useSentencePlayer'
-import SpeakerTag, { speakerOrderFrom } from './SpeakerTag'
+import { speakerOrderFrom } from './SpeakerTag'
+import SentenceLine from './SentenceLine'
 import {
   DownloadIcon,
   EnterIcon,
@@ -1029,11 +1030,13 @@ export default function CollabPanel({
                     onPlayPressStart={player.playPressStart}
                     onPlayPressEnd={player.playPressEnd}
                     onPlayPressCancel={player.playPressCancel}
-                    renderBody={(s) => {
+renderBody={(s) => {
                       const draft = localEdits[s.id]
-                      return <>
-                          <SpeakerTag speaker={s.speaker} order={speakerOrder} />
-                          <span style={{ fontSize: 13, lineHeight: 1.7, color: draft !== undefined ? '#8a5a00' : undefined }}>{draft ?? s.text}</span>
+                      return <SentenceLine
+                        sentence={s}
+                        order={speakerOrder}
+                        textColor={draft !== undefined ? '#8a5a00' : undefined}
+                        tail={<>
                           {draft !== undefined && (
                             <span style={{ marginLeft: 6, fontSize: 10, color: '#8a5a00', background: '#fff4e0', padding: '1px 5px', borderRadius: 4 }}>本地草稿</span>
                           )}
@@ -1053,6 +1056,9 @@ export default function CollabPanel({
                               本地改
                             </button>
                           )}
+
+                        </>}
+                        below={<>
                           {editSentence?.id === s.id && (
                             <div style={{ marginTop: 6 }}>
                               <textarea
@@ -1111,10 +1117,9 @@ export default function CollabPanel({
                             </div>
                           )}
 
-
-                      </>
-                    }}
-                  />                  )}
+                        </>}
+                      >{draft ?? s.text}</SentenceLine>
+                    }}                  />                  )}
                   <div style={{ marginTop: 10 }}>
                     <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4 }}>版本历史</div>
                     {materialView.material.history.map((h, i) => (

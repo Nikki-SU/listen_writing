@@ -3,7 +3,8 @@ import type { CSSProperties, ReactNode } from 'react'
 import * as api from '../api'
 import { TranscriptAudio, TranscriptList } from '../TranscriptBody'
 import { useSentencePlayer } from '../useSentencePlayer'
-import SpeakerTag, { speakerOrderFrom } from '../SpeakerTag'
+import { speakerOrderFrom } from '../SpeakerTag'
+import SentenceLine from '../SentenceLine'
 import type { CodingCode, CodingEntry, CodingSpan, Sentence } from '../types'
 import { CodeChip, SideTitle, blendColors, densityColor, fmtMs, hexToRgba } from './common'
 
@@ -591,13 +592,12 @@ export default function GroupCodingPanel({
               })}
               renderBody={(s) => {
                 const list = mine.filter((c) => c.spans.some((sp) => sp.sentence_id === s.id))
-                return <div className="transcript-line">
-                  <SpeakerTag speaker={s.speaker} order={speakerOrder} />
-                  <span data-sentence-id={s.id} style={{ fontSize: 15, lineHeight: 1.6, flex: 1, whiteSpace: 'pre-wrap' }}>
-                    {renderText(s)}
-                  </span>
-                  {list.length > 0 && <span style={{ fontSize: 10, color: '#8a8f98', alignSelf: 'flex-start' }}>{list.length} 码</span>}
-                </div>
+                return <SentenceLine
+                  sentence={s}
+                  order={speakerOrder}
+                  textAttrs={{ 'data-sentence-id': s.id }}
+                  tail={list.length > 0 ? <span style={{ fontSize: 10, color: '#8a8f98', alignSelf: 'flex-start' }}>{list.length} 码</span> : undefined}
+                >{renderText(s)}</SentenceLine>
               }}
               renderGutter={(s) => {
                 const list = mine.filter((c) => c.spans.some((sp) => sp.sentence_id === s.id))

@@ -15,7 +15,7 @@ import AnalysisPanel from './coding/AnalysisPanel'
 import { CodingContext, useCodingSession, useOptionalCoding } from './coding/CodingContext'
 import { TranscriptAudio, TranscriptList } from './TranscriptBody'
 import { useSentencePlayer } from './useSentencePlayer'
-import SpeakerTag from './SpeakerTag'
+import SentenceLine from './SentenceLine'
 import './coding/coding.css'
 import {
   ICON_BTN,
@@ -2676,31 +2676,19 @@ function TranscriptPanel({
                       </div>
                     </div>
                   ) : (
-                    <div className="transcript-line">
-                      <SpeakerTag
-                        speaker={s.speaker}
-                        order={speakerOrder}
-                        title="点一下换下一位发言人；Shift + 点击把这一整段同标签的句子一起换"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          void cycleSentenceSpeaker(s, e.shiftKey)
-                        }}
-                      />
-                      <span
-                        id={`stext-${s.id}`}
-                        data-coding-sentence={coding ? s.id : undefined}
-                        onMouseUp={(e) => {
-                          void markSelection(s)
-                          if (coding && e.detail <= 1) coding.readSelection(e.currentTarget.closest('.transcript-line') || null)
-                        }}
-                        style={{ fontSize: 15, lineHeight: 1.6, flex: 1, whiteSpace: 'pre-wrap' }}
-                      >
-                        {coding
-                          ? coding.decorateText(s, (entry) => coding.selectCoding(entry, (sid) => {
-                              document.getElementById(`sentence-${sid}`)?.scrollIntoView({ block: 'nearest' })
-                            }), (entry) => { coding.clearSelection(); coding.removeCoding(entry.id) })
-                          : renderText(s)}
-                      </span>
+<SentenceLine
+                      sentence={s}
+                      order={speakerOrder}
+                      speakerTitle="点一下换下一位发言人；Shift + 点击把这一整段同标签的句子一起换"
+                      speakerOnClick={(e) => { e.stopPropagation(); void cycleSentenceSpeaker(s, e.shiftKey) }}
+                      textId={`stext-${s.id}`}
+                      textAttrs={{ 'data-coding-sentence': coding ? s.id : undefined }}
+                      onTextMouseUp={(e) => {
+                        void markSelection(s)
+                        if (coding && e.detail <= 1) coding.readSelection(e.currentTarget.closest('.transcript-line') || null)
+                      }}
+                      tail={
+                        <>
                       {!mergeMode && !coding && (
                         <button
                           onClick={(e) => {
@@ -2732,8 +2720,17 @@ function TranscriptPanel({
                           </span>
                         )
                       })()}
-                    </div>
-                  )
+
+                        </>
+                      }
+                    >
+                        {coding
+                          ? coding.decorateText(s, (entry) => coding.selectCoding(entry, (sid) => {
+                              document.getElementById(`sentence-${sid}`)?.scrollIntoView({ block: 'nearest' })
+                            }), (entry) => { coding.clearSelection(); coding.removeCoding(entry.id) })
+                          : renderText(s)}
+
+                    </SentenceLine>                  )
           )}
           renderGutter={(s) => (
                   coding ? (
