@@ -26,7 +26,6 @@ import {
   GearIcon,
   HistoryIcon,
   MicIcon,
-  MergeIcon,
   PlayIcon,
   PlusIcon,
   ShareIcon,
@@ -597,7 +596,7 @@ export default function App() {
         {/* 左：软件标志 + 标题（身份区，固定） */}
         <div className="app-brand">
           <span className="app-mark" aria-hidden="true"><MicIcon size={16} /></span>
-          <span className="app-title">访谈录音台</span>
+          <span className="app-title">访谈工作台</span>
         </div>
 
         {/* 连接状态：绿=已连接，红=未连接；细节只在 hover 的 title 里 */}
@@ -1921,7 +1920,8 @@ function TranscriptPanel({
     <div style={{ display: 'flex', gap: 20, height: '100%', minHeight: 0, position: 'relative' }}>
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-          <h2 style={{ fontSize: 16, margin: 0 }}>转写稿（{localSentences.length} 句）</h2>
+          <h2 style={{ fontSize: 16, margin: 0 }}>{recording.name}</h2>
+          <span style={{ fontSize: 11, color: '#8a8f98' }}>{localSentences.length} 句</span>
           {version && (
             <span style={{ fontSize: 11, color: '#6b7280', background: '#f1f3f5', borderRadius: 10, padding: '2px 8px' }}>
               v{version}
@@ -2029,24 +2029,24 @@ function TranscriptPanel({
             <>
               <span className="tool-sep" />
               <button
-                className={`icon-tool${speakerPanelOpen ? ' on' : ''}`}
+                className="text-tool"
                 onClick={() => setSpeakerPanelOpen((v) => !v)}
-                title="发言人管理：新增 / 改名 / 并入 / 按音色重新识别"
-                aria-label="发言人管理"
+                title="新增 / 改名 / 并入发言人，或按音色重新识别"
+                style={speakerPanelOpen ? { background: '#eef5ff', borderColor: '#8ab4f8', color: '#245c9c' } : undefined}
               >
-                <MicIcon size={14} />
+                发言人
               </button>
               <button
-                className={`icon-tool${mergeMode ? ' on' : ''}`}
+                className="text-tool"
                 onClick={() => {
                   setMergeMode((v) => !v)
                   setPaintColors({})
                   setEditingId(null)
                 }}
-                title={mergeMode ? '退出多句合并' : '多句合并：把被 ASR 切碎的连续句子合并'}
-                aria-label="多句合并"
+                title={mergeMode ? '退出合并' : '把被 ASR 切碎的连续句子合并成一句'}
+                style={mergeMode ? { background: '#eef5ff', borderColor: '#8ab4f8', color: '#245c9c' } : undefined}
               >
-                <MergeIcon size={14} />
+                {mergeMode ? '退出合并' : '合并句子'}
               </button>
             </>
           )}

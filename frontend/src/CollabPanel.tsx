@@ -6,6 +6,7 @@ import { speakerOrderFrom } from './SpeakerTag'
 import SentenceLine from './SentenceLine'
 import {
   DownloadIcon,
+  EditIcon,
   EnterIcon,
   GearIcon,
   PlusIcon,
@@ -886,7 +887,7 @@ export default function CollabPanel({
             ) : (
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-                  <span style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</span>
+                  {!materialView && <span style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</span>}
                   {!chatOpen && (
                     <button onClick={() => setChatOpen(true)} title="展开群聊" aria-label="展开群聊"
                       style={{ ...ICON_BTN, width: 24, height: 22, color: '#245c9c' }}>▸</button>
@@ -965,7 +966,7 @@ export default function CollabPanel({
                     </div>
                   )}
 
-                  {materialView.can_play && materialView.approval ? (
+                  {materialView.can_play && materialView.approval && workspaceMode === 'coding' ? null : materialView.can_play && materialView.approval ? (
                     <TranscriptAudio
                       audioRef={groupAudioRef}
                       onTimeUpdate={player.onTimeUpdate}
@@ -1038,25 +1039,17 @@ renderBody={(s) => {
                         textColor={draft !== undefined ? '#8a5a00' : undefined}
                         tail={<>
                           {draft !== undefined && (
-                            <span style={{ marginLeft: 6, fontSize: 10, color: '#8a5a00', background: '#fff4e0', padding: '1px 5px', borderRadius: 4 }}>本地草稿</span>
+                            <span style={{ fontSize: 10, color: '#8a5a00', background: '#fff4e0', padding: '1px 5px', borderRadius: 4, alignSelf: 'flex-start' }}>本地草稿</span>
                           )}
-                          {!materialView.review_mode && has('submit') && (
-                            <button
-                              onClick={() => { setEditSentence(s); setEditText(s.text); setLocalEditing(null); setError('') }}
-                              style={{ marginLeft: 8, fontSize: 10, padding: '1px 6px', color: '#8a8f98' }}
-                            >
-                              建议修改
-                            </button>
-                          )}
-                          {!materialView.review_mode && selected.mode === 'replica' && has('edit') && (
+                          {!materialView.review_mode && has('view') && (
                             <button
                               onClick={() => { setLocalEditing(s); setLocalText(draft ?? s.text); setEditSentence(null); setError('') }}
-                              style={{ marginLeft: 4, fontSize: 10, padding: '1px 6px', color: '#8a5a00' }}
+                              title="本地改这一句（改完存入本地草稿，提交合并请到「审批」）"
+                              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 22, alignSelf: 'flex-start', color: '#666', flexShrink: 0, padding: 0 }}
                             >
-                              本地改
+                              <EditIcon />
                             </button>
                           )}
-
                         </>}
                         below={<>
                           {editSentence?.id === s.id && (
