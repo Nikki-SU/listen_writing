@@ -118,6 +118,8 @@ export default function App() {
   const [guideOpen, setGuideOpen] = useState(false)
   // 共享任务不是弹层里的“小入口”：它和「我的录音」并列，是同一层级的常驻工作区。
   const [view, setView] = useState<'workspace' | 'collab'>('workspace')
+  // 共享任务顶栏的协作/审批切换（与工作空间、模式同在顶栏）
+  const [collabView, setCollabView] = useState<'collab' | 'approve'>('collab')
   // 选中录音后的四个工作状态：转写 / 编码 / 分析 / 对比。
   // 编码、分析、对比读取同一条录音的音频与转写稿，不复制正文。
   const [workspaceMode, setWorkspaceMode] = useState<'transcript' | 'coding' | 'analysis' | 'compare'>('transcript')
@@ -622,6 +624,22 @@ export default function App() {
           ))}
         </nav>
 
+        {/* 共享任务视图：协作 / 审批切换（顶栏，与个人页同构） */}
+        {view === 'collab' && (
+          <nav className="seg-nav" aria-label="协作审批">
+            {([['collab', '协作'], ['approve', '审批']] as const).map(([key, label]) => (
+              <button
+                key={key}
+                className={collabView === key ? 'on' : ''}
+                disabled={health !== 'ok'}
+                onClick={() => setCollabView(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+        )}
+
         {/* 右：当前模式（转写/编码/分析），常驻，不随是否选中录音而出现/消失 */}
         <nav className="seg-nav mode-nav" aria-label="工作模式">
           {(
@@ -657,7 +675,7 @@ export default function App() {
       ) : view === 'collab' ? (
         <main className="workspace-grid">
           <section className="workspace-card" style={{ gridColumn: 'span 5', display: 'flex', minHeight: 0, minWidth: 0 }}>
-            <CollabPanel projects={projects} embedded onClose={() => setView('workspace')} />
+            <CollabPanel projects={projects} embedded mainView={collabView} onClose={() => setView('workspace')} />
           </section>
         </main>
       ) : (

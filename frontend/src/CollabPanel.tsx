@@ -79,17 +79,19 @@ export default function CollabPanel({
   projects,
   onClose,
   embedded = false,
+  mainView: mainViewProp,
 }: {
   projects: Project[]
   onClose: () => void
   embedded?: boolean
+  mainView?: 'collab' | 'approve'
 }) {
   const [groups, setGroups] = useState<CollabGroupSummary[]>([])
   const [identity, setIdentity] = useState<{ nick: string; device_code: string }>({ nick: '', device_code: '' })
   const [selected, setSelected] = useState<CollabGroupSummary | null>(null)
   const [tab, setTab] = useState<Tab>('material')
-  // 中栏两态：协作（材料/转写/编码）/ 审批（提案/播放）。低频管理收进右栏群设置。
-  const [mainView, setMainView] = useState<'collab' | 'approve'>('collab')
+  // 协作/审批由顶栏控制（App 持有）。
+  const mainView = mainViewProp ?? 'collab'
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
@@ -176,13 +178,16 @@ export default function CollabPanel({
   const visibleTabs: (typeof TABS)[number][] = mainView === 'collab'
     ? TABS.filter(([key]) => key === 'material')
     : TABS.filter(([key]) => (key === 'proposals' && (has('submit') || has('merge'))) || key === 'approvals')
-  // 协作/审批切换时把 tab 落到该视图的第一个可见项，避免停在隐藏 tab 上。
-  function switchMainView(v: 'collab' | 'approve') {
-    setMainView(v)
+  // 顶栏切换协作/审批时，把 tab 落到该视图的第一个可见项。
+  // 用 ref 记住上一次的 mainView，避免首次挂载以及“从群设置进入 members/access/devices”时被重置。
+  const lastMainView = useRef(mainView)
+  useEffect(() => {
+    if (lastMainView.current === mainView) return
+    lastMainView.current = mainView
     setMaterialView(null)
-    if (v === 'collab') setTab('material')
-    else setTab(has('submit') || has('merge') ? 'proposals' : 'approvals')
-  }
+    if (mainView === 'collab') setTab('material')
+    else setTab((myCaps.includes('submit') || myCaps.includes('merge')) ? 'proposals' : 'approvals')
+  }, [mainView])
   const burnApproval = useMemo(() => {
     const a = materialView?.approval
     if (!selected || !a || a.mode !== 'burn' || a.status !== 'approved') return null
@@ -871,21 +876,6 @@ export default function CollabPanel({
                   {requests.filter((r) => r.status === 'pending').length} 条管理员任免待你决定
                 </span>
               )}
-            </div>
-
-            {/* 协作 / 审批：两个高频视图；低频管理收进右栏群设置 */}
-            <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-              {([['collab', '协作'], ['approve', '审批']] as const).map(([key, label]) => (
-                <button key={key} onClick={() => switchMainView(key)}
-                  style={{
-                    fontSize: 12, padding: '4px 14px', borderRadius: 6, cursor: 'pointer',
-                    border: `1px solid ${mainView === key ? '#8ab4f8' : '#e3e6ea'}`,
-                    background: mainView === key ? '#e8f0fe' : '#fff',
-                    color: mainView === key ? '#245c9c' : '#5b6472',
-                  }}>
-                  {label}
-                </button>
-              ))}
             </div>
 
             <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #eee', marginBottom: 12 }}>
@@ -1728,7 +1718,7 @@ export default function CollabPanel({
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {([['members', '成员与权限'], ['access', '访问留痕'], ['devices', '我的设备']] as const).map(([key, label]) => (
-                <button key={key} onClick={() => { setMainView('approve'); setTab(key); setSettingsOpen(false) }}
+                <button key={key} onClick={() => { setTab(key); setSettingsOpen(false) }}
                   style={{ display: 'flex', alignItems: 'center', fontSize: 13, padding: '9px 12px', border: '1px solid #e3e6ea', borderRadius: 8, background: '#fff', cursor: 'pointer', color: '#3b4250' }}>
                   <span style={{ flex: 1, textAlign: 'left' }}>{label}</span><span style={{ color: '#9aa0a6' }}>→</span>
                 </button>
