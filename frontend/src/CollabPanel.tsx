@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
+import SentenceRow from './SentenceRow'
 import {
   DownloadIcon,
   EnterIcon,
@@ -152,6 +153,7 @@ export default function CollabPanel({
   const [chatSending, setChatSending] = useState(false)
   const chatFileRef = useRef<HTMLInputElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const groupAudioRef = useRef<HTMLAudioElement>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   const [materialView, setMaterialView] = useState<CollabMaterialDetail | null>(null)
@@ -341,6 +343,22 @@ export default function CollabPanel({
     } finally {
       setChatSending(false)
     }
+  }
+
+  // 点句子只播这一句：复用同一个 audio，seek 到起点、到句尾暂停。
+  function playOneSentence(s: Sentence) {
+    const a = groupAudioRef.current
+    if (!a || !s.start_ms) return
+    a.currentTime = (s.start_ms || 0) / 1000
+    const end = (s.end_ms || 0) / 1000
+    void a.play()
+    const stop = () => {
+      if (end > 0 && a.currentTime >= end) {
+        a.pause()
+        a.removeEventListener('timeupdate', stop)
+      }
+    }
+    a.addEventListener('timeupdate', stop)
   }
 
   async function selectGroup(id: string) {
@@ -857,7 +875,7 @@ export default function CollabPanel({
             className={gridMode ? 'workspace-card' : undefined}
             style={{
               flex: gridMode ? undefined : 1,
-              gridColumn: gridMode ? 'span 3' : undefined,
+              gridColumn: gridMode ? (chatOpen ? 'span 3' : 'span 4') : undefined,
               minWidth: 0,
               background: '#fff',
               border: '1px solid #e8ebf0',
@@ -878,23 +896,16 @@ export default function CollabPanel({
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
                   <span style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</span>
-              <span style={{ fontSize: 11, color: '#8a8f98' }}>
-                {selected.mode === 'replica' ? '有副本' : '无副本'} · 我是 {selected.my_role ? roles[selected.my_role]?.name || selected.my_role : ''}
-              </span>
-              <span
-                style={{ fontSize: 12, color: '#245c9c', background: '#eef5ff', padding: '2px 8px', borderRadius: 4, cursor: 'pointer' }}
-                onClick={() => void navigator.clipboard?.writeText(selected.code)}
-                title="点击复制配对码"
-              >
-                配对码 {selected.code}
-                {selected.code_expires_at ? ` · ${fmtTime(selected.code_expires_at)} 前有效` : ''}
-              </span>
-              {requests.filter((r) => r.status === 'pending').length > 0 && has('roles') && (
-                <span style={{ fontSize: 11, color: '#8a5a00' }}>
-                  {requests.filter((r) => r.status === 'pending').length} 条管理员任免待你决定
-                </span>
-              )}
-            </div>
+                  {!chatOpen && (
+                    <button onClick={() => setChatOpen(true)} title="展开群聊" aria-label="展开群聊"
+                      style={{ ...ICON_BTN, width: 24, height: 22, color: '#245c9c' }}>▸</button>
+                  )}
+                  {requests.filter((r) => r.status === 'pending').length > 0 && has('roles') && (
+                    <span style={{ fontSize: 11, color: '#8a5a00' }}>
+                      {requests.filter((r) => r.status === 'pending').length} 条管理员任免待你决定
+                    </span>
+                  )}
+                </div>
 
             <div style={{ display: mainView === 'collab' ? 'none' : 'flex', gap: 4, borderBottom: '1px solid #eee', marginBottom: 12 }}>
               {visibleTabs.map(([key, label]) => (
@@ -964,48 +975,27 @@ export default function CollabPanel({
                   )}
 
                   {materialView.can_play && materialView.approval ? (
-                    <div style={{ marginBottom: 12, border: '1px solid #dce6f2', background: '#f8fbff', borderRadius: 8, padding: 8 }}>
-                      <div style={{ fontSize: 11, color: '#245c9c', marginBottom: 6 }}>
-                        播放已批准（{materialView.approval.mode === 'burn' ? '听完即毁' : materialView.approval.mode === 'permanent' ? '长期有效' : `限时至 ${fmtTime(materialView.approval.expires_at || '')}`}）
-                      </div>
-                      <audio
-                        controls
-                        src={api.groupAudioUrl(selected.id, materialView.material.id, materialView.approval.id)}
-                        onPlay={() => {
-                          burnStarted.current = true
-                        }}
-                        onEnded={() => {
-                          burnStarted.current = false
-                          void onConsume(materialView.approval!.id)
-                        }}
-                        style={{ width: '100%', height: 36 }}
-                      />
+                    <audio
+                      ref={groupAudioRef}
+                      controls
+                      preload="metadata"
+                      src={api.groupAudioUrl(selected.id, materialView.material.id, materialView.approval.id)}
+                      onPlay={() => { burnStarted.current = true }}
+                      onEnded={() => { burnStarted.current = false; void onConsume(materialView.approval!.id) }}
+                      style={{ width: '100%', height: 36, marginBottom: 10 }}
+                    />
+                  ) : has('view') && materialView.material.has_audio ? (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10 }}>
+                      <select value={playMode} onChange={(e) => setPlayMode(e.target.value as 'burn' | 'permanent' | 'timed')} style={{ fontSize: 11 }}>
+                        <option value="burn">听完即毁（一次）</option>
+                        <option value="permanent">长期有效</option>
+                        <option value="timed">限时 7 天</option>
+                      </select>
+                      <button disabled={busy} onClick={() => void onPlayback(playMode)} style={{ fontSize: 11, padding: '2px 10px' }}>
+                        {materialView.approval?.status === 'pending' ? '待批准' : has('approve') ? '直接播放' : '申请播放'}
+                      </button>
                     </div>
-                  ) : (
-                    <div style={{ marginBottom: 12, border: '1px dashed #e2e6ec', borderRadius: 8, padding: 8 }}>
-                      <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 6 }}>
-                        {!materialView.material.has_audio
-                          ? '该材料没有可播放音频。'
-                          : materialView.approval?.status === 'pending'
-                            ? '播放申请待批准。批准后此处会出现播放器。'
-                            : has('approve')
-                              ? '你是审批人：点播放会直接放行，并记一条访问留痕。'
-                              : '只读材料不提供音频直链；申请获批后才能播放。'}
-                      </div>
-                      {has('view') && materialView.material.has_audio && (
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                          <select value={playMode} onChange={(e) => setPlayMode(e.target.value as 'burn' | 'permanent' | 'timed')} style={{ fontSize: 11 }}>
-                            <option value="burn">听完即毁（一次）</option>
-                            <option value="permanent">长期有效</option>
-                            <option value="timed">限时 7 天</option>
-                          </select>
-                          <button disabled={busy} onClick={() => void onPlayback(playMode)} style={{ fontSize: 11, padding: '2px 10px' }}>
-                            {has('approve') ? '直接播放' : '申请播放'}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  ) : null}
 
                   {workspaceMode === 'coding' ? (
                     <div style={{ height: 'calc(100vh - 320px)', minHeight: 320, display: 'flex' }}>
@@ -1045,13 +1035,18 @@ export default function CollabPanel({
                       />
                     </div>
                   ) : (
-                  <div style={{ border: '1px solid #eee', borderRadius: 8 }}>
+<ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, border: '1px solid #eee', borderRadius: 8, overflowY: 'auto', minHeight: 0 }}>
                     {materialView.material.sentences.map((s) => {
                       const draft = localEdits[s.id]
                       return (
-                      <div key={s.id} style={{ padding: '6px 10px', borderBottom: '1px solid #f3f4f6', display: 'flex', gap: 10 }}>
-                        <span style={{ fontSize: 11, color: '#b0b6c0', width: 28, flexShrink: 0, paddingTop: 2 }}>{s.index + 1}</span>
-                        <div style={{ flex: 1 }}>
+                      <SentenceRow
+                        key={s.id}
+                        sentence={s}
+                        playButton={
+                          <button type="button" title="播这一句" onClick={(e) => { e.stopPropagation(); playOneSentence(s) }}
+                            style={{ flexShrink: 0, fontSize: 12, lineHeight: 1.2, padding: '3px 8px', alignSelf: 'flex-start', color: '#1d4ed8', background: '#eef4ff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>▶</button>
+                        }
+                        body={<>
                           {s.speaker && <span style={{ fontSize: 11, color: '#245c9c', marginRight: 6 }}>{s.speaker}</span>}
                           <span style={{ fontSize: 13, lineHeight: 1.7, color: draft !== undefined ? '#8a5a00' : undefined }}>{draft ?? s.text}</span>
                           {draft !== undefined && (
@@ -1130,12 +1125,12 @@ export default function CollabPanel({
                               </div>
                             </div>
                           )}
-                        </div>
-                      </div>
+
+                        </>}
+                      />
                       )
                     })}
-                  </div>
-                  )}
+                  </ul>                  )}
 
                   <div style={{ marginTop: 10 }}>
                     <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4 }}>版本历史</div>
@@ -1688,11 +1683,11 @@ export default function CollabPanel({
                 />
               </div>
             </aside>
-          ) : (
+          ) : gridMode ? null : (
             <button
               onClick={() => setChatOpen(true)}
               title="展开群聊" aria-label="展开群聊"
-              style={{ ...ICON_BTN, width: gridMode ? '100%' : 30, gridColumn: gridMode ? 'span 1' : undefined, flexShrink: 0, alignSelf: 'stretch', minHeight: 60, color: '#245c9c' }}
+              style={{ ...ICON_BTN, width: 30, flexShrink: 0, alignSelf: 'stretch', minHeight: 60, color: '#245c9c' }}
             >▸</button>
           )}
         </div>
@@ -1709,6 +1704,17 @@ export default function CollabPanel({
               <span style={{ flex: 1 }} />
               <button onClick={() => setSettingsOpen(false)} title="关闭" aria-label="关闭" style={{ ...ICON_BTN, width: 26, height: 26 }}><CloseIcon size={14} /></button>
             </div>
+            {selected && (
+              <button
+                onClick={() => void navigator.clipboard?.writeText(selected.code)}
+                style={{ width: '100%', textAlign: 'left', fontSize: 13, padding: '10px 12px', border: '1px solid #c7d7f2', borderRadius: 8, background: '#f5f9ff', cursor: 'pointer', color: '#245c9c', marginBottom: 12 }}
+              >
+                <div style={{ fontWeight: 500 }}>配对码 {selected.code}</div>
+                <div style={{ fontSize: 11, color: '#8a8f98', marginTop: 3 }}>
+                  {selected.code_expires_at ? `${fmtTime(selected.code_expires_at)} 前有效 · ` : ''}点击复制，用于邀请新成员
+                </div>
+              </button>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {([['members', '成员与权限'], ['access', '访问留痕'], ['devices', '我的设备']] as const).map(([key, label]) => (
                 <button key={key} onClick={() => { setTab(key); setSettingsOpen(false) }}
@@ -1716,9 +1722,6 @@ export default function CollabPanel({
                   <span style={{ flex: 1, textAlign: 'left' }}>{label}</span><span style={{ color: '#9aa0a6' }}>→</span>
                 </button>
               ))}
-            </div>
-            <div style={{ fontSize: 11, color: '#9aa0a6', marginTop: 12, lineHeight: 1.6 }}>
-              这些是不常用的管理操作，需要时才进来。
             </div>
           </div>
         </div>
