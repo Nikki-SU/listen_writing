@@ -3277,9 +3277,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"project": project}, status=201)
 
     def _import_transcript(self, project_id: str):
-        """从腾讯会议逐字稿 Markdown（姓名(时:分:秒): 正文）建一个无音频条目。
+        """从逐字稿 Markdown 建一个无音频条目，支持两种行格式：
 
-        没有音轨不影响后续流程：speaker、时间戳、编码、矩阵、脱敏、PR 合并全部照常；
+        1) 腾讯会议带时间戳：姓名(00:00:04): 正文
+        2) 纯访谈稿无时间戳：访谈者：正文 / 受访者: 正文
+        没有音轨不影响后续流程：speaker、编码、矩阵、脱敏、PR 合并全部照常；
         只有播放器与音色识别需要音频，UI 会按 audio_path 为空自动降级。
         """
         if storage.get_project(project_id) is None:
@@ -3290,23 +3292,47 @@ class Handler(BaseHTTPRequestHandler):
         if not text.strip():
             self._send_json({"error": "逐字稿内容为空"}, status=400)
             return
-        name = str(data.get("name") or "").strip() or f"逐字稿 {time.strftime('%m-%d %H:%M')}"
+        name = str(data.get("name") or "").strip() or title or f"逐字稿 {time.strftime('%m-%d %H:%M')}"
 
         import re
-        pattern = re.compile(r"^\s*([^(:（\n]+?)\s*[\(（](\d{1,2}):(\d{2}):(\d{2})[\)）]\s*[:：]\s*(.*?)\s*$")
-        parsed: list[tuple[str, int, str]] = []
-        for line in text.splitlines():
-            m = pattern.match(line)
-            if not m:
+        timed = re.compile(r"^\s*([^(:（\n]+?)\s*[\(（](\d{1,2}):(\d{2}):(\d{2})[\)）]\s*[:：]\s*(.*?)\s*$")
+        untimed = re.compile(r"^\s*([^:：\n]{1,24}?)\s*[:：]\s*(.*?)\s*$")
+
+        # 首行若是题目（Markdown # 标题，或不是任何转写行），用作条目名；否则用导入时间。
+        lines = text.splitlines()
+        first = next((ln for ln in lines if ln.strip()), '')
+        title = ''
+        if first.strip():
+            if first.lstrip().startswith('#'):
+                title = first.lstrip().lstrip('#').strip()
+            elif not timed.match(first) and not untimed.match(first):
+                title = first.strip()[:80]
+        if title:
+            lines = [ln for ln in lines if ln is not first]  # 题目行不进正文
+
+        parsed: list[tuple[str, int | None, str]] = []
+        for line in lines:
+            m = timed.match(line)
+            if m:
+                who = m.group(1).strip()
+                ms = (int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4))) * 1000
+                body = m.group(5).strip()
+                if body:
+                    parsed.append((who, ms, body))
                 continue
-            who = m.group(1).strip()
-            ms = (int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4))) * 1000
-            body = m.group(5).strip()
-            if body:
-                parsed.append((who, ms, body))
+            m = untimed.match(line)
+            if m:
+                who, body = m.group(1).strip(), m.group(2).strip()
+                if who and body:
+                    parsed.append((who, None, body))
         if not parsed:
-            self._send_json({"error": "没识别出逐字稿行，格式应为：姓名(00:00:04): 内容"}, status=400)
+            self._send_json({"error": "没识别出逐字稿行，格式应为：姓名(00:00:04): 内容 或 访谈者：内容"}, status=400)
             return
+
+        has_real_time = parsed[0][1] is not None
+        # 无时间戳的稿子按行序给占位时间，只为句子有序（无音轨，时间不参与播放）。
+        if not has_real_time:
+            parsed = [(who, i * 1000, body) for i, (who, _, body) in enumerate(parsed)]
 
         recording = storage.create_recording(project_id, name, "md")
         rid = recording["id"]
@@ -3329,7 +3355,8 @@ class Handler(BaseHTTPRequestHandler):
             project_id, rid,
             source="transcript",
             audio_path="",
-            duration_sec=parsed[-1][1] / 1000,
+            duration_sec=(parsed[-1][1] or 0) / 1000,
+            timestamps_real=has_real_time,
             speakers=speakers,
             transcribe={"status": "done", "progress": 100, "error": ""},
         )

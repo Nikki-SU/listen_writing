@@ -13,9 +13,8 @@ export default function TranscriptImport({
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function pickFile(file: File) {
-    const content = await file.text()
-    setText(content)
-    if (!name) setName(file.name.replace(/\.(md|markdown|txt)$/i, ''))
+    setText(await file.text())
+    // 条目名由后端按首行题目 / 导入时间决定；这里不填文件名，避免盖掉题目。
   }
 
   return (

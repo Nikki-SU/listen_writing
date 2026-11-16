@@ -43,6 +43,8 @@ export type Recording = {
   speakers?: string[]
   /** audio=录音；transcript=导入的逐字稿（无音轨，播放器降级，其余功能照常）。 */
   source?: 'audio' | 'transcript'
+  /** 逐字稿是否带真实时间戳；false=按行序占位，不参与播放。 */
+  timestamps_real?: boolean
 }
 
 export type Sentence = {
