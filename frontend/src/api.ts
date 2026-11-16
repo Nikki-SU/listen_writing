@@ -643,15 +643,55 @@ export async function groupMaterial(groupId: string, materialId: string): Promis
   return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}`))
 }
 
-/** 共享材料的编码库：码本 + 全部成员的编码（按 coder_id 区分）。 */
+/** 共享材料的编码库：个人码本按设备码分开，共享码本由审批产生。 */
+export type GroupCodebook = {
+  id: string
+  name: string
+  codes: CodingCode[]
+  version?: number
+  approved_by?: { device_code: string; nick: string }[]
+  owner_device?: string
+  nick?: string
+  updated_at?: string
+  coder_id?: string
+  is_me?: boolean
+  coding_count?: number
+}
+
+export type CodebookProposal = {
+  id: string
+  kind: 'create' | 'update'
+  name: string
+  codes: CodingCode[]
+  base_version: number
+  by_device: string
+  by: string
+  created_at: string
+  expires_at: string
+  required: string[]
+  decisions: Record<string, { decision: 'approve' | 'reject'; nick?: string; at?: string }>
+  approvals: { device_code: string; nick: string }[]
+  status: 'pending' | 'approved' | 'rejected' | 'expired'
+  decided_at?: string
+  applied_version?: number
+}
+
 export type GroupCoding = {
   material_id: string
-  codebook: { id: string; name: string; updated_at: string } | null
+  me: string
+  nick: string
+  my_codebook: GroupCodebook
+  codebooks: GroupCodebook[]
+  shared_codebook: GroupCodebook | null
+  legacy_codes: CodingCode[]
+  legacy_codebook: { id: string; name: string; updated_at?: string } | null
+  /** 全量码表（个人 + 共享 + 旧版），供对比页按 id 找码。 */
   codes: CodingCode[]
   codings: CodingEntry[]
   resolutions: unknown[]
-  me: string
-  nick: string
+  proposals: CodebookProposal[]
+  can_approve: boolean
+  approvers: { device_code: string; nick: string; role: string }[]
 }
 
 export async function getGroupCoding(groupId: string, materialId: string): Promise<GroupCoding> {
@@ -663,12 +703,44 @@ export async function saveGroupCoding(
   materialId: string,
   codes: CodingCode[],
   codings: CodingEntry[],
+  codebookName?: string,
 ): Promise<GroupCoding> {
   return json(
     await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ codes, codings }),
+      body: JSON.stringify({ codes, codings, codebook_name: codebookName || undefined }),
+    }),
+  )
+}
+
+/** 把我的个人码本提名为共享码本；已有共享码本时等价于提出修改。 */
+export async function proposeGroupCodebook(
+  groupId: string,
+  materialId: string,
+  name?: string,
+): Promise<GroupCoding> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding/proposals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name || undefined }),
+    }),
+  )
+}
+
+/** 审批共享码本提案：可单选，也可一键批量同意 / 拒绝。 */
+export async function decideGroupCodebookProposals(
+  groupId: string,
+  materialId: string,
+  ids: string[],
+  decision: 'approve' | 'reject',
+): Promise<GroupCoding> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding/proposals/decide`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, decision }),
     }),
   )
 }
@@ -680,7 +752,7 @@ export async function listGroupCodingCoders(
   return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding/coders`))
 }
 
-export type CodingCompareItem = { sentence_id: string; code_id: string; quote: string }
+export type CodingCompareItem = { sentence_id: string; code_id: string; code_name?: string; quote: string }
 export type CodingCompare = {
   material_id: string
   a: { coder_id: string; nick: string }

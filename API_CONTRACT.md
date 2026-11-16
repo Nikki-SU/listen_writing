@@ -263,14 +263,23 @@ Project
 
 ### 共享材料的编码（G 系列，已实现）
 
-多人对比的前提是编码不能只存在各自浏览器：共享材料上的编码落进群组 `group.json` 的 `materials[].codings`，按 `coder_id`（即设备码）区分编码者。
+多人对比的前提是编码不能只存在各自浏览器：材料是共享的，但码本与编码是各人的，落进群组 `group.json` 的 `materials[].personal_codebooks[device_code]` 与 `materials[].codings`（按 `coder_id` 即设备码区分编码者）。共享码本存放在 `materials[].shared_codebook`，只能通过提案审批产生。
 
 | # | | 端点 | 入参 | 出参 | 说明 |
 |---|---|---|---|---|---|
-| G-1 | 后端 | `GET /api/groups/{g}/materials/{m}/coding` | 无 | `{material_id, codebook, codes, codings, resolutions, me, nick}` | 读共享材料的编码库；能看材料即可读 |
-| G-2 | 后端 | `POST /api/groups/{g}/materials/{m}/coding` | `{codes, codings, codebook?, resolutions?}` | 同 G-1 | 只覆盖**自己的**编码，别人的原样保留（多人协作不互相覆盖） |
+| G-1 | 后端 | `GET /api/groups/{g}/materials/{m}/coding` | 无 | `{material_id, me, nick, my_codebook, codebooks, shared_codebook, legacy_codes, legacy_codebook, codes, codings, resolutions, proposals, can_approve, approvers}` | 读共享材料的编码库；能看材料即可读。`codes` 是全量去重码表（兼容对比页），`my_codebook` 才是可写的那一份 |
+| G-2 | 后端 | `POST /api/groups/{g}/materials/{m}/coding` | `{codes, codings, codebook_name?, resolutions?}` | 同 G-1 | 只写**自己的**码本与编码；别人的原样保留，共享码本不受影响 |
 | G-3 | 后端 | `GET /api/groups/{g}/materials/{m}/coding/coders` | 无 | `{coders:[{coder_id, nick, count}], me}` | 对比页据此列出可比的编码者 |
-| G-4 | 后端 | `GET /api/groups/{g}/materials/{m}/coding/compare?other=<device_code>` | 无 | `{a, b, stats, both, only_a, only_b}` | 按「句子 × 码」判定一致/分歧；给一致率与 Jaccard |
+| G-4 | 后端 | `GET /api/groups/{g}/materials/{m}/coding/compare?other=<device_code>` | 无 | `{a, b, stats, both, only_a, only_b}` | 按「句子 × 码名」判定一致/分歧；个人码本按码名对齐，附 `code_name` |
+| G-5 | 后端 | `POST /api/groups/{g}/materials/{m}/coding/proposals` | `{name?}` | 同 G-1 | 用自己的码本提案建立 / 修改共享码本；提案人若是群主或管理员视为已同意 |
+| G-6 | 后端 | `POST /api/groups/{g}/materials/{m}/coding/proposals/decide` | `{ids:[proposal_id], decision:"approve"\|"reject"}` | 同 G-1 | 群主 + 全部管理员同意才生效；任一拒绝即驳回；支持批量同意 / 拒绝；7 天未决自动过期，不默认同意 |
+
+### 共享码本与个人码本
+
+- **个人码本**：按设备码存，全组可见、仅本人可改。每个人在同一材料上独立编码，用于真实对照。
+- **共享码本**：组内公共资产，建立、增删、改名、改父级都走同一套提案审批；生效后个人码仍可用（标为“个人码”），贴码时优先用共享码。
+- **旧版码本**：早期 `material["codes"]` 在首次读写时迁为只读的 `legacy_codes`，不会丢失历史编码。
+- 群组 API **不提供 AI 分析**：分析永远只在本机、属于个人私有，不进入群组文件。
 
 ### 编码库与正文版本的关系
 

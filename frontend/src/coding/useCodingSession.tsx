@@ -17,11 +17,14 @@ import {
   codeById,
   codingsFor,
   countCodings,
+  deleteCode,
   documentId,
   ensureDocument,
   loadCodingStore,
   makeCode,
   makeCoding,
+  moveCode,
+  pruneCodeIfUnused,
   recentCodes,
   removeCodingEntry,
   saveCodingStore,
@@ -274,9 +277,28 @@ export function useCodingSession(
     [selection, activeCodes, attachExisting, store, docId],
   )
 
-  const removeCoding = useCallback((codingId: string) => {
-    setStore((prev) => removeCodingEntry(prev, codingId))
-    setActiveCodingId((cur) => (cur === codingId ? null : cur))
+  const removeCoding = useCallback(
+    (codingId: string) => {
+      const entry = store.codings.find((c) => c.id === codingId)
+      setStore((prev) => {
+        const next = removeCodingEntry(prev, codingId)
+        return entry ? pruneCodeIfUnused(next, entry.code_id) : next
+      })
+      setActiveCodingId((cur) => (cur === codingId ? null : cur))
+    },
+    [store],
+  )
+
+  /** 码本里双击删除一个码：连同它的编码一起删，子码上提。 */
+  const deleteCodeById = useCallback((codeId: string) => {
+    setStore((prev) => deleteCode(prev, codeId))
+    setActiveCodeId((cur) => (cur === codeId ? null : cur))
+    setActiveCodingId(null)
+  }, [])
+
+  /** 拖拽 / 下拉移动码：只改父子层级，不手排同级顺序。 */
+  const moveCodeTo = useCallback((codeId: string, parentId: string | null) => {
+    setStore((prev) => moveCode(prev, codeId, parentId))
   }, [])
 
   const submitCodeInput = useCallback(() => {
@@ -355,7 +377,11 @@ export function useCodingSession(
    * data-coding-sentence 供 readSelection 反查句内偏移。
    */
   const decorateText = useCallback(
-    (s: Sentence, onClickCoding?: (entry: CodingEntry) => void): ReactNode => {
+    (
+      s: Sentence,
+      onClickCoding?: (entry: CodingEntry) => void,
+      onRemoveCoding?: (entry: CodingEntry) => void,
+    ): ReactNode => {
       const text = s.text
       const pending = selection?.spans.filter((sp) => sp.sentence_id === s.id) || []
       const spans = docCodings.flatMap((entry) =>
@@ -407,13 +433,22 @@ export function useCodingSession(
             style={style}
             title={
               unique.length
-                ? unique.map((c) => `${codeById(store, c.code_id)?.name || '码'}：${c.quote}`).join('\n')
+                ? `${unique
+                    .map((c) => `${codeById(store, c.code_id)?.name || '码'}：${c.quote}`)
+                    .join('\n')}\n单击查看 · 双击撤销这条编码`
                 : undefined
             }
             onClick={(e) => {
               if (!unique.length || !onClickCoding) return
               e.stopPropagation()
               onClickCoding(unique[0])
+            }}
+            onDoubleClick={(e) => {
+              if (!unique.length || !onRemoveCoding) return
+              e.preventDefault()
+              e.stopPropagation()
+              window.getSelection()?.removeAllRanges()
+              onRemoveCoding(unique[0])
             }}
           >
             {text.slice(from, to)}
@@ -457,6 +492,8 @@ export function useCodingSession(
     attachExisting,
     attachNewCode,
     removeCoding,
+    deleteCodeById,
+    moveCodeTo,
     submitCodeInput,
     createTopCode,
     jumpToCode,

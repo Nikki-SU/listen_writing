@@ -1448,11 +1448,30 @@ def _material(group: dict, material_id: str) -> dict:
     raise CollabError("材料不存在", status=404)
 
 
+CODEBOOK_PROPOSAL_DAYS = 7
+
+
 def _ensure_coding(material: dict) -> dict:
-    material.setdefault("codebook", {"id": f"cb_{material.get('id')}", "name": "主码本", "updated_at": _now()})
-    material.setdefault("codes", [])
+    """兼容旧数据：老的 material["codes"] 是全体共用、无归属的码本。
+
+    这里一次性迁到只读的 legacy_codes；之后个人码本按设备码分开存，
+    共享码本只能由提案审批产生（见下方），从而保证每条编码都有归属。
+    """
     material.setdefault("codings", [])
+    material.setdefault("coding_saved_at", {})
     material.setdefault("resolutions", [])
+    material.setdefault("personal_codebooks", {})
+    material.setdefault("shared_codebook", None)
+    material.setdefault("codebook_proposals", [])
+    if material.get("codes"):
+        if not material.get("legacy_codes"):
+            material["legacy_codes"] = list(material.get("codes") or [])
+            material["legacy_codebook"] = material.get("codebook") or {
+                "id": f"cb_{material.get('id')}", "name": "旧版共享码本", "updated_at": _now(),
+            }
+        material["codes"] = []
+        material["codebook"] = None
+    material.setdefault("legacy_codes", [])
     return material
 
 
@@ -1463,6 +1482,182 @@ def _can_code(group: dict, member: dict, material: dict, material_id: str) -> bo
     return _can(group, member, "view", material_id)
 
 
+def _personal_book(material: dict, device_code: str, nick: str = "", create: bool = False) -> dict | None:
+    books = material.setdefault("personal_codebooks", {})
+    key = str(device_code)
+    book = books.get(key)
+    if book is None and create:
+        book = {
+            "id": f"pcb_{storage.new_id()}",
+            "name": f"{nick or '我'}的码本",
+            "owner_device": key,
+            "nick": nick,
+            "codes": [],
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        books[key] = book
+    return book
+
+
+def _coding_count(codings: list[dict], coder: str) -> int:
+    return sum(1 for c in codings if str(c.get("coder_id")) == coder)
+
+
+def _approvers(group: dict) -> list[dict]:
+    """共享码本是组内公共资产：必须群主 + 当前全部管理员同意（按 approve 能力判定）。"""
+    out = []
+    for m in group.get("members", []):
+        if "approve" in _caps(group, m):
+            out.append({
+                "device_code": str(m.get("device_code")),
+                "nick": m.get("nick", ""),
+                "role": _role(group, m).get("name") or m.get("role", ""),
+            })
+    return out
+
+
+def _can_approve_codebook(group: dict, member: dict) -> bool:
+    return "approve" in _caps(group, member)
+
+
+def _clean_codes(snapshot: list) -> list[dict]:
+    """只保留码本需要的字段，避免把前端的临时状态一起写进群组文件。"""
+    clean = []
+    for c in snapshot or []:
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        clean.append({
+            "id": c.get("id"),
+            "codebook_id": c.get("codebook_id", ""),
+            "parent_id": c.get("parent_id"),
+            "name": str(c.get("name") or ""),
+            "definition": str(c.get("definition") or ""),
+            "color": str(c.get("color") or "#5b4bcc"),
+            "status": c.get("status", "active"),
+            "created_at": c.get("created_at", ""),
+        })
+    return clean
+
+
+def _code_name_index(material: dict) -> dict[str, str]:
+    """码 id → 码名。个人码本彼此独立，对比时按「码名」对齐才公平。"""
+    index: dict[str, str] = {}
+    groups = [material.get("legacy_codes") or [], (material.get("shared_codebook") or {}).get("codes") or []]
+    groups += [b.get("codes") or [] for b in (material.get("personal_codebooks") or {}).values()]
+    for codes in groups:
+        for c in codes:
+            if c.get("id"):
+                index[str(c["id"])] = str(c.get("name") or "")
+    return index
+
+
+def _apply_codebook(material: dict, proposal: dict) -> None:
+    prev = material.get("shared_codebook") or {}
+    now = _now()
+    material["shared_codebook"] = {
+        "id": prev.get("id") or f"cb_{storage.new_id()}",
+        "name": proposal.get("name") or prev.get("name") or "共享码本",
+        "version": int(prev.get("version") or 0) + 1,
+        "codes": json.loads(json.dumps(proposal.get("codes") or [])),
+        "approved_by": [
+            {"device_code": d.get("device_code"), "nick": d.get("nick", "")}
+            for d in proposal.get("approvals") or []
+        ],
+        "created_at": prev.get("created_at") or now,
+        "updated_at": now,
+    }
+    material["updated_at"] = now
+
+
+def _refresh_proposal(group: dict, material: dict, proposal: dict) -> None:
+    """惰性结算：过期、任一否决、全员同意三种终态都在读取/表决时推进。"""
+    if proposal.get("status") != "pending":
+        return
+    try:
+        expires = datetime.fromisoformat(str(proposal.get("expires_at") or ""))
+    except ValueError:
+        expires = _now_dt()
+    if _now_dt() > expires:
+        proposal["status"] = "expired"
+        proposal["decided_at"] = _now()
+        return
+    required = {a["device_code"] for a in _approvers(group)}
+    decisions = proposal.setdefault("decisions", {})
+    if any(decisions.get(d, {}).get("decision") == "reject" for d in required):
+        proposal["status"] = "rejected"
+        proposal["decided_at"] = _now()
+        return
+    # 提案基于的共享版本已经变了：直接作废，避免用旧快照覆盖别人刚通过的修改。
+    shared_version = int((material.get("shared_codebook") or {}).get("version") or 0)
+    if proposal.get("kind") == "update" and int(proposal.get("base_version") or 0) != shared_version:
+        proposal["status"] = "expired"
+        proposal["stale"] = True
+        proposal["decided_at"] = _now()
+        return
+    if required and all(decisions.get(d, {}).get("decision") == "approve" for d in required):
+        _apply_codebook(material, proposal)
+        proposal["status"] = "approved"
+        proposal["decided_at"] = _now()
+        proposal["applied_version"] = (material.get("shared_codebook") or {}).get("version")
+
+
+def _coding_payload(group: dict, material: dict, member: dict) -> dict:
+    me = str(member.get("device_code"))
+    mine = _personal_book(material, me, member.get("nick", ""), create=True)
+    nick_map = {str(m.get("device_code")): m.get("nick", "") for m in group.get("members", [])}
+    codings = material.get("codings", [])
+
+    books = []
+    for code, book in (material.get("personal_codebooks") or {}).items():
+        books.append({
+            **book,
+            "coder_id": code,
+            "nick": nick_map.get(code, book.get("nick", "")),
+            "is_me": code == me,
+            "coding_count": _coding_count(codings, code),
+        })
+    books.sort(key=lambda b: (0 if b["is_me"] else 1, b.get("nick") or b["coder_id"]))
+
+    shared = material.get("shared_codebook")
+    legacy = material.get("legacy_codes") or []
+
+    # 兼容字段：ComparePanel 与旧前端按 codes 找码；这里合成一份全量去重码表。
+    union: dict[str, dict] = {}
+    for c in legacy + ((shared or {}).get("codes") or []):
+        if c.get("id"):
+            union[str(c["id"])] = c
+    for book in (material.get("personal_codebooks") or {}).values():
+        for c in book.get("codes") or []:
+            if c.get("id"):
+                union[str(c["id"])] = c
+
+    proposals = sorted(
+        material.get("codebook_proposals") or [],
+        key=lambda p: p.get("created_at", ""),
+        reverse=True,
+    )
+    for p in proposals:
+        _refresh_proposal(group, material, p)
+
+    return {
+        "material_id": material.get("id"),
+        "me": me,
+        "nick": member.get("nick", ""),
+        "my_codebook": mine,
+        "codebooks": books,
+        "shared_codebook": shared,
+        "legacy_codes": legacy,
+        "legacy_codebook": material.get("legacy_codebook"),
+        "codes": list(union.values()),
+        "codings": codings,
+        "resolutions": material.get("resolutions", []),
+        "proposals": proposals,
+        "can_approve": _can_approve_codebook(group, member),
+        "approvers": _approvers(group),
+    }
+
+
 def get_material_coding(group_id: str, material_id: str, device_code: str) -> dict:
     group = load_group(group_id)
     member = _member(group, device_code)
@@ -1471,20 +1666,15 @@ def get_material_coding(group_id: str, material_id: str, device_code: str) -> di
     material = _ensure_coding(_material(group, material_id))
     if not _can_code(group, member, material, material_id):
         raise CollabError("当前权限不允许查看这份材料", status=403)
-    return {
-        "material_id": material.get("id"),
-        "codebook": material.get("codebook"),
-        "codes": material.get("codes", []),
-        "codings": material.get("codings", []),
-        "resolutions": material.get("resolutions", []),
-        # 前端据此区分「我」与「别人」：coder_id 就是设备码，nick 用于展示。
-        "me": device_code,
-        "nick": member.get("nick", ""),
-    }
+    return _coding_payload(group, material, member)
 
 
 def save_material_coding(group_id: str, material_id: str, device_code: str, body: dict) -> dict:
-    """整体覆盖该材料的码本与编码（编码量小，全量写比增量合并简单且不会错位）。"""
+    """只保存「我的」码本与编码。
+
+    码本按设备码分开存，群组里其他人只读可见；这样每个人独立编码，
+    又能被别人拿去做对照，而不会互相覆盖。共享码本必须走提案审批。
+    """
     group = load_group(group_id)
     member = _member(group, device_code)
     if member is None:
@@ -1498,8 +1688,16 @@ def save_material_coding(group_id: str, material_id: str, device_code: str, body
     if not isinstance(codes, list) or not isinstance(codings, list):
         raise CollabError("codes / codings 必须是数组", status=400)
 
-    # 只保留当前设备自己的编码，别人的原样保留：这是多人协作不互相覆盖的前提。
     mine = str(device_code)
+    book = _personal_book(material, mine, member.get("nick", ""), create=True)
+    book["codes"] = _clean_codes(codes)
+    book["nick"] = member.get("nick", "")
+    book["updated_at"] = _now()
+    name = str(body.get("codebook_name") or "").strip()
+    if name:
+        book["name"] = name
+
+    # 只保留当前设备自己的编码，别人的原样保留：这是多人协作不互相覆盖的前提。
     others = [c for c in material.get("codings", []) if str(c.get("coder_id")) != mine]
     incoming = []
     for c in codings:
@@ -1507,15 +1705,104 @@ def save_material_coding(group_id: str, material_id: str, device_code: str, body
             continue
         incoming.append({**c, "coder_id": mine, "by": member.get("nick", "")})
     material["codings"] = others + incoming
-    material["codes"] = codes
-    if body.get("codebook"):
-        material["codebook"] = {**material.get("codebook", {}), **body["codebook"], "updated_at": _now()}
+    # 跨机同步按这个时间戳判断「谁的编码更新」：整份材料覆盖时不能丢别人的编码。
+    material.setdefault("coding_saved_at", {})[mine] = _now()
     if isinstance(body.get("resolutions"), list):
         material["resolutions"] = body["resolutions"]
     material["updated_at"] = _now()
-    _log(group, actor=member, action="save_coding", target=material_id, detail=f"{len(incoming)} 条")
+    _log(group, member, "save_coding", material_id, f"{len(incoming)} 条")
     _save(group)
-    return get_material_coding(group_id, material_id, device_code)
+    return _coding_payload(group, material, member)
+
+
+def propose_shared_codebook(group_id: str, material_id: str, device_code: str, body: dict) -> dict:
+    """把我的个人码本提名为共享码本（或基于它提出修改）。
+
+    共享码本是组内公共资产：建立与后续增删改名都必须群主 + 全部管理员同意。
+    """
+    group = load_group(group_id)
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    material = _ensure_coding(_material(group, material_id))
+    if not _can_code(group, member, material, material_id):
+        raise CollabError("当前权限不允许在这份材料上编码", status=403)
+
+    mine = str(device_code)
+    book = _personal_book(material, mine, member.get("nick", ""), create=True)
+    codes = _clean_codes(book.get("codes") or [])
+    if not codes:
+        raise CollabError("你的码本还是空的：先建码、编码，再提案共享")
+
+    shared = material.get("shared_codebook") or {}
+    proposal = {
+        "id": storage.new_id(),
+        "kind": "create" if not shared else "update",
+        "material_id": material_id,
+        "name": str(body.get("name") or book.get("name") or "共享码本").strip() or "共享码本",
+        "codes": codes,
+        "base_version": int(shared.get("version") or 0),
+        "by_device": mine,
+        "by": member.get("nick", ""),
+        "created_at": _now(),
+        "expires_at": (_now_dt() + timedelta(days=CODEBOOK_PROPOSAL_DAYS)).isoformat(),
+        "required": [a["device_code"] for a in _approvers(group)],
+        "decisions": {},
+        "approvals": [],
+        "status": "pending",
+    }
+    # 提案人本身是群主 / 管理员时视为已同意，不必自己再点一次。
+    if _can_approve_codebook(group, member):
+        stamp = {"decision": "approve", "nick": member.get("nick", ""), "at": _now()}
+        proposal["decisions"][mine] = stamp
+        proposal["approvals"].append({"device_code": mine, "nick": member.get("nick", "")})
+    material.setdefault("codebook_proposals", []).append(proposal)
+    _refresh_proposal(group, material, proposal)
+    _log(group, member, "propose_codebook", material_id, proposal["status"])
+    _save(group)
+    return _coding_payload(group, material, member)
+
+
+def decide_codebook_proposals(group_id: str, material_id: str, device_code: str, body: dict) -> dict:
+    """表决共享码本提案：单人也可以批量（一键同意 / 一键拒绝）。"""
+    group = load_group(group_id)
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    if not _can_approve_codebook(group, member):
+        raise CollabError("只有群主或管理员可以审批共享码本", status=403)
+    material = _ensure_coding(_material(group, material_id))
+
+    ids = body.get("ids")
+    if ids is None and body.get("proposal_id"):
+        ids = [body.get("proposal_id")]
+    if not isinstance(ids, list) or not ids:
+        raise CollabError("请指定要表决的提案", status=400)
+    decision = str(body.get("decision") or "approve")
+    if decision not in ("approve", "reject"):
+        raise CollabError("decision 只能是 approve 或 reject", status=400)
+
+    mine = str(device_code)
+    changed = 0
+    for proposal in material.get("codebook_proposals") or []:
+        if proposal.get("id") not in ids or proposal.get("status") != "pending":
+            continue
+        stamp = {"decision": decision, "nick": member.get("nick", ""), "at": _now()}
+        proposal.setdefault("decisions", {})[mine] = stamp
+        approvals = proposal.setdefault("approvals", [])
+        if decision == "approve":
+            if not any(a.get("device_code") == mine for a in approvals):
+                approvals.append({"device_code": mine, "nick": member.get("nick", "")})
+        else:
+            proposal["approvals"] = [a for a in approvals if a.get("device_code") != mine]
+        _refresh_proposal(group, material, proposal)
+        changed += 1
+
+    if not changed:
+        raise CollabError("没有可表决的提案（可能已结束或不属于这份材料）", status=409)
+    _log(group, member, "decide_codebook", material_id, f"{decision} × {changed}")
+    _save(group)
+    return _coding_payload(group, material, member)
 
 
 def list_material_coders(group_id: str, material_id: str, device_code: str) -> dict:
@@ -1556,15 +1843,20 @@ def material_coding_compare(group_id: str, material_id: str, device_code: str, o
     a_id = str(device_code)
     b_id = str(other)
 
+    name_of = _code_name_index(material)
+
     def units_for(coder: str) -> dict[tuple[str, str], dict]:
         out = {}
         for c in material.get("codings", []):
             if str(c.get("coder_id") or "") != coder:
                 continue
+            code_id = str(c.get("code_id") or "")
+            # 个人码本各自独立：按码名对齐，避免同一概念因 id 不同被算成分歧。
+            label = (name_of.get(code_id) or code_id).strip().lower()
             for sp in c.get("spans") or []:
-                key = (str(sp.get("sentence_id") or ""), str(c.get("code_id") or ""))
-                if key[0]:
-                    out[key] = c
+                sid = str(sp.get("sentence_id") or "")
+                if sid:
+                    out[(sid, label)] = {**c, "code_name": name_of.get(code_id) or ""}
         return out
 
     a_units = units_for(a_id)
@@ -1572,13 +1864,24 @@ def material_coding_compare(group_id: str, material_id: str, device_code: str, o
 
     both, only_a, only_b = [], [], []
     for key, entry in a_units.items():
+        item = {
+            "sentence_id": key[0],
+            "code_id": entry.get("code_id", ""),
+            "code_name": entry.get("code_name", ""),
+            "quote": entry.get("quote", ""),
+        }
         if key in b_units:
-            both.append({"sentence_id": key[0], "code_id": key[1], "quote": entry.get("quote", "")})
+            both.append(item)
         else:
-            only_a.append({"sentence_id": key[0], "code_id": key[1], "quote": entry.get("quote", "")})
+            only_a.append(item)
     for key, entry in b_units.items():
         if key not in a_units:
-            only_b.append({"sentence_id": key[0], "code_id": key[1], "quote": entry.get("quote", "")})
+            only_b.append({
+                "sentence_id": key[0],
+                "code_id": entry.get("code_id", ""),
+                "code_name": entry.get("code_name", ""),
+                "quote": entry.get("quote", ""),
+            })
 
     total = len(both) + len(only_a) + len(only_b)
     agreement = (len(both) / total) if total else 0.0

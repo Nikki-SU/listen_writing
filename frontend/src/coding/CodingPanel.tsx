@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { CodeChip, SideTitle, densityColor } from './common'
 import { useOptionalCoding } from './CodingContext'
+import { subtreeIds } from './store'
 
 /**
  * 编码右栏。录音区由共用的 TranscriptPanel 渲染（见 App.tsx），本组件只负责右侧的
@@ -11,6 +12,8 @@ export default function CodingPanel() {
   const coding = useOptionalCoding()
   const [rightTab, setRightTab] = useState<'reading' | 'codebook'>('reading')
   const [newCodeName, setNewCodeName] = useState('')
+  const [dragCodeId, setDragCodeId] = useState<string | null>(null)
+  const [dropCodeId, setDropCodeId] = useState<string | null>(null)
 
   if (!coding) return null
 
@@ -39,6 +42,8 @@ export default function CodingPanel() {
     attachExisting,
     attachNewCode,
     removeCoding,
+    deleteCodeById,
+    moveCodeTo,
     submitCodeInput,
     createTopCode,
     jumpToCode,
@@ -69,21 +74,55 @@ export default function CodingPanel() {
   const codeTreeRows = (parentId: string | null, depth: number): ReactNode[] => {
     return store.codes
       .filter((c) => c.parent_id === parentId && c.status === 'active')
+      .sort((a, b) => countOf(b.id) - countOf(a.id) || a.name.localeCompare(b.name, 'zh'))
       .flatMap((code) => {
+        const count = countOf(code.id)
         const row = (
           <button
             key={code.id}
             type="button"
-            className={`coding-tree-row${activeCode?.id === code.id ? ' active' : ''}`}
+            draggable
+            className={`coding-tree-row${activeCode?.id === code.id ? ' active' : ''}${
+              dragCodeId === code.id ? ' dragging' : ''
+            }${dropCodeId === code.id ? ' dnd-over' : ''}`}
             style={{ paddingLeft: 8 + depth * 16 }}
+            title="单击查看 · 双击删除 · 拖到另一个码上就变成它的子码"
             onClick={() => {
               setActiveCodeId(code.id)
               setRightTab('codebook')
             }}
+            onDoubleClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              deleteCodeById(code.id)
+            }}
+            onDragStart={(e) => {
+              e.stopPropagation()
+              setDragCodeId(code.id)
+              e.dataTransfer.effectAllowed = 'move'
+              e.dataTransfer.setData('text/plain', code.id)
+            }}
+            onDragOver={(e) => {
+              if (!dragCodeId || dragCodeId === code.id) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+              setDropCodeId(code.id)
+            }}
+            onDragLeave={() => setDropCodeId((cur) => (cur === code.id ? null : cur))}
+            onDrop={(e) => {
+              e.preventDefault()
+              if (dragCodeId && dragCodeId !== code.id) moveCodeTo(dragCodeId, code.id)
+              setDragCodeId(null)
+              setDropCodeId(null)
+            }}
+            onDragEnd={() => {
+              setDragCodeId(null)
+              setDropCodeId(null)
+            }}
           >
             <span className="coding-dot" style={{ background: code.color }} />
             <span className="coding-tree-name">{code.name}</span>
-            <span className="coding-tree-count">{countOf(code.id, docId)}</span>
+            <span className="coding-tree-count">{count}</span>
           </button>
         )
         return [row, ...codeTreeRows(code.id, depth + 1)]
@@ -297,7 +336,8 @@ export default function CodingPanel() {
         <div className="coding-empty">
           ① 在正文里拖选一段文字；<br />
           ② 右栏会出现码输入框与备选码；<br />
-          ③ 选码或直接输入新码，正文立即出现荧光标记。
+          ③ 选码或直接输入新码，正文立即出现荧光标记；<br />
+          ④ 单击编码区查看，双击撤销这条编码；码本里双击码删除整个码。
         </div>
         <div className="coding-label">数据关系</div>
         <div className="coding-relation vertical">
@@ -337,6 +377,27 @@ export default function CodingPanel() {
           </button>
         </div>
         <div className="coding-tree scroll-hidden">{codeTreeRows(null, 0)}</div>
+        <div className="coding-hint">
+          单击查看 · 双击删除；拖到另一个码上就变成它的子码。同级不手排，按使用次数自动从多到少。
+        </div>
+        <div
+          className={`coding-tree-root-drop${dropCodeId === '__root' ? ' dnd-over' : ''}`}
+          onDragOver={(e) => {
+            if (!dragCodeId) return
+            e.preventDefault()
+            e.dataTransfer.dropEffect = 'move'
+            setDropCodeId('__root')
+          }}
+          onDragLeave={() => setDropCodeId((cur) => (cur === '__root' ? null : cur))}
+          onDrop={(e) => {
+            e.preventDefault()
+            if (dragCodeId) moveCodeTo(dragCodeId, null)
+            setDragCodeId(null)
+            setDropCodeId(null)
+          }}
+        >
+          拖到这里：移到顶层
+        </div>
         {activeCode ? (
           <div className="coding-code-detail">
             <div className="coding-code-detail-head">
@@ -349,7 +410,7 @@ export default function CodingPanel() {
                   border: '1px solid transparent', borderRadius: 4, padding: '2px 4px', background: 'transparent',
                 }}
               />
-              <span className="coding-muted">{countOf(activeCode.id, docId)} 条</span>
+              <span className="coding-muted">{countOf(activeCode.id)} 条</span>
             </div>
             <textarea
               value={activeCode.definition}
@@ -360,6 +421,26 @@ export default function CodingPanel() {
                 padding: '5px 8px', border: '1px solid #e3e6ea', borderRadius: 6, resize: 'vertical',
               }}
             />
+            <div className="coding-label">移动到…</div>
+            <select
+              value={activeCode.parent_id || ''}
+              onChange={(e) => moveCodeTo(activeCode.id, e.target.value || null)}
+              className="coding-move-select"
+            >
+              <option value="">顶层</option>
+              {store.codes
+                .filter(
+                  (c) =>
+                    c.id !== activeCode.id &&
+                    c.status === 'active' &&
+                    !subtreeIds(store, activeCode.id).has(c.id),
+                )
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+            </select>
             <div className="coding-actions">
               <button type="button" className="coding-primary-btn" onClick={() => jumpToCode(activeCode.id, scrollToSentence)}>
                 在正文中定位

@@ -660,6 +660,140 @@ def _three_way_material(local: dict, remote: dict, group: dict) -> bool:
     return True
 
 
+_CODING_KEYS = (
+    "personal_codebooks", "coding_saved_at", "codings",
+    "shared_codebook", "codebook_proposals", "legacy_codes", "legacy_codebook",
+)
+
+
+def _deep(value):
+    return json.loads(json.dumps(value)) if value is not None else None
+
+
+def _canon(items: list) -> list[str]:
+    return sorted(json.dumps(x, sort_keys=True, ensure_ascii=False) for x in (items or []))
+
+
+def _merge_coding_fields(local: dict, remote: dict, prior: dict) -> bool:
+    """编码按「人」合并，而不是整份材料覆盖。
+
+    群组是 P2P 复制：两台机器各自编码后同步，若按材料整体覆盖，
+    后同步的一方的编码就会把另一方的抹掉。这里以 coder_id 为单位，
+    谁的保存时间新就用谁的那一份；历史数据没有时间戳时取并集。
+    """
+    changed = False
+
+    # 个人码本：同一设备的码本取 updated_at 较新的一份，别人的不动。
+    books = {k: _deep(v) for k, v in (prior.get("personal_codebooks") or {}).items()}
+    for dev, book in (remote.get("personal_codebooks") or {}).items():
+        cur = books.get(dev)
+        if cur is None or str(book.get("updated_at") or "") > str(cur.get("updated_at") or ""):
+            books[dev] = _deep(book)
+    if books != (local.get("personal_codebooks") or {}):
+        local["personal_codebooks"] = books
+        changed = True
+
+    def saved_of(data: dict) -> dict[str, str]:
+        return {str(k): str(v) for k, v in (data.get("coding_saved_at") or {}).items()}
+
+    lsaved = saved_of(prior) if "coding_saved_at" in prior else saved_of(local)
+    rsaved = saved_of(remote)
+    merged_saved = dict(lsaved)
+    for dev, ts in rsaved.items():
+        if ts > merged_saved.get(dev, ""):
+            merged_saved[dev] = ts
+    if merged_saved != saved_of(local):
+        local["coding_saved_at"] = merged_saved
+        changed = True
+
+    def by_coder(items: list) -> dict[str, list]:
+        out: dict[str, list] = {}
+        for c in items or []:
+            out.setdefault(str(c.get("coder_id") or ""), []).append(c)
+        return out
+
+    local_codings = prior.get("codings") if "codings" in prior else local.get("codings")
+    lgroups = by_coder(local_codings or [])
+    rgroups = by_coder(remote.get("codings") or [])
+    merged: list[dict] = []
+    for coder in set(lgroups) | set(rgroups):
+        lts, rts = lsaved.get(coder, ""), rsaved.get(coder, "")
+        if lts or rts:
+            pick = rgroups.get(coder, []) if rts > lts else lgroups.get(coder, [])
+            merged.extend(_deep(c) for c in pick)
+        else:
+            # 没有时间戳的历史编码：按 id 取并集，宁可保留也不误删。
+            by_id = {c.get("id"): c for c in lgroups.get(coder, [])}
+            for c in rgroups.get(coder, []):
+                by_id.setdefault(c.get("id"), c)
+            merged.extend(_deep(c) for c in by_id.values())
+    merged.sort(key=lambda c: (str(c.get("coder_id") or ""), str(c.get("created_at") or ""), str(c.get("id") or "")))
+    if _canon(merged) != _canon(local.get("codings") or []):
+        local["codings"] = merged
+        changed = True
+
+    # 共享码本：版本高者胜；同版本看更新时间。
+    lshared = prior.get("shared_codebook") if "shared_codebook" in prior else local.get("shared_codebook")
+    rshared = remote.get("shared_codebook")
+    winner = lshared
+    if rshared:
+        if not lshared:
+            winner = rshared
+        elif (int(rshared.get("version") or 0), str(rshared.get("updated_at") or "")) > (
+            int(lshared.get("version") or 0), str(lshared.get("updated_at") or "")
+        ):
+            winner = rshared
+    if winner is not None and _deep(winner) != (local.get("shared_codebook") or {}):
+        local["shared_codebook"] = _deep(winner)
+        changed = True
+
+    # 提案：按 id 合并，审批决定逐人取较新的一条，终态优先。
+    lprops = {p.get("id"): _deep(p) for p in (prior.get("codebook_proposals") or []) if p.get("id")}
+    for rp in remote.get("codebook_proposals") or []:
+        pid = rp.get("id")
+        if not pid:
+            continue
+        lp = lprops.get(pid)
+        if lp is None:
+            lprops[pid] = _deep(rp)
+            continue
+        decisions = dict(lp.get("decisions") or {})
+        for dev, decision in (rp.get("decisions") or {}).items():
+            cur = decisions.get(dev)
+            if cur is None or str(decision.get("at") or "") > str(cur.get("at") or ""):
+                decisions[dev] = decision
+        lp["decisions"] = decisions
+        approvals = {a.get("device_code"): a for a in (lp.get("approvals") or [])}
+        for a in rp.get("approvals") or []:
+            approvals.setdefault(a.get("device_code"), a)
+        lp["approvals"] = list(approvals.values())
+        if rp.get("status") != "pending" and (
+            lp.get("status") == "pending"
+            or str(rp.get("decided_at") or "") > str(lp.get("decided_at") or "")
+        ):
+            lp["status"] = rp.get("status")
+            lp["decided_at"] = rp.get("decided_at")
+            if rp.get("applied_version"):
+                lp["applied_version"] = rp.get("applied_version")
+    proposals = sorted(lprops.values(), key=lambda p: str(p.get("created_at") or ""), reverse=True)
+    if _canon(proposals) != _canon(local.get("codebook_proposals") or []):
+        local["codebook_proposals"] = proposals
+        changed = True
+
+    # 旧版码本：按 id 取并集，历史编码不因同步丢失。
+    legacy = {c.get("id"): c for c in (prior.get("legacy_codes") or []) if c.get("id")}
+    for c in remote.get("legacy_codes") or []:
+        legacy.setdefault(c.get("id"), c)
+    if legacy and _canon(list(legacy.values())) != _canon(local.get("legacy_codes") or []):
+        local["legacy_codes"] = list(legacy.values())
+        changed = True
+    if not local.get("legacy_codebook") and remote.get("legacy_codebook"):
+        local["legacy_codebook"] = _deep(remote.get("legacy_codebook"))
+        changed = True
+
+    return changed
+
+
 def _merge_group(local: dict, remote: dict) -> bool:
     changed = False
     changed |= _merge_members(local, remote)
@@ -672,7 +806,12 @@ def _merge_group(local: dict, remote: dict) -> bool:
             local.setdefault("materials", []).append(rm)
             changed = True
         else:
+            # 先留住合并前的编码状态：下面的快进可能整块覆盖 material。
+            prior = {k: _deep(lm.get(k)) for k in _CODING_KEYS if k in lm}
             changed |= _merge_material(lm, rm, local)
+            # 编码按人合并，避免两台机器各自编码后互相抹掉。
+            if _merge_coding_fields(lm, rm, prior):
+                changed = True
 
     def union(key: str, prefer):
         nonlocal changed

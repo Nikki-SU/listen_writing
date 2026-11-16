@@ -202,7 +202,11 @@ export default function ComparePanel({
                     <div className="coding-evidence-quote">“{item.quote}”</div>
                     <div className="coding-evidence-meta">
                       <span>{Math.floor(time / 60000)}:{String(Math.floor((time % 60000) / 1000)).padStart(2, '0')}</span>
-                      {codeOf(item.code_id) && <CodeChip code={codeOf(item.code_id)!} />}
+                      {codeOf(item.code_id) ? (
+                        <CodeChip code={codeOf(item.code_id)!} />
+                      ) : item.code_name ? (
+                        <span style={{ fontSize: 11, color: '#5f5e5a' }}>「{item.code_name}」</span>
+                      ) : null}
                       {'mine' in item && (
                         <span style={{ color: item.mine ? '#245c9c' : '#993556', fontSize: 11 }}>
                           {item.mine ? (data?.a.nick || '我') : (data?.b.nick || '对方')}

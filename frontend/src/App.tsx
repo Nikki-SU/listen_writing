@@ -2686,14 +2686,14 @@ function TranscriptPanel({
                         data-coding-sentence={coding ? s.id : undefined}
                         onMouseUp={(e) => {
                           void markSelection(s)
-                          if (coding) coding.readSelection(e.currentTarget.closest('.transcript-line') || null)
+                          if (coding && e.detail <= 1) coding.readSelection(e.currentTarget.closest('.transcript-line') || null)
                         }}
                         style={{ fontSize: 15, lineHeight: 1.6, flex: 1, whiteSpace: 'pre-wrap' }}
                       >
                         {coding
                           ? coding.decorateText(s, (entry) => coding.selectCoding(entry, (sid) => {
                               document.getElementById(`sentence-${sid}`)?.scrollIntoView({ block: 'nearest' })
-                            }))
+                            }), (entry) => { coding.clearSelection(); coding.removeCoding(entry.id) })
                           : renderText(s)}
                       </span>
                       {!mergeMode && !coding && (

@@ -7,7 +7,7 @@ import { CodeChip, SideTitle, blendColors, densityColor, fmtMs, hexToRgba } from
 
 const CODE_COLORS = ['#5b4bcc', '#2f6fed', '#0f9d9d', '#c2760a']
 
-type Tab = 'reading' | 'codebook'
+type Tab = 'reading' | 'codebook' | 'shared'
 
 function uid(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`
@@ -56,8 +56,12 @@ function subtree(codes: CodingCode[], codeId: string): Set<string> {
 }
 
 /**
- * 共享材料里的编码工作区：数据来自群组（后端），不是本机 localStorage。
- * 这是多人对比能成立的前提——同一材料上的编码必须放在一起看。
+ * 共享材料里的编码工作区。
+ *
+ * 关键规则（来自产品讨论）：
+ * - 材料是共享的，编码是各人的：每个人一份码本，别人只读可见，用于对照；
+ * - 共享码本是组内公共资产，只有群主 + 全部管理员同意后才生效；
+ * - 因此这里的写操作只写「我的」码本和「我的」编码，绝不覆盖别人。
  */
 export default function GroupCodingPanel({
   groupId,
@@ -74,6 +78,7 @@ export default function GroupCodingPanel({
   canPlay: boolean
   audioSrc: string
 }) {
+  const [data, setData] = useState<api.GroupCoding | null>(null)
   const [codes, setCodes] = useState<CodingCode[]>([])
   const [codings, setCodings] = useState<CodingEntry[]>([])
   const [me, setMe] = useState('')
@@ -87,10 +92,20 @@ export default function GroupCodingPanel({
   const [activeCodeId, setActiveCodeId] = useState<string | null>(null)
   const [codeQuery, setCodeQuery] = useState('')
   const [newCodeName, setNewCodeName] = useState('')
+  const [viewer, setViewer] = useState('mine')
+  const [busyProposal, setBusyProposal] = useState(false)
 
   const listRef = useRef<HTMLUListElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const stopAtRef = useRef<number | null>(null)
+  const dragRef = useRef<string | null>(null)
+
+  const applyPayload = useCallback((d: api.GroupCoding) => {
+    setData(d)
+    setMe(d.me)
+    setCodes(d.my_codebook?.codes || [])
+    setCodings(d.codings || [])
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -99,9 +114,7 @@ export default function GroupCodingPanel({
       .getGroupCoding(groupId, materialId)
       .then((d) => {
         if (cancelled) return
-        setCodes(d.codes?.length ? d.codes : [])
-        setCodings(d.codings || [])
-        setMe(d.me)
+        applyPayload(d)
         setError('')
       })
       .catch((e) => setError(`读取共享编码失败：${String(e)}`))
@@ -109,10 +122,67 @@ export default function GroupCodingPanel({
     return () => {
       cancelled = true
     }
-  }, [groupId, materialId])
+  }, [groupId, materialId, applyPayload])
 
   const mine = useMemo(() => codings.filter((c) => c.coder_id === me), [codings, me])
-  const activeCodes = codes.filter((c) => c.status === 'active')
+  const shared = data?.shared_codebook || null
+  const legacy = data?.legacy_codes || []
+  const books = data?.codebooks || []
+  const proposals = data?.proposals || []
+  const pending = proposals.filter((p) => p.status === 'pending')
+
+  const allCodes = useMemo(() => {
+    const map = new Map<string, CodingCode>()
+    for (const c of [...(data?.codes || []), ...codes, ...(shared?.codes || []), ...legacy]) {
+      if (c?.id) map.set(c.id, c)
+    }
+    return map
+  }, [data, codes, shared, legacy])
+
+  const codeOf = useCallback((id: string) => allCodes.get(id), [allCodes])
+
+  // 贴码优先用共享码本（组内统一口径）；没有共享码本时用自己的码本。
+  const attachPool = useMemo(() => {
+    const active = (shared?.codes || []).filter((c) => c.status === 'active')
+    return active.length ? active : codes.filter((c) => c.status === 'active')
+  }, [shared, codes])
+
+  const otherBooks = useMemo(() => books.filter((b) => !b.is_me), [books])
+
+  useEffect(() => {
+    if (viewer === 'shared' && !shared) setViewer('mine')
+    if (viewer === 'legacy' && !legacy.length) setViewer('mine')
+    if (viewer !== 'mine' && viewer !== 'shared' && viewer !== 'legacy' && !otherBooks.some((b) => b.coder_id === viewer)) {
+      setViewer('mine')
+    }
+  }, [viewer, shared, legacy.length, otherBooks])
+
+  const viewCodes = useMemo(() => {
+    if (viewer === 'mine') return codes
+    if (viewer === 'shared') return shared?.codes || []
+    if (viewer === 'legacy') return legacy
+    return otherBooks.find((b) => b.coder_id === viewer)?.codes || []
+  }, [viewer, codes, shared, legacy, otherBooks])
+
+  const viewCodings = useMemo(() => {
+    if (viewer === 'mine') return mine
+    if (viewer === 'shared' || viewer === 'legacy') {
+      const ids = new Set(viewCodes.map((c) => c.id))
+      return codings.filter((c) => ids.has(c.code_id))
+    }
+    return codings.filter((c) => c.coder_id === viewer)
+  }, [viewer, mine, codings, viewCodes])
+
+  const viewName =
+    viewer === 'mine'
+      ? `${nick || '我'}的码本`
+      : viewer === 'shared'
+        ? `${shared?.name || '共享码本'}${shared?.version ? ` v${shared.version}` : ''}`
+        : viewer === 'legacy'
+          ? '旧版共享码本'
+          : otherBooks.find((b) => b.coder_id === viewer)?.nick || '成员码本'
+
+  const editable = viewer === 'mine'
 
   const persist = useCallback(
     (nextCodes: CodingCode[], nextCodings: CodingEntry[]) => {
@@ -120,43 +190,43 @@ export default function GroupCodingPanel({
       api
         .saveGroupCoding(groupId, materialId, nextCodes, nextCodings)
         .then((d) => {
-          setCodings(d.codings || [])
-          setCodes(d.codes || [])
+          applyPayload(d)
           setError('')
         })
         .catch((e) => setError(`保存失败：${String(e)}`))
         .finally(() => setSaving(false))
     },
-    [groupId, materialId],
+    [groupId, materialId, applyPayload],
   )
 
   const activeCoding = activeCodingId ? mine.find((c) => c.id === activeCodingId) || null : null
-  const activeCode = activeCodeId ? codes.find((c) => c.id === activeCodeId) || null : null
+  const activeCode = activeCodeId ? viewCodes.find((c) => c.id === activeCodeId) || null : null
   const activeSentence = activeSentenceId ? sentences.find((s) => s.id === activeSentenceId) || null : null
 
   const suggestions = useMemo(() => {
     const q = codeQuery.trim().toLowerCase()
     if (q) {
-      return activeCodes
+      const pool = [...attachPool, ...codes]
+      return pool
         .filter((c) => c.name.toLowerCase().includes(q) || c.definition.toLowerCase().includes(q))
         .slice(0, 8)
     }
     const seen = new Set<string>()
     const out: CodingCode[] = []
     for (const c of [...mine].reverse()) {
-      const code = codes.find((x) => x.id === c.code_id)
+      const code = codeOf(c.code_id)
       if (!code || seen.has(code.id)) continue
       seen.add(code.id)
       out.push(code)
       if (out.length >= 8) break
     }
-    for (const c of activeCodes) {
+    for (const c of attachPool) {
       if (seen.has(c.id)) continue
       out.push(c)
       if (out.length >= 8) break
     }
     return out
-  }, [codeQuery, activeCodes, codes, mine])
+  }, [codeQuery, attachPool, codes, mine, codeOf])
 
   function readSelection() {
     const native = window.getSelection()
@@ -228,7 +298,7 @@ export default function GroupCodingPanel({
     if (!selection) return
     const trimmed = name.trim()
     if (!trimmed) return
-    const existing = activeCodes.find((c) => c.name.trim().toLowerCase() === trimmed.toLowerCase())
+    const existing = attachPool.find((c) => c.name.trim().toLowerCase() === trimmed.toLowerCase())
     if (existing) {
       attachCode(existing)
       return
@@ -236,7 +306,7 @@ export default function GroupCodingPanel({
     const topCount = codes.filter((c) => !c.parent_id).length
     const code: CodingCode = {
       id: uid('code'),
-      codebook_id: `cb_${materialId}`,
+      codebook_id: `pcb_${me || 'me'}`,
       parent_id: null,
       name: trimmed,
       definition: '',
@@ -264,10 +334,23 @@ export default function GroupCodingPanel({
     persist(nextCodes, nextCodings)
   }
 
+  /** 删除一条我的编码；若这个码在我全材料只剩这一处，顺手撤掉空码。 */
   function removeCoding(id: string) {
+    const target = codings.find((c) => c.id === id)
+    if (!target || target.coder_id !== me) return
     const next = codings.filter((c) => c.id !== id)
     setCodings(next)
     if (activeCodingId === id) setActiveCodingId(null)
+
+    const codeId = target.code_id
+    const stillUsed = next.some((c) => c.coder_id === me && c.code_id === codeId)
+    const hasChildren = codes.some((c) => c.parent_id === codeId)
+    if (!stillUsed && !hasChildren && codes.some((c) => c.id === codeId)) {
+      const nextCodes = codes.filter((c) => c.id !== codeId)
+      setCodes(nextCodes)
+      persist(nextCodes, next)
+      return
+    }
     persist(codes, next)
   }
 
@@ -277,7 +360,7 @@ export default function GroupCodingPanel({
     const topCount = codes.filter((c) => !c.parent_id).length
     const code: CodingCode = {
       id: uid('code'),
-      codebook_id: `cb_${materialId}`,
+      codebook_id: `pcb_${me || 'me'}`,
       parent_id: null,
       name,
       definition: '',
@@ -290,6 +373,64 @@ export default function GroupCodingPanel({
     setActiveCodeId(code.id)
     setNewCodeName('')
     persist(next, codings)
+  }
+
+  function deleteMyCode(codeId: string) {
+    if (!editable) return
+    const code = codes.find((c) => c.id === codeId)
+    if (!code) return
+    const nextCodes = codes
+      .filter((c) => c.id !== codeId)
+      .map((c) => (c.parent_id === codeId ? { ...c, parent_id: code.parent_id } : c))
+    const nextCodings = codings.filter((c) => !(c.coder_id === me && c.code_id === codeId))
+    setCodes(nextCodes)
+    setCodings(nextCodings)
+    if (activeCodeId === codeId) setActiveCodeId(null)
+    persist(nextCodes, nextCodings)
+  }
+
+  function moveMyCode(codeId: string, parentId: string | null) {
+    if (!editable) return
+    const code = codes.find((c) => c.id === codeId)
+    if (!code || code.parent_id === parentId) return
+    // 不能移到自己或自己的后代下面，否则层级成环。
+    if (parentId && (parentId === codeId || subtree(codes, codeId).has(parentId))) return
+    const next = codes.map((c) => (c.id === codeId ? { ...c, parent_id: parentId } : c))
+    setCodes(next)
+    persist(next, codings)
+  }
+
+  function updateCode(codeId: string, patch: Partial<CodingCode>, save = false) {
+    if (!editable) return
+    const next = codes.map((c) => (c.id === codeId ? { ...c, ...patch } : c))
+    setCodes(next)
+    if (save) persist(next, codings)
+  }
+
+  function propose() {
+    if (busyProposal) return
+    setBusyProposal(true)
+    api
+      .proposeGroupCodebook(groupId, materialId)
+      .then((d) => {
+        applyPayload(d)
+        setError('')
+      })
+      .catch((e) => setError(`提案失败：${String(e)}`))
+      .finally(() => setBusyProposal(false))
+  }
+
+  function decide(ids: string[], decision: 'approve' | 'reject') {
+    if (!ids.length || busyProposal) return
+    setBusyProposal(true)
+    api
+      .decideGroupCodebookProposals(groupId, materialId, ids, decision)
+      .then((d) => {
+        applyPayload(d)
+        setError('')
+      })
+      .catch((e) => setError(`审批失败：${String(e)}`))
+      .finally(() => setBusyProposal(false))
   }
 
   function playSentence(s: Sentence) {
@@ -331,7 +472,7 @@ export default function GroupCodingPanel({
       if (to <= from) continue
       const covering = spans.filter((sp) => sp.start <= from && sp.end >= to).map((sp) => sp.entry)
       const uniq = Array.from(new Map(covering.map((c) => [c.id, c])).values())
-      const cols = uniq.map((c) => codes.find((x) => x.id === c.code_id)).filter((c): c is CodingCode => Boolean(c))
+      const cols = uniq.map((c) => codeOf(c.code_id)).filter((c): c is CodingCode => Boolean(c))
       const style: CSSProperties = {
         background: cols.length ? hexToRgba(blendColors(cols.map((c) => c.color)), 0.28) : undefined,
         borderRadius: 2,
@@ -341,12 +482,18 @@ export default function GroupCodingPanel({
         <span
           key={`${s.id}-${from}-${to}`}
           style={style}
-          title={uniq.map((c) => `${codes.find((x) => x.id === c.code_id)?.name || '码'}：${c.quote}`).join('\n')}
+          title={uniq.map((c) => `${codeOf(c.code_id)?.name || '码'}：${c.quote}`).join('\n')}
           onClick={(e) => {
             if (!uniq.length) return
             e.stopPropagation()
             setActiveCodingId(uniq[0].id)
             setTab('reading')
+          }}
+          onDoubleClick={(e) => {
+            if (!uniq.length) return
+            e.preventDefault()
+            e.stopPropagation()
+            removeCoding(uniq[uniq.length - 1].id)
           }}
         >
           {s.text.slice(from, to)}
@@ -356,21 +503,43 @@ export default function GroupCodingPanel({
     return nodes
   }
 
-  const codeTreeRows = (parentId: string | null, depth: number): ReactNode[] =>
-    codes
+  /** 同一级别里编码最多的排最上面，其余按名称；不提供手工上下排序。 */
+  const siblingRows = (bookCodes: CodingCode[], ownerCodings: CodingEntry[], parentId: string | null, depth: number): ReactNode[] =>
+    bookCodes
       .filter((c) => c.parent_id === parentId && c.status === 'active')
-      .flatMap((code) => {
-        const sub = subtree(codes, code.id)
-        const count = mine.filter((c) => sub.has(c.code_id)).length
+      .map((code) => {
+        const sub = subtree(bookCodes, code.id)
+        return { code, count: ownerCodings.filter((c) => sub.has(c.code_id)).length }
+      })
+      .sort((a, b) => b.count - a.count || a.code.name.localeCompare(b.code.name, 'zh'))
+      .flatMap(({ code, count }) => {
         const row = (
           <button
             key={code.id}
             type="button"
             className={`coding-tree-row${activeCodeId === code.id ? ' active' : ''}`}
             style={{ paddingLeft: 8 + depth * 16 }}
-            onClick={() => {
-              setActiveCodeId(code.id)
-              setTab('codebook')
+            draggable={editable}
+            title={editable ? '单击查看，双击删除，拖到别的码上改变层级' : '别人的码，只读'}
+            onClick={() => setActiveCodeId(code.id)}
+            onDoubleClick={(e) => {
+              e.preventDefault()
+              deleteMyCode(code.id)
+            }}
+            onDragStart={() => {
+              dragRef.current = code.id
+            }}
+            onDragOver={(e) => {
+              if (editable && dragRef.current && dragRef.current !== code.id) e.preventDefault()
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              if (dragRef.current) moveMyCode(dragRef.current, code.id)
+              dragRef.current = null
+            }}
+            onDragEnd={() => {
+              dragRef.current = null
             }}
           >
             <span className="coding-dot" style={{ background: code.color }} />
@@ -378,8 +547,19 @@ export default function GroupCodingPanel({
             <span className="coding-tree-count">{count}</span>
           </button>
         )
-        return [row, ...codeTreeRows(code.id, depth + 1)]
+        return [row, ...siblingRows(bookCodes, ownerCodings, code.id, depth + 1)]
       })
+
+  const originTag = (code: CodingCode): string => {
+    if ((shared?.codes || []).some((c) => c.id === code.id)) return '共享'
+    if (legacy.some((c) => c.id === code.id)) return '旧版'
+    return '个人'
+  }
+
+  const myPending = pending.filter((p) => {
+    const decision = p.decisions?.[me]?.decision
+    return decision !== 'approve' && decision !== 'reject'
+  })
 
   return (
     <>
@@ -493,7 +673,7 @@ export default function GroupCodingPanel({
 
         <aside
           style={{
-            width: 260, flexShrink: 0, borderLeft: '1px solid #eee', paddingLeft: 12,
+            width: 280, flexShrink: 0, borderLeft: '1px solid #eee', paddingLeft: 12,
             display: 'flex', flexDirection: 'column', minHeight: 0,
           }}
         >
@@ -504,6 +684,10 @@ export default function GroupCodingPanel({
             <button type="button" className={tab === 'codebook' ? 'active' : ''} onClick={() => setTab('codebook')}>
               码本
             </button>
+            <button type="button" className={tab === 'shared' ? 'active' : ''} onClick={() => setTab('shared')}>
+              共享{shared ? ` v${shared.version}` : ''}
+              {pending.length > 0 && <span className="coding-tree-count" style={{ marginLeft: 4 }}>{pending.length}</span>}
+            </button>
           </div>
           <div className="coding-inspector-scroll scroll-hidden" style={{ flex: 1, minHeight: 0 }}>
             {tab === 'reading' ? (
@@ -512,7 +696,7 @@ export default function GroupCodingPanel({
                   <>
                     <SideTitle extra={`${selection.spans.length} 句`}>选中片段</SideTitle>
                     <div className="coding-quote">“{selection.quote}”</div>
-                    <div className="coding-label">贴到码</div>
+                    <div className="coding-label">贴到码{shared ? '（共享优先）' : ''}</div>
                     <div className="coding-code-input-wrap">
                       <input
                         value={codeQuery}
@@ -522,7 +706,7 @@ export default function GroupCodingPanel({
                           if (e.key === 'Escape') setSelection(null)
                           if (e.key === 'Enter') {
                             e.preventDefault()
-                            const exact = activeCodes.find((c) => c.name.trim().toLowerCase() === codeQuery.trim().toLowerCase())
+                            const exact = attachPool.find((c) => c.name.trim().toLowerCase() === codeQuery.trim().toLowerCase())
                             if (exact) attachCode(exact)
                             else attachNew(codeQuery)
                           }
@@ -534,12 +718,13 @@ export default function GroupCodingPanel({
                           <button key={code.id} type="button" className="coding-suggest-row" onMouseDown={(e) => e.preventDefault()} onClick={() => attachCode(code)}>
                             <span className="coding-dot" style={{ background: code.color }} />
                             <span className="coding-suggest-name">{code.name}</span>
+                            <span className="coding-tree-count">{originTag(code)}</span>
                           </button>
                         ))}
-                        {codeQuery.trim() && !activeCodes.some((c) => c.name.trim().toLowerCase() === codeQuery.trim().toLowerCase()) && (
+                        {codeQuery.trim() && !attachPool.some((c) => c.name.trim().toLowerCase() === codeQuery.trim().toLowerCase()) && (
                           <button type="button" className="coding-suggest-row create" onMouseDown={(e) => e.preventDefault()} onClick={() => attachNew(codeQuery)}>
                             <span className="coding-plus">＋</span>
-                            <span className="coding-suggest-name">新建码「{codeQuery.trim()}」</span>
+                            <span className="coding-suggest-name">新建个人码「{codeQuery.trim()}」</span>
                           </button>
                         )}
                       </div>
@@ -548,7 +733,7 @@ export default function GroupCodingPanel({
                   </>
                 ) : activeCoding ? (
                   <>
-                    <SideTitle extra={codes.find((c) => c.id === activeCoding.code_id)?.name}>选中编码</SideTitle>
+                    <SideTitle extra={codeOf(activeCoding.code_id)?.name}>选中编码</SideTitle>
                     <div className="coding-quote">“{activeCoding.quote}”</div>
                     <div className="coding-actions">
                       <button type="button" className="coding-primary-btn" onClick={() => {
@@ -558,6 +743,7 @@ export default function GroupCodingPanel({
                       }}>▶ 播放片段</button>
                       <button type="button" className="coding-danger-btn" onClick={() => removeCoding(activeCoding.id)}>删除这条编码</button>
                     </div>
+                    <div className="coding-hint">双击正文里的编码区也能直接撤销；这是你自己的编码，不会影响别人。</div>
                   </>
                 ) : activeSentence ? (
                   <>
@@ -568,14 +754,14 @@ export default function GroupCodingPanel({
                       {mine
                         .filter((c) => c.spans.some((sp) => sp.sentence_id === activeSentence.id))
                         .map((entry) => {
-                          const code = codes.find((c) => c.id === entry.code_id)
+                          const code = codeOf(entry.code_id)
                           return code ? <CodeChip key={entry.id} code={code} active onClick={() => setActiveCodingId(entry.id)} onRemove={() => removeCoding(entry.id)} /> : null
                         })}
                     </div>
                   </>
                 ) : (
                   <>
-                    <SideTitle extra={nick || '我'}>共享编码</SideTitle>
+                    <SideTitle extra={nick || '我'}>共享材料 · 各自编码</SideTitle>
                     <div className="coding-stat-grid">
                       <div><span>句子</span><b>{sentences.length}</b></div>
                       <div><span>我的编码</span><b>{mine.length}</b></div>
@@ -583,60 +769,198 @@ export default function GroupCodingPanel({
                       <div><span>编码者</span><b>{new Set(codings.map((c) => c.coder_id)).size}</b></div>
                     </div>
                     <div className="coding-hint">
-                      这是共享材料：你的编码会存到群组，其他成员的编码也在这里，所以能做真正的对比。
-                      拖选文字贴码即可；只保留你自己的编码，不会覆盖别人。
+                      材料共享，编码各人独立：你的码本与编码只有你能改，别人只能看，用来对照。
+                      想让全组用同一套码，就在「共享」里提案，需要群主和全部管理员同意。
                     </div>
                     {saving && <div className="coding-hint">保存中…</div>}
                   </>
                 )}
               </div>
-            ) : (
+            ) : tab === 'codebook' ? (
               <div className="coding-inspector-body">
-                <SideTitle extra={`${codes.length} 个码`}>码本</SideTitle>
-                <div className="coding-code-search">
-                  <input
-                    value={newCodeName}
-                    placeholder="新建顶层码，回车添加"
-                    onChange={(e) => setNewCodeName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        createTopCode()
-                      }
-                    }}
-                    style={{ flex: 1, minWidth: 0, fontSize: 12, padding: '5px 8px', border: '1px solid #d5dae2', borderRadius: 6 }}
-                  />
-                  <button type="button" className="coding-primary-btn" onClick={createTopCode}>添加</button>
+                <SideTitle extra={`${viewCodes.length} 个码`}>码本</SideTitle>
+                <select
+                  value={viewer}
+                  onChange={(e) => {
+                    setViewer(e.target.value)
+                    setActiveCodeId(null)
+                  }}
+                  style={{ width: '100%', fontSize: 12, padding: '4px 6px', marginBottom: 6 }}
+                >
+                  <option value="mine">{nick || '我'}的码本（我的）</option>
+                  {shared && <option value="shared">共享码本 v{shared.version}</option>}
+                  {legacy.length > 0 && <option value="legacy">旧版共享码本</option>}
+                  {otherBooks.map((b) => (
+                    <option key={b.coder_id} value={b.coder_id}>
+                      {b.nick || b.coder_id} 的码本（{b.coding_count ?? 0} 条）
+                    </option>
+                  ))}
+                </select>
+                {editable ? (
+                  <div className="coding-code-search">
+                    <input
+                      value={newCodeName}
+                      placeholder="新建顶层码，回车添加"
+                      onChange={(e) => setNewCodeName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          createTopCode()
+                        }
+                      }}
+                      style={{ flex: 1, minWidth: 0, fontSize: 12, padding: '5px 8px', border: '1px solid #d5dae2', borderRadius: 6 }}
+                    />
+                    <button type="button" className="coding-primary-btn" onClick={createTopCode}>添加</button>
+                  </div>
+                ) : (
+                  <div className="coding-hint">{viewName}：只读。各人码本独立，只有本人能改。</div>
+                )}
+                <div
+                  className="coding-tree scroll-hidden"
+                  onDragOver={(e) => {
+                    if (editable && dragRef.current) e.preventDefault()
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    if (dragRef.current) moveMyCode(dragRef.current, null)
+                    dragRef.current = null
+                  }}
+                  title={editable ? '拖到空白处变为顶层码' : undefined}
+                >
+                  {siblingRows(viewCodes, viewCodings, null, 0)}
+                  {viewCodes.length === 0 && <div className="coding-empty">这个码本还是空的。</div>}
                 </div>
-                <div className="coding-tree scroll-hidden">{codeTreeRows(null, 0)}</div>
                 {activeCode ? (
                   <div className="coding-code-detail">
                     <div className="coding-code-detail-head">
                       <span className="coding-dot" style={{ background: activeCode.color }} />
                       <input
                         value={activeCode.name}
-                        onChange={(e) => {
-                          const next = codes.map((c) => (c.id === activeCode.id ? { ...c, name: e.target.value } : c))
-                          setCodes(next)
-                        }}
-                        onBlur={() => persist(codes, codings)}
+                        readOnly={!editable}
+                        onChange={(e) => updateCode(activeCode.id, { name: e.target.value })}
+                        onBlur={() => editable && persist(codes, codings)}
                         style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, border: '1px solid transparent', borderRadius: 4, padding: '2px 4px', background: 'transparent' }}
                       />
+                      <span className="coding-tree-count">{originTag(activeCode)}</span>
                     </div>
                     <textarea
                       value={activeCode.definition}
+                      readOnly={!editable}
                       placeholder="这个码的定义 / 纳入与排除标准…"
-                      onChange={(e) => {
-                        const next = codes.map((c) => (c.id === activeCode.id ? { ...c, definition: e.target.value } : c))
-                        setCodes(next)
-                      }}
-                      onBlur={() => persist(codes, codings)}
+                      onChange={(e) => updateCode(activeCode.id, { definition: e.target.value })}
+                      onBlur={() => editable && persist(codes, codings)}
                       style={{ width: '100%', boxSizing: 'border-box', minHeight: 54, fontSize: 12, lineHeight: 1.6, padding: '5px 8px', border: '1px solid #e3e6ea', borderRadius: 6, resize: 'vertical' }}
                     />
+                    {editable ? (
+                      <div className="coding-hint">
+                        双击码名可删除；把码拖到另一个码上可改变层级；同级按编码数量自动排序。
+                      </div>
+                    ) : (
+                      <div className="coding-hint">这是 {viewName}，别人的码只读，不会与你的编码混在一起。</div>
+                    )}
                   </div>
                 ) : (
                   <div className="coding-empty">点一个码查看定义与计数。</div>
                 )}
+              </div>
+            ) : (
+              <div className="coding-inspector-body">
+                <SideTitle extra={data?.can_approve ? '你可审批' : '仅可提案'}>共享码本</SideTitle>
+                {shared ? (
+                  <>
+                    <div className="coding-summary-row">
+                      {shared.name || '共享码本'} <b>v{shared.version}</b>
+                    </div>
+                    <div className="coding-summary-row">
+                      码数 <b>{(shared.codes || []).length}</b>
+                    </div>
+                    <div className="coding-hint">
+                      共享码本已生效。个人码本仍可用，贴码时优先用共享码，避免各人命名漂移。
+                    </div>
+                  </>
+                ) : (
+                  <div className="coding-hint">
+                    还没有共享码本。组内可以各自编码；需要统一口径时，由任一成员用自己的码本提案，
+                    群主 + 全部管理员同意后生效。
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  className="coding-primary-btn"
+                  style={{ marginTop: 8, width: '100%' }}
+                  disabled={busyProposal || !codes.length}
+                  onClick={propose}
+                >
+                  {shared ? `用我的码本提案修改（v${shared.version || 1} → v${(shared.version || 1) + 1}）` : '用我的码本建立共享码本'}
+                </button>
+                {!codes.length && <div className="coding-hint">先在自己的码本里建码，才能提案。</div>}
+
+                <div className="coding-label" style={{ marginTop: 12 }}>
+                  审批人（{data?.approvers.length || 0}）
+                </div>
+                <div className="coding-hint">
+                  {(data?.approvers || []).map((a) => `${a.nick || a.device_code}（${a.role}）`).join('、') || '暂无'}
+                  {' · '}提案 7 天未决自动过期，不会默认通过。
+                </div>
+
+                {pending.length > 0 && data?.can_approve && myPending.length > 1 && (
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <button type="button" className="coding-primary-btn" disabled={busyProposal} onClick={() => decide(myPending.map((p) => p.id), 'approve')}>
+                      全部同意
+                    </button>
+                    <button type="button" className="coding-danger-btn" disabled={busyProposal} onClick={() => decide(myPending.map((p) => p.id), 'reject')}>
+                      全部拒绝
+                    </button>
+                  </div>
+                )}
+
+                <div className="coding-label" style={{ marginTop: 12 }}>提案记录（{proposals.length}）</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {proposals.length === 0 && <div className="coding-empty">还没有人提案。</div>}
+                  {proposals.map((p) => {
+                    const mineDecision = p.decisions?.[me]?.decision
+                    const approved = p.approvals?.length || 0
+                    const label =
+                      p.status === 'approved' ? `已生效 v${p.applied_version || ''}`
+                        : p.status === 'rejected' ? '已驳回'
+                          : p.status === 'expired' ? '已过期' : '待审批'
+                    return (
+                      <div key={p.id} style={{ border: '1px solid #e3e6ea', borderRadius: 6, padding: '7px 8px', background: '#fff' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                          <b style={{ color: '#3b4250' }}>{p.kind === 'create' ? '新建' : '修改'}</b>
+                          <span style={{ color: '#8a8f98' }}>{p.by || '成员'} · {new Date(p.created_at).toLocaleDateString()}</span>
+                          <span style={{ marginLeft: 'auto', color: p.status === 'pending' ? '#8a5a00' : '#5f5e5a' }}>{label}</span>
+                        </div>
+                        <div className="coding-hint" style={{ marginTop: 3 }}>
+                          {p.name} · {p.codes.length} 个码 · 同意 {approved}/{p.required.length}
+                          {p.status === 'pending' && <> · 截止 {new Date(p.expires_at).toLocaleDateString()}</>}
+                        </div>
+                        {p.status === 'pending' && data?.can_approve && (
+                          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                            <button
+                              type="button"
+                              className="coding-primary-btn"
+                              disabled={busyProposal || mineDecision === 'approve'}
+                              onClick={() => decide([p.id], 'approve')}
+                            >
+                              {mineDecision === 'approve' ? '我已同意' : '同意'}
+                            </button>
+                            <button
+                              type="button"
+                              className="coding-danger-btn"
+                              disabled={busyProposal || mineDecision === 'reject'}
+                              onClick={() => decide([p.id], 'reject')}
+                            >
+                              拒绝
+                            </button>
+                          </div>
+                        )}
+                        {p.status === 'rejected' && <div className="coding-hint">任一审批人拒绝即驳回。</div>}
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </div>

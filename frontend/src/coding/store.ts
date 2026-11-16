@@ -236,6 +236,44 @@ export function updateCode(store: CodingStore, codeId: string, patch: Partial<Co
   }
 }
 
+/** 删除一个码：连同它自己的编码一起删，子码上提到它原来的父级。 */
+export function deleteCode(store: CodingStore, codeId: string): CodingStore {
+  const code = store.codes.find((c) => c.id === codeId)
+  if (!code) return store
+  const parentId = code.parent_id
+  return {
+    ...store,
+    codebook: { ...store.codebook, updated_at: now() },
+    codes: store.codes
+      .filter((c) => c.id !== codeId)
+      .map((c) => (c.parent_id === codeId ? { ...c, parent_id: parentId } : c)),
+    codings: store.codings.filter((c) => c.code_id !== codeId),
+  }
+}
+
+/** 移动码到另一个父级；拒绝移到自己或自己的后代，避免树成环。 */
+export function moveCode(store: CodingStore, codeId: string, parentId: string | null): CodingStore {
+  const code = store.codes.find((c) => c.id === codeId)
+  if (!code || code.parent_id === parentId) return store
+  if (parentId && (parentId === codeId || subtreeIds(store, codeId).has(parentId))) return store
+  return {
+    ...store,
+    codebook: { ...store.codebook, updated_at: now() },
+    codes: store.codes.map((c) => (c.id === codeId ? { ...c, parent_id: parentId } : c)),
+  }
+}
+
+/**
+ * 撤销最后一条编码后清理空码：全项目都没有这个码的编码、且没有子码时才删。
+ * 有子码的父级即使自己暂时没有直接编码，也保留结构。
+ */
+export function pruneCodeIfUnused(store: CodingStore, codeId: string): CodingStore {
+  const used = store.codings.some((c) => c.code_id === codeId)
+  const hasChildren = store.codes.some((c) => c.parent_id === codeId)
+  if (used || hasChildren) return store
+  return deleteCode(store, codeId)
+}
+
 export function topRoot(store: CodingStore, codeId: string): CodingCode {
   let code = store.codes.find((c) => c.id === codeId)
   let guard = 0

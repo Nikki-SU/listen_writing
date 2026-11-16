@@ -776,6 +776,42 @@
   background: #f7f8fa;
 }
 
+.coding-tree-row.dragging {
+  opacity: 0.45;
+}
+
+.coding-tree-row.dnd-over {
+  outline: 2px dashed #4b3fe3;
+  outline-offset: -2px;
+  background: #f3f0ff;
+}
+
+.coding-tree-root-drop {
+  margin-top: 5px;
+  padding: 5px 8px;
+  border: 1px dashed #d5dae2;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #8a8f98;
+  text-align: center;
+}
+
+.coding-tree-root-drop.dnd-over {
+  border-color: #4b3fe3;
+  background: #f3f0ff;
+  color: #312e81;
+}
+
+.coding-move-select {
+  width: 100%;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid #dfe3e8;
+  border-radius: 5px;
+  background: #fff;
+  color: #333;
+}
+
 .coding-tree-row.active {
   background: #eef4ff;
   color: #245c9c;

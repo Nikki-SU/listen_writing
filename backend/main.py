@@ -2570,6 +2570,24 @@ class Handler(BaseHTTPRequestHandler):
             self._collab_call(lambda: collab.add_material(m[0], project_id, recording_id, device))
             return
 
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/coding/proposals/decide$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.decide_codebook_proposals(m[0], m[1], device, data))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/coding/proposals$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.propose_shared_codebook(m[0], m[1], device, data))
+            return
+
         m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/coding$")
         if m:
             data = self._read_json_body()
