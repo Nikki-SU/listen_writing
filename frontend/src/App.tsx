@@ -1838,6 +1838,14 @@ function TranscriptPanel({
               v{version}
             </span>
           )}
+          {coding && (
+            <span
+              title="编码区间锚定在正文的字符位置上；编码模式下不修改文字，避免编码错位。要改文字请切回「转写」。"
+              style={{ fontSize: 11, color: '#8a5a00', background: '#fff8e6', border: '1px solid #f0d9a8', borderRadius: 10, padding: '2px 8px' }}
+            >
+              编码模式 · 正文只读
+            </span>
+          )}
           <button
             onClick={() => void saveExport(projectId, recordingId, 'md', version || undefined, onError)}
             title="导出 Markdown"
@@ -1864,6 +1872,9 @@ function TranscriptPanel({
           >
             <HistoryIcon />
           </button>
+          <span style={{ marginLeft: 'auto' }} />
+          {!coding && (
+            <>
           <button
             onClick={() => {
               if (polishing || suggestions.length > 0) setPolishOpen(true)
@@ -1873,7 +1884,6 @@ function TranscriptPanel({
             style={{
               fontSize: 12,
               padding: '4px 10px',
-              marginLeft: 'auto',
               background: polishOpen ? '#eef5ff' : '#fff',
               border: `1px solid ${polishOpen ? '#8ab4f8' : '#ddd'}`,
               color: llmReady === false ? '#999' : '#245c9c',
@@ -1915,6 +1925,8 @@ function TranscriptPanel({
           >
             {resegmenting ? 'AI 整理中…' : llmDownloading ? '模型下载中…' : 'AI 整理断句'}
           </button>
+            </>
+          )}
           <button
             onClick={() => setRedactMode((v) => !v)}
             style={{
@@ -2339,26 +2351,28 @@ function TranscriptPanel({
               {detectingSpeakers ? '识别中…' : speakers.length > 0 ? '重新识别发言人' : '自动识别发言人'}
             </button>
             <span style={{ color: '#aaa' }}>（点句子标签换下一位；Shift+点整段同标签一起换；点名字可改名/并入）</span>
-            <button
-              onClick={() => {
-                setMergeMode((v) => !v)
-                setPaintColors({})
-                setEditingId(null)
-              }}
-              disabled={transcribe.status !== 'done' || localSentences.length < 2}
-              style={{
-                marginLeft: 'auto',
-                fontSize: 12,
-                padding: '3px 12px',
-                borderRadius: 6,
-                border: '1px solid ' + (mergeMode ? '#1a73e8' : '#d6e4ff'),
-                background: mergeMode ? '#1a73e8' : '#fff',
-                color: mergeMode ? '#fff' : '#1a73e8',
-                cursor: 'pointer',
-              }}
-            >
-              {mergeMode ? '退出合并' : '多句合并'}
-            </button>
+            {!coding && (
+              <button
+                onClick={() => {
+                  setMergeMode((v) => !v)
+                  setPaintColors({})
+                  setEditingId(null)
+                }}
+                disabled={transcribe.status !== 'done' || localSentences.length < 2}
+                style={{
+                  marginLeft: 'auto',
+                  fontSize: 12,
+                  padding: '3px 12px',
+                  borderRadius: 6,
+                  border: '1px solid ' + (mergeMode ? '#1a73e8' : '#d6e4ff'),
+                  background: mergeMode ? '#1a73e8' : '#fff',
+                  color: mergeMode ? '#fff' : '#1a73e8',
+                  cursor: 'pointer',
+                }}
+              >
+                {mergeMode ? '退出合并' : '多句合并'}
+              </button>
+            )}
           </div>
         )}
 
@@ -2680,7 +2694,7 @@ function TranscriptPanel({
                             }))
                           : renderText(s)}
                       </span>
-                      {!mergeMode && (
+                      {!mergeMode && !coding && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation()

@@ -940,7 +940,7 @@ export default function CollabPanel({
                       />
                     </div>
                   ) : materialMode === 'compare' ? (
-                    <div style={{ display: 'flex', gap: 12, minHeight: 320 }}>
+                    <div className="workspace-grid" style={{ minHeight: 320 }}>
                       <ComparePanel
                         groupId={selected.id}
                         materialId={materialView.material.id}

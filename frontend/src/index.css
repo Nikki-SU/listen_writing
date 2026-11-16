@@ -151,6 +151,18 @@ body {
   min-width: 0;
 }
 
+.transcript-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.transcript-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .sentence-gutter {
   flex: none;
   align-self: stretch;
