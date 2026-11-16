@@ -402,6 +402,13 @@ export type CaseAttribute = {
   value: string
 }
 
+/** 属性集：一类条目的字段模板（如 访谈类：访员/被访/性别/时间）。 */
+export type AttributeSet = {
+  id: string
+  name: string
+  fields: string[]
+}
+
 /** 案例：一份文档对应的访谈对象；分析按这些属性做交叉对比。 */
 export type CodingCase = {
   id: string
@@ -417,6 +424,8 @@ export type CodingStore = {
   project_id: string
   codebook: { id: string; name: string; updated_at: string }
   documents: CodingDocument[]
+  /** 项目级属性集模板，条目可套用后再加自定义字段。 */
+  attribute_sets?: AttributeSet[]
   cases: CodingCase[]
   codes: CodingCode[]
   codings: CodingEntry[]

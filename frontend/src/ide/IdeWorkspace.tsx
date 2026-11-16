@@ -55,7 +55,7 @@ export default function IdeWorkspace({ panels }: { panels: PanelDef[] }) {
   function Slot({ which, activeKey }: { which: 'mid' | 'right'; activeKey: string }) {
     const active = panels.find((p) => p.key === activeKey) ?? panels[0]
     return (
-      <div style={{ position: 'relative', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', border: '1px solid #e8ebf0', borderRadius: 12, background: '#fff', padding: 14, boxSizing: 'border-box', overflow: 'hidden' }}>
+      <div style={{ position: 'relative', minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column', border: '1px solid #e8ebf0', borderRadius: 12, background: '#fff', padding: 14, boxSizing: 'border-box', overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 8, borderBottom: '1px solid #eef0f2', flexShrink: 0 }}>
           <span style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>{active?.label ?? '空'}</span>
           <button onClick={() => setMenu((m) => (m === which ? null : which))} title="切换功能"
@@ -81,7 +81,7 @@ export default function IdeWorkspace({ panels }: { panels: PanelDef[] }) {
     <IdeProvider>
       <div ref={rootRef} style={{ display: 'grid', gridTemplateColumns: `minmax(0,${4 - rightFr}fr) minmax(0,${rightFr}fr)`, gap: 12, minWidth: 0, minHeight: 0, height: '100%' }}>
         <Slot which="mid" activeKey={midKey} />
-        <div style={{ position: 'relative', minWidth: 0, minHeight: 0 }}>
+        <div style={{ position: 'relative', minWidth: 0, minHeight: 0, height: '100%' }}>
           <Slot which="right" activeKey={rightKey} />
           <div role="separator"
             onMouseDown={(e) => { e.preventDefault(); setDragging(true); startX.current = e.clientX; startFr.current = rightFr; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none' }}

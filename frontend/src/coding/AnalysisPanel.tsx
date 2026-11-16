@@ -33,14 +33,17 @@ export default function AnalysisPanel({
     { key: 'search', label: '检索', render: () => <SearchPanel data={data} onJump={jump} /> },
     { key: 'evidence', label: '证据', render: () => <EvidencePanel data={data} onJump={jump} /> },
     { key: 'text', label: '文本展示', render: () => <TextPanel data={data} /> },
-    { key: 'props', label: '条目属性', render: () => <CasePropsPanel data={data} /> },
+    { key: 'props', label: '条目属性', render: () => <CasePropsPanel data={data} edit={{
+      attributeSets: data.attributeSets, applySet: data.applySet, upsertSet: data.upsertSet,
+      deleteSet: data.deleteSet, caseAttributes: data.caseAttributes, updateCaseAttrs: data.updateCaseAttrs,
+    }} /> },
     { key: 'coding', label: '辅助编码', render: () => <CodingListPanel data={data} /> },
     { key: 'ai', label: 'AI 助手', render: () => <AiPanel /> },
     { key: 'artifacts', label: '产物', render: () => <ArtifactsPanel /> },
   ]
 
   return (
-    <div style={{ gridColumn: 'span 4', minWidth: 0, minHeight: 0 }}>
+    <div style={{ gridColumn: 'span 4', minWidth: 0, minHeight: 0, height: '100%' }}>
       <IdeWorkspace panels={panels} />
     </div>
   )

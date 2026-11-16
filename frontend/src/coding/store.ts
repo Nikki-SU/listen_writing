@@ -1,4 +1,5 @@
 import type {
+  AttributeSet,
   CaseAttribute,
   CodingCase,
   CodingCode,
@@ -16,6 +17,12 @@ const STORAGE_PREFIX = 'lw_coding_store_v1_'
 const CODE_COLORS = ['#5b4bcc', '#2f6fed', '#0f9d9d', '#c2760a']
 
 const now = () => new Date().toISOString()
+
+/** 默认属性集：开箱即用，用户可在属性面板里改字段或新建集。 */
+const DEFAULT_ATTRIBUTE_SETS: AttributeSet[] = [
+  { id: 'as_interview', name: '访谈类', fields: ['访员', '被访', '性别', '访谈时间', '访谈地点'] },
+  { id: 'as_literature', name: '文献类', fields: ['文献类型', '期刊名称', 'DOI', '文献年份'] },
+]
 
 function uid(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`
@@ -74,6 +81,7 @@ function emptyStore(projectId: string): CodingStore {
     project_id: projectId,
     codebook: { id: codebookId(projectId), name: '主码本', updated_at: now() },
     documents: [],
+    attribute_sets: DEFAULT_ATTRIBUTE_SETS.map((s) => ({ ...s, fields: [...s.fields] })),
     cases: [],
     codes: seedCodes(projectId),
     codings: [],
@@ -92,6 +100,7 @@ export function loadCodingStore(projectId: string): CodingStore {
           project_id: projectId,
           codebook: parsed.codebook || emptyStore(projectId).codebook,
           documents: parsed.documents || [],
+          attribute_sets: parsed.attribute_sets || DEFAULT_ATTRIBUTE_SETS.map((s) => ({ ...s, fields: [...s.fields] })),
           cases: parsed.cases || [],
           codes: parsed.codes || [],
           codings: parsed.codings || [],
@@ -214,6 +223,42 @@ export function updateCase(
     ...store,
     cases: store.cases.map((c) => (c.document_id === docId ? { ...c, ...patch } : c)),
   }
+}
+
+/** 给条目套用属性集：把该集的字段加成空值属性，已存在的同名字段不重复加。 */
+export function applyAttributeSet(
+  store: CodingStore, docId: string, setId: string,
+): CodingStore {
+  const set = (store.attribute_sets || []).find((s) => s.id === setId)
+  if (!set) return store
+  const target = caseFor(store, docId)
+  if (!target) return store
+  const existing = new Set(target.attributes.map((a) => a.label.trim()))
+  const added = set.fields
+    .map((f) => f.trim())
+    .filter((f) => f && !existing.has(f))
+    .map((f) => ({ id: `attr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, label: f, value: '' }))
+  if (!added.length) return store
+  return {
+    ...store,
+    cases: store.cases.map((c) =>
+      c.document_id === docId ? { ...c, attributes: [...c.attributes, ...added] } : c,
+    ),
+  }
+}
+
+/** 属性集管理：新增 / 改字段 / 删除。 */
+export function upsertAttributeSet(store: CodingStore, set: AttributeSet): CodingStore {
+  const list = store.attribute_sets || []
+  const exists = list.some((s) => s.id === set.id)
+  return {
+    ...store,
+    attribute_sets: exists ? list.map((s) => (s.id === set.id ? set : s)) : [...list, set],
+  }
+}
+
+export function deleteAttributeSet(store: CodingStore, setId: string): CodingStore {
+  return { ...store, attribute_sets: (store.attribute_sets || []).filter((s) => s.id !== setId) }
 }
 
 /** 分析维度：所有案例里出现过的属性名（按出现顺序去重）。 */

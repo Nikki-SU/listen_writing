@@ -235,18 +235,86 @@ export function TextPanel({ data }: { data: IdeData }) {
 }
 
 /** 条目属性：挂在 case 上，展示当前条目的自定义字段。 */
-export function CasePropsPanel({ data }: { data: IdeData }) {
+export type CasePropsEdit = {
+  attributeSets: { id: string; name: string; fields: string[] }[]
+  applySet: (docId: string, setId: string) => void
+  upsertSet: (set: { id: string; name: string; fields: string[] }) => void
+  deleteSet: (setId: string) => void
+  caseAttributes: (docId: string) => { id: string; label: string; value: string }[]
+  updateCaseAttrs: (docId: string, attrs: { id: string; label: string; value: string }[]) => void
+}
+
+export function CasePropsPanel({ data, edit }: { data: IdeData; edit?: CasePropsEdit }) {
   const docId = data.currentDocId
+  const [setId, setSetId] = useState('')
+  const [manage, setManage] = useState(false)
+  const [draft, setDraft] = useState<{ id: string; name: string; fields: string[] }[]>([])
+
+  const attrs = edit && docId ? edit.caseAttributes(docId) : []
+  const patchAttr = (id: string, patch: { label?: string; value?: string }) => {
+    if (!edit || !docId) return
+    edit.updateCaseAttrs(docId, attrs.map((a) => (a.id === id ? { ...a, ...patch } : a)))
+  }
+  const removeAttr = (id: string) => {
+    if (!edit || !docId) return
+    edit.updateCaseAttrs(docId, attrs.filter((a) => a.id !== id))
+  }
+  const addAttr = () => {
+    if (!edit || !docId) return
+    edit.updateCaseAttrs(docId, [...attrs, { id: `attr_${Date.now()}`, label: '', value: '' }])
+  }
+
   return (
     <div>
       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>{docId ? data.docTitle(docId) : '未选择条目'}</div>
-      {data.attributes.map((label) => (
-        <div key={label} style={{ display: 'flex', gap: 8, padding: '5px 0', borderBottom: '1px solid #f0f2f5', fontSize: 12 }}>
-          <span style={{ color: '#8a8f98', width: 100, flexShrink: 0 }}>{label}</span>
-          <span>{docId ? data.caseValue(docId, label) || '—' : '—'}</span>
-        </div>
-      ))}
-      {data.attributes.length === 0 && <div style={{ fontSize: 12, color: '#9aa0a6' }}>该项目还没有条目属性</div>}
+      {edit && docId ? (
+        <>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+            <select value={setId} onChange={(e) => setSetId(e.target.value)} style={{ fontSize: 11, padding: '3px 6px', borderRadius: 6, flex: 1 }}>
+              <option value="">选择属性集</option>
+              {edit.attributeSets.map((s) => <option key={s.id} value={s.id}>{s.name}（{s.fields.length} 字段）</option>)}
+            </select>
+            <button disabled={!setId} onClick={() => { edit.applySet(docId, setId); setSetId('') }} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6 }}>导入</button>
+            <button onClick={() => { setDraft(edit.attributeSets.map((s) => ({ ...s, fields: [...s.fields] }))); setManage((v) => !v) }} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6 }}>管理属性集</button>
+          </div>
+          {manage && (
+            <div style={{ border: '1px solid #e8ebf0', borderRadius: 8, padding: 8, marginBottom: 10 }}>
+              {draft.map((s, si) => (
+                <div key={si} style={{ borderBottom: '1px solid #f0f2f5', paddingBottom: 6, marginBottom: 6 }}>
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+                    <input value={s.name} onChange={(e) => setDraft((d) => d.map((x, i) => i === si ? { ...x, name: e.target.value } : x))} placeholder="属性集名" style={{ fontSize: 11, flex: 1, padding: '3px 6px', borderRadius: 5, border: '1px solid #d5dae2' }} />
+                    <button onClick={() => setDraft((d) => d.filter((_, i) => i !== si))} style={{ fontSize: 11 }}>×</button>
+                  </div>
+                  <input value={s.fields.join(', ')} onChange={(e) => setDraft((d) => d.map((x, i) => i === si ? { ...x, fields: e.target.value.split(',').map((f) => f.trim()).filter(Boolean) } : x))} placeholder="字段，用逗号分隔" style={{ fontSize: 11, width: '100%', boxSizing: 'border-box', padding: '3px 6px', borderRadius: 5, border: '1px solid #d5dae2' }} />
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={() => setDraft((d) => [...d, { id: `as_${Date.now()}`, name: '', fields: [] }])} style={{ fontSize: 11, padding: '2px 8px' }}>+ 新建集</button>
+                <button onClick={() => { draft.filter((s) => s.name.trim()).forEach((s) => edit.upsertSet(s)); setManage(false) }} style={{ fontSize: 11, padding: '2px 8px' }}>保存</button>
+                <button onClick={() => setManage(false)} style={{ fontSize: 11, padding: '2px 8px' }}>取消</button>
+              </div>
+            </div>
+          )}
+          {attrs.map((a) => (
+            <div key={a.id} style={{ display: 'flex', gap: 6, padding: '4px 0', borderBottom: '1px solid #f0f2f5', alignItems: 'center' }}>
+              <input value={a.label} onChange={(e) => patchAttr(a.id, { label: e.target.value })} placeholder="字段名" style={{ fontSize: 11, width: 84, padding: '3px 5px', borderRadius: 5, border: '1px solid #e8ebf0' }} />
+              <input value={a.value} onChange={(e) => patchAttr(a.id, { value: e.target.value })} placeholder="值" style={{ fontSize: 11, flex: 1, minWidth: 0, padding: '3px 5px', borderRadius: 5, border: '1px solid #e8ebf0' }} />
+              <button onClick={() => removeAttr(a.id)} style={{ fontSize: 11, color: '#b00020', border: 'none', background: 'transparent', cursor: 'pointer' }}>×</button>
+            </div>
+          ))}
+          <button onClick={addAttr} style={{ fontSize: 11, marginTop: 8, padding: '2px 8px', borderRadius: 6 }}>＋ 自定义字段</button>
+        </>
+      ) : (
+        <>
+          {data.attributes.map((label) => (
+            <div key={label} style={{ display: 'flex', gap: 8, padding: '5px 0', borderBottom: '1px solid #f0f2f5', fontSize: 12 }}>
+              <span style={{ color: '#8a8f98', width: 100, flexShrink: 0 }}>{label}</span>
+              <span>{docId ? data.caseValue(docId, label) || '—' : '—'}</span>
+            </div>
+          ))}
+          {data.attributes.length === 0 && <div style={{ fontSize: 12, color: '#9aa0a6' }}>该项目还没有条目属性</div>}
+        </>
+      )}
     </div>
   )
 }

@@ -36,7 +36,7 @@ export default function GroupAnalysisPanel({
   ]
 
   return (
-    <div style={{ gridColumn: 'span 5', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+    <div style={{ gridColumn: 'span 5', minWidth: 0, minHeight: 0, height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 2px 8px', flexShrink: 0 }}>
         <span style={{ fontSize: 12, fontWeight: 600 }}>群组分析</span>
         <button className={`coding-ghost-btn${data.mode === 'personal' ? ' active' : ''}`} onClick={() => data.setMode('personal')}>个人码</button>

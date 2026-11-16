@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { CodingEntry, CodingStore, Recording, RecordingDetail } from '../types'
 import {
-  caseAttributeLabels, caseAttributeValue, caseFor, codeById, documentId,
-  hydrateCodingStore, loadCodingStore, subtreeIds,
+  applyAttributeSet, caseAttributeLabels, caseAttributeValue, caseFor, codeById, documentId,
+  hydrateCodingStore, loadCodingStore, saveCodingStore, subtreeIds, upsertAttributeSet, deleteAttributeSet,
 } from '../coding/store'
+import type { AttributeSet } from '../types'
 
 const ME = 'me'
 
@@ -143,6 +144,21 @@ export function useAnalysisData(projectId: string, recordings: Recording[], deta
     return list.length ? { entry: list[0], count: list.length } : null
   }
 
+  function mutate(fn: (s: CodingStore) => CodingStore) {
+    setStore((prev) => {
+      const next = fn(prev)
+      saveCodingStore(next)
+      return next
+    })
+  }
+
+  function updateCaseAttrs(docId: string, attrs: { id: string; label: string; value: string }[]) {
+    mutate((s) => ({
+      ...s,
+      cases: s.cases.map((c) => (c.document_id === docId ? { ...c, attributes: attrs } : c)),
+    }))
+  }
+
   return {
     store, codes, topCodes, attributes, myCodings,
     codeById: (id: string) => codeById(store, id),
@@ -152,6 +168,13 @@ export function useAnalysisData(projectId: string, recordings: Recording[], deta
     searchCodings, wordFrequency, frameworkRows, firstQuoteFor,
     currentDocId: detail?.recording.id ? documentId(detail.recording.id) : null,
     sentences: detail?.sentences ?? [],
+    // 属性集编辑（个人版）：面板通过它们导入属性集 + 加自定义字段。
+    attributeSets: store.attribute_sets ?? [],
+    applySet: (docId: string, setId: string) => mutate((s) => applyAttributeSet(s, docId, setId)),
+    upsertSet: (set: AttributeSet) => mutate((s) => upsertAttributeSet(s, set)),
+    deleteSet: (setId: string) => mutate((s) => deleteAttributeSet(s, setId)),
+    caseAttributes: (docId: string) => caseFor(store, docId)?.attributes ?? [],
+    updateCaseAttrs,
   }
 }
 
