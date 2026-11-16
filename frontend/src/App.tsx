@@ -24,6 +24,7 @@ import {
   GearIcon,
   HistoryIcon,
   MicIcon,
+  MergeIcon,
   PlayIcon,
   PlusIcon,
   StopIcon,
@@ -982,6 +983,8 @@ function TranscriptPanel({
   // 发言人花名册：单独登记名字，才能在“原本只有 1 个发言人”时先加人再拆分。
   const [roster, setRoster] = useState<string[]>(detail.speakers ?? [])
   const [newSpeakerOpen, setNewSpeakerOpen] = useState(false)
+  // 发言人管理浮层：全局的改名/并入/新增/识别都收在这里，由标题栏图标调出。
+  const [speakerPanelOpen, setSpeakerPanelOpen] = useState(false)
   const [newSpeakerName, setNewSpeakerName] = useState('')
   // 重新跑说话人聚类（历史录音没有自动分人时也能补上，不需要重新转写）。
   const [detectingSpeakers, setDetectingSpeakers] = useState(false)
@@ -1829,7 +1832,7 @@ function TranscriptPanel({
   }
 
   return (
-    <div style={{ display: 'flex', gap: 20, height: '100%', minHeight: 0 }}>
+    <div style={{ display: 'flex', gap: 20, height: '100%', minHeight: 0, position: 'relative' }}>
       <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, minHeight: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
           <h2 style={{ fontSize: 16, margin: 0 }}>转写稿（{localSentences.length} 句）</h2>
@@ -1933,7 +1936,129 @@ function TranscriptPanel({
               {redactMode ? '退出脱敏' : '脱敏'}
             </button>
           )}
+
+          {/* 全局工具：发言人管理、多句合并。都是图标，文字退到 hover。
+              句内“点胶囊换下一位发言人”在正文行里，不在这里——那是句内交互。 */}
+          {!coding && transcribe.status === 'done' && localSentences.length > 0 && (
+            <>
+              <span className="tool-sep" />
+              <button
+                className={`icon-tool${speakerPanelOpen ? ' on' : ''}`}
+                onClick={() => setSpeakerPanelOpen((v) => !v)}
+                title="发言人管理：新增 / 改名 / 并入 / 按音色重新识别"
+                aria-label="发言人管理"
+              >
+                <MicIcon size={14} />
+              </button>
+              <button
+                className={`icon-tool${mergeMode ? ' on' : ''}`}
+                onClick={() => {
+                  setMergeMode((v) => !v)
+                  setPaintColors({})
+                  setEditingId(null)
+                }}
+                title={mergeMode ? '退出多句合并' : '多句合并：把被 ASR 切碎的连续句子合并'}
+                aria-label="多句合并"
+              >
+                <MergeIcon size={14} />
+              </button>
+            </>
+          )}
         </div>
+
+        {/* 发言人管理浮层：从工具栏图标调出，不在正文流里，AI 提示条出现也不会推着它跑 */}
+        {speakerPanelOpen && !coding && (
+          <div className="speaker-panel">
+            <div className="speaker-panel-title">
+              发言人管理
+              <button className="icon-tool" onClick={() => setSpeakerPanelOpen(false)} title="关闭" aria-label="关闭">
+                <CloseIcon size={12} />
+              </button>
+            </div>
+            <div className="speaker-panel-body">
+              {speakers.length === 0 && <div className="speaker-panel-empty">还没有发言人，可以新增或按音色自动识别。</div>}
+              {speakers.map((sp) =>
+                speakerEdit === sp ? (
+                  <div key={sp} className="speaker-edit-row">
+                    <input
+                      autoFocus
+                      value={speakerDraft}
+                      onChange={(e) => setSpeakerDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') setSpeakerEdit(null)
+                        if (e.key === 'Enter') void renameSpeaker(sp, speakerDraft)
+                      }}
+                      style={{ fontSize: 12, width: 110, padding: '2px 5px' }}
+                    />
+                    <button className="text-tool" onClick={() => void renameSpeaker(sp, speakerDraft)}>保存</button>
+                    <button className="text-tool" onClick={() => setSpeakerEdit(null)}>取消</button>
+                    {speakers.length > 1 && (
+                      <select
+                        defaultValue=""
+                        onChange={(e) => {
+                          const into = e.target.value
+                          e.target.value = ''
+                          if (into) void mergeSpeaker(sp, into)
+                        }}
+                        style={{ fontSize: 11 }}
+                        title="把这个发言人的全部句子并入另一个"
+                      >
+                        <option value="">并入…</option>
+                        {speakers.filter((x) => x !== sp).map((x) => (
+                          <option key={x} value={x}>{x}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    key={sp}
+                    className="speaker-chip"
+                    style={{
+                      background: speakerColor(sp, speakerOrder).bg,
+                      color: speakerColor(sp, speakerOrder).fg,
+                      borderColor: speakerColor(sp, speakerOrder).border,
+                    }}
+                    onClick={() => { setSpeakerEdit(sp); setSpeakerDraft(sp) }}
+                    title="点击改名 / 并入"
+                  >
+                    {sp}
+                  </button>
+                ),
+              )}
+              <div className="speaker-panel-actions">
+                {newSpeakerOpen ? (
+                  <span className="speaker-edit-row">
+                    <input
+                      autoFocus
+                      value={newSpeakerName}
+                      onChange={(e) => setNewSpeakerName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') { setNewSpeakerOpen(false); setNewSpeakerName('') }
+                        if (e.key === 'Enter') void addSpeaker()
+                      }}
+                      placeholder="如：受访者"
+                      style={{ fontSize: 12, width: 110, padding: '2px 5px' }}
+                    />
+                    <button className="text-tool" onClick={() => void addSpeaker()}>添加</button>
+                    <button className="text-tool" onClick={() => { setNewSpeakerOpen(false); setNewSpeakerName('') }}>取消</button>
+                  </span>
+                ) : (
+                  <button className="text-tool" onClick={() => setNewSpeakerOpen(true)}>+ 新增</button>
+                )}
+                <button
+                  className="text-tool"
+                  onClick={() => void detectSpeakersNow()}
+                  disabled={detectingSpeakers || localSentences.length < 3}
+                  title="按音色重新分说话人；会覆盖当前标注并生成新版本"
+                >
+                  {detectingSpeakers ? '识别中…' : speakers.length > 0 ? '重新识别' : '自动识别'}
+                </button>
+              </div>
+              <div className="speaker-panel-hint">点正文里的发言人标签可换下一位（只改这一句）；Shift+点改整段。</div>
+            </div>
+          </div>
+        )}
 
         {((polishing && !polishOpen) ||
           (resegPreview && !resegOpen && (resegmenting || resegDone))) && (
@@ -2225,148 +2350,6 @@ function TranscriptPanel({
           </div>
         )}
 
-        {localSentences.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 10, fontSize: 12 }}>
-            <span style={{ color: '#888' }}>发言人：</span>
-            {speakers.length === 0 && <span style={{ color: '#aaa' }}>尚未设置</span>}
-            {speakers.map((sp) =>
-              speakerEdit === sp ? (
-                <span key={sp} style={{ display: 'flex', gap: 4, alignItems: 'center', background: '#f5f8ff', padding: '2px 6px', borderRadius: 4 }}>
-                  <input
-                    autoFocus
-                    value={speakerDraft}
-                    onChange={(e) => setSpeakerDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') setSpeakerEdit(null)
-                      if (e.key === 'Enter') void renameSpeaker(sp, speakerDraft)
-                    }}
-                    style={{ fontSize: 12, width: 100, padding: '1px 4px' }}
-                  />
-                  <button onClick={() => void renameSpeaker(sp, speakerDraft)} style={{ fontSize: 11, padding: '1px 6px' }}>
-                    保存
-                  </button>
-                  <button onClick={() => setSpeakerEdit(null)} style={{ fontSize: 11, padding: '1px 6px' }}>
-                    取消
-                  </button>
-                  {speakers.length > 1 && (
-                    <select
-                      defaultValue=""
-                      onChange={(e) => {
-                        const into = e.target.value
-                        e.target.value = ''
-                        if (into) void mergeSpeaker(sp, into)
-                      }}
-                      style={{ fontSize: 11 }}
-                    >
-                      <option value="">并入…</option>
-                      {speakers.filter((x) => x !== sp).map((x) => (
-                        <option key={x} value={x}>
-                          {x}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </span>
-              ) : (
-                <button
-                  key={sp}
-                  onClick={() => {
-                    setSpeakerEdit(sp)
-                    setSpeakerDraft(sp)
-                  }}
-                  style={{
-                    fontSize: 12,
-                    padding: '2px 10px',
-                    borderRadius: 12,
-                    background: speakerColor(sp, speakerOrder).bg,
-                    color: speakerColor(sp, speakerOrder).fg,
-                    border: `1px solid ${speakerColor(sp, speakerOrder).border}`,
-                  }}
-                  title="点击改名；改名后可选择并入其他发言人"
-                >
-                  {sp}
-                </button>
-              ),
-            )}
-            {newSpeakerOpen ? (
-              <span style={{ display: 'flex', gap: 4, alignItems: 'center', background: '#f5f8ff', padding: '2px 6px', borderRadius: 4 }}>
-                <input
-                  autoFocus
-                  value={newSpeakerName}
-                  onChange={(e) => setNewSpeakerName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') {
-                      setNewSpeakerOpen(false)
-                      setNewSpeakerName('')
-                    }
-                    if (e.key === 'Enter') void addSpeaker()
-                  }}
-                  placeholder="如：受访者"
-                  style={{ fontSize: 12, width: 100, padding: '1px 4px' }}
-                />
-                <button onClick={() => void addSpeaker()} style={{ fontSize: 11, padding: '1px 6px' }}>
-                  添加
-                </button>
-                <button
-                  onClick={() => {
-                    setNewSpeakerOpen(false)
-                    setNewSpeakerName('')
-                  }}
-                  style={{ fontSize: 11, padding: '1px 6px' }}
-                >
-                  取消
-                </button>
-              </span>
-            ) : (
-              <button
-                onClick={() => setNewSpeakerOpen(true)}
-                disabled={transcribe.status !== 'done'}
-                style={{ fontSize: 12, padding: '2px 10px', borderRadius: 12, background: '#fff', color: '#1a73e8', border: '1px dashed #9dbcf5', cursor: 'pointer' }}
-              >
-                + 新增发言人
-              </button>
-            )}
-            <button
-              onClick={() => void detectSpeakersNow()}
-              disabled={transcribe.status !== 'done' || detectingSpeakers || localSentences.length < 3}
-              title="按音色重新分一次说话人（历史录音也能补上，不需要重新转写）；会覆盖当前标注并生成新版本"
-              style={{
-                fontSize: 12,
-                padding: '2px 10px',
-                borderRadius: 12,
-                background: '#fff',
-                color: '#0f766e',
-                border: '1px dashed #9bd8cf',
-                cursor: transcribe.status !== 'done' || detectingSpeakers ? 'not-allowed' : 'pointer',
-              }}
-            >
-              {detectingSpeakers ? '识别中…' : speakers.length > 0 ? '重新识别发言人' : '自动识别发言人'}
-            </button>
-            <span style={{ color: '#aaa' }}>（点句子标签换下一位；Shift+点整段同标签一起换；点名字可改名/并入）</span>
-            {!coding && (
-              <button
-                onClick={() => {
-                  setMergeMode((v) => !v)
-                  setPaintColors({})
-                  setEditingId(null)
-                }}
-                disabled={transcribe.status !== 'done' || localSentences.length < 2}
-                style={{
-                  marginLeft: 'auto',
-                  fontSize: 12,
-                  padding: '3px 12px',
-                  borderRadius: 6,
-                  border: '1px solid ' + (mergeMode ? '#1a73e8' : '#d6e4ff'),
-                  background: mergeMode ? '#1a73e8' : '#fff',
-                  color: mergeMode ? '#fff' : '#1a73e8',
-                  cursor: 'pointer',
-                }}
-              >
-                {mergeMode ? '退出合并' : '多句合并'}
-              </button>
-            )}
-          </div>
-        )}
 
         {mergeMode && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '6px 10px', background: '#f5f8ff', border: '1px solid #d6e4ff', borderRadius: 6, fontSize: 12, flexWrap: 'wrap' }}>

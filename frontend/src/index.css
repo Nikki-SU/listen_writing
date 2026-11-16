@@ -61,6 +61,33 @@ body {
   font-size: 12px; padding: 4px 10px; border: 1px solid #ddd; border-radius: 4px;
   background: #fff; cursor: pointer;
 }
+.text-tool:disabled { cursor: not-allowed; opacity: .45; }
+/* 标题栏全局工具：图标按钮 + 分隔 */
+.tool-sep { width: 1px; height: 20px; background: #e3e6ea; flex-shrink: 0; margin: 0 2px; }
+.icon-tool {
+  width: 30px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid #e3e6ea; border-radius: 6px; background: #fff; color: #5f6368; cursor: pointer; flex-shrink: 0;
+}
+.icon-tool:hover { background: #f5f8ff; border-color: #b8d0f0; color: #245c9c; }
+.icon-tool.on { background: #eef5ff; border-color: #8ab4f8; color: #245c9c; }
+/* 发言人管理浮层：绝对定位在工具栏下方，不在正文流里，AI 提示条出现不会推着它跑 */
+.speaker-panel {
+  position: absolute; z-index: 40; top: 42px; right: 0;
+  width: 290px; background: #fff; border: 1px solid #e3e6ea; border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.14); overflow: hidden;
+}
+.speaker-panel-title {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px; border-bottom: 1px solid #eef0f2; font-size: 12px; font-weight: 600; color: #3b4250;
+}
+.speaker-panel-body { padding: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+.speaker-panel-empty { font-size: 12px; color: '#9aa0a6'; width: 100%; }
+.speaker-chip {
+  font-size: 12px; padding: 3px 10px; border-radius: 12px; border: 1px solid #d7dce3; cursor: pointer;
+}
+.speaker-edit-row { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; width: 100%; }
+.speaker-panel-actions { display: flex; gap: 6px; width: 100%; margin-top: 4px; padding-top: 8px; border-top: 1px dashed #eceff2; }
+.speaker-panel-hint { width: 100%; font-size: 11px; color: '#9aa0a6'; line-height: 1.5; margin-top: 6px; }
 
 /* 工作区统一五等列：所有页面共用同一套横轴，不允许再嵌套第二套比例。
  * 五个轨道等宽；面板只能占整数列。外部边距/间距固定，不改列宽。

@@ -24,6 +24,17 @@ export function EditIcon({ size = 13 }: { size?: number }) {
   )
 }
 
+/** 多句合并：多条汇成一条。 */
+export function MergeIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 6h6c3 0 4 3 4 6s1 6 4 6h2" />
+      <path d="M4 18h6" />
+      <path d="M17 15l3 3-3 3" />
+    </svg>
+  )
+}
+
 /** 通用图标按钮尺寸：只放图标时用它保持一致的点击区域。 */
 export const ICON_BTN = {
   display: 'inline-flex',
