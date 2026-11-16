@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
 import GroupCodingPanel from './coding/GroupCodingPanel'
+import GroupAnalysisPanel from './coding/GroupAnalysisPanel'
 import ComparePanel from './coding/ComparePanel'
 import type {
   CollabAccess,
@@ -120,7 +121,7 @@ export default function CollabPanel({
 
   const [materialView, setMaterialView] = useState<CollabMaterialDetail | null>(null)
   // 材料里除了“转写”还应能直接进入“编码 / 对比”：数据都在群组里，多人可共享。
-  const [materialMode, setMaterialMode] = useState<'transcript' | 'coding' | 'compare'>('transcript')
+  const [materialMode, setMaterialMode] = useState<'transcript' | 'coding' | 'analysis' | 'compare'>('transcript')
   const [editSentence, setEditSentence] = useState<Sentence | null>(null)
   const [editText, setEditText] = useState('')
   const [localEdits, setLocalEdits] = useState<Record<string, string>>({})
@@ -840,6 +841,7 @@ export default function CollabPanel({
                       [
                         ['transcript', '转写'],
                         ['coding', '编码'],
+                        ['analysis', '分析'],
                         ['compare', '对比'],
                       ] as const
                     ).map(([key, label]) => (
@@ -939,6 +941,20 @@ export default function CollabPanel({
                         }
                       />
                     </div>
+                  ) : materialMode === 'analysis' ? (
+                    <GroupAnalysisPanel
+                      groupId={selected.id}
+                      materialId={materialView.material.id}
+                      sentences={materialView.material.sentences}
+                      materialVersion={materialView.material.version}
+                      pendingMerges={
+                        proposals.filter(
+                          (p) =>
+                            p.material_id === materialView.material.id &&
+                            (p.status === 'pending' || p.status === 'conflict'),
+                        ).length
+                      }
+                    />
                   ) : materialMode === 'compare' ? (
                     <div className="workspace-grid" style={{ minHeight: 320 }}>
                       <ComparePanel
