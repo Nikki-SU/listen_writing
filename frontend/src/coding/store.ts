@@ -7,6 +7,7 @@ import type {
   CodingSpan,
   CodingStore,
 } from '../types'
+import * as api from '../api'
 
 const ME = 'me'
 const STORAGE_PREFIX = 'lw_coding_store_v1_'
@@ -95,6 +96,7 @@ export function loadCodingStore(projectId: string): CodingStore {
           codes: parsed.codes || [],
           codings: parsed.codings || [],
           resolutions: parsed.resolutions || [],
+          saved_at: parsed.saved_at,
         }
       }
     }
@@ -104,11 +106,49 @@ export function loadCodingStore(projectId: string): CodingStore {
   return emptyStore(projectId)
 }
 
+const pendingSaves: Record<string, number> = {}
+
+/** 本机编码库同时写 localStorage 和后端：前者保证即时，后者保证换浏览器不丢。 */
 export function saveCodingStore(store: CodingStore): void {
+  const stamped: CodingStore = { ...store, saved_at: now() }
   try {
-    localStorage.setItem(key(store.project_id), JSON.stringify(store))
+    localStorage.setItem(key(store.project_id), JSON.stringify(stamped))
   } catch {
     // 存不下时仍允许当前会话继续用，下一次改动会再试。
+  }
+  const pid = store.project_id
+  if (pendingSaves[pid]) window.clearTimeout(pendingSaves[pid])
+  pendingSaves[pid] = window.setTimeout(() => {
+    delete pendingSaves[pid]
+    // 后端暂时不可用（纯静态预览）时静默失败，界面仍以 localStorage 为准。
+    void api.saveLocalCoding(pid, stamped).catch(() => undefined)
+  }, 900)
+}
+
+/**
+ * 启动时对齐后端：后端较新就用后端，反过来把本地已有编码一次性迁上去。
+ * 返回非空表示拿到了更新的数据，调用方应替换当前 store。
+ */
+export async function hydrateCodingStore(projectId: string): Promise<CodingStore | null> {
+  try {
+    const remote = (await api.getLocalCoding(projectId)).store
+    const local = loadCodingStore(projectId)
+    const stamp = (s: CodingStore) => String(s.saved_at || '')
+    if (!remote) {
+      const hasData = local.codings.length > 0 || local.cases.some((c) => c.attributes.some((a) => a.value))
+      if (hasData) await api.saveLocalCoding(projectId, local)
+      return null
+    }
+    if (stamp(remote) > stamp(local)) {
+      localStorage.setItem(key(projectId), JSON.stringify(remote))
+      return remote
+    }
+    if (stamp(local) > stamp(remote)) {
+      await api.saveLocalCoding(projectId, local)
+    }
+    return null
+  } catch {
+    return null
   }
 }
 

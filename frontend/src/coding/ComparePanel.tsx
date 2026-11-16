@@ -24,6 +24,7 @@ export default function ComparePanel({
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [side, setSide] = useState<'summary' | 'only_a' | 'only_b' | 'both'>('summary')
+  const [saving, setSaving] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -82,6 +83,26 @@ export default function ComparePanel({
   }
 
   const otherOptions = coders.filter((c) => c.coder_id !== me)
+  const resolutionCount = data ? Object.keys(data.resolutions?.mine || {}).length : 0
+
+  /** 逐条裁决：只记录「这一句以谁为准」，只写自己的那一份，不替对方表态。 */
+  async function decide(sentenceId: string, chosen: string) {
+    if (!other) return
+    setSaving(sentenceId)
+    try {
+      const res = await api.saveGroupCodingResolution(groupId, materialId, sentenceId, chosen)
+      setData((prev) =>
+        prev
+          ? { ...prev, resolutions: { mine: res.mine, peer: prev.resolutions?.peer || {} } }
+          : prev,
+      )
+      setError('')
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSaving('')
+    }
+  }
 
   if (loading && !data) {
     return (
@@ -197,6 +218,7 @@ export default function ComparePanel({
               ).map((item, i) => {
                 const s = sentenceMap.get(item.sentence_id)
                 const time = s ? s.start_ms : 0
+                const resolution = data?.resolutions?.mine?.[item.sentence_id]
                 return (
                   <div key={`${item.sentence_id}-${item.code_id}-${i}`} className="coding-evidence-row">
                     <div className="coding-evidence-quote">“{item.quote}”</div>
@@ -212,7 +234,42 @@ export default function ComparePanel({
                           {item.mine ? (data?.a.nick || '我') : (data?.b.nick || '对方')}
                         </span>
                       )}
+                      {resolution && (
+                        <span style={{ fontSize: 11, color: '#245c9c' }}>
+                          {resolution.chosen === 'me' ? '已定：以我为准' : '已定：以对方为准'}
+                        </span>
+                      )}
                     </div>
+                    {side !== 'both' && (
+                      <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                        <button
+                          type="button"
+                          className="coding-ghost-btn"
+                          style={
+                            resolution?.chosen === 'me'
+                              ? { borderColor: '#8ab4f8', color: '#245c9c' }
+                              : undefined
+                          }
+                          disabled={saving === item.sentence_id}
+                          onClick={() => decide(item.sentence_id, 'me')}
+                        >
+                          以我为准
+                        </button>
+                        <button
+                          type="button"
+                          className="coding-ghost-btn"
+                          style={
+                            resolution && resolution.chosen !== 'me'
+                              ? { borderColor: '#8ab4f8', color: '#245c9c' }
+                              : undefined
+                          }
+                          disabled={saving === item.sentence_id}
+                          onClick={() => decide(item.sentence_id, other)}
+                        >
+                          以对方为准
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -235,7 +292,10 @@ export default function ComparePanel({
               一致片段 <b>{stats.both}</b>
             </div>
             <div className="coding-summary-row">
-              待裁决 <b>{stats.only_a + stats.only_b}</b>
+              分歧条目 <b>{stats.only_a + stats.only_b}</b>
+            </div>
+            <div className="coding-summary-row">
+              我已裁决 <b>{resolutionCount}</b>
             </div>
             <div className="coding-label">一致率</div>
             <div className="coding-relation vertical">
@@ -243,7 +303,8 @@ export default function ComparePanel({
               <span>交并比 {Math.round(stats.jaccard * 100)}%</span>
             </div>
             <div className="coding-hint">
-              逐条裁决（采纳对方 / 保留自己）属于下一步；这里先把分歧暴露出来，让你知道差在哪。
+              裁决按句子记账：点「以我为准 / 以对方为准」只是记下你自己的判断，不会改对方的编码。
+              对方也可以独立裁决，两边都留痕，谁也不用被迫同意。
             </div>
           </>
         ) : (

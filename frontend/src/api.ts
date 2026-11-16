@@ -5,6 +5,7 @@ import type {
   AppSettings,
   CodingCode,
   CodingEntry,
+  CodingStore,
   CollabAccess,
   CollabApproval,
   CollabGroupSummary,
@@ -658,6 +659,21 @@ export type GroupCodebook = {
   coding_count?: number
 }
 
+/** 本机编码库（码本 + 编码 + 案例属性）落盘在项目目录，换浏览器不丢。 */
+export async function getLocalCoding(projectId: string): Promise<{ store: CodingStore | null }> {
+  return json(await fetch(`${BACKEND}/api/projects/${projectId}/coding`))
+}
+
+export async function saveLocalCoding(projectId: string, store: CodingStore): Promise<{ store: CodingStore }> {
+  return json(
+    await fetch(`${BACKEND}/api/projects/${projectId}/coding`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ store }),
+    }),
+  )
+}
+
 export type CodebookProposal = {
   id: string
   kind: 'create' | 'update'
@@ -753,6 +769,7 @@ export async function listGroupCodingCoders(
 }
 
 export type CodingCompareItem = { sentence_id: string; code_id: string; code_name?: string; quote: string }
+export type CodingResolutionRecord = { chosen: string; at: string }
 export type CodingCompare = {
   material_id: string
   a: { coder_id: string; nick: string }
@@ -761,6 +778,11 @@ export type CodingCompare = {
   both: CodingCompareItem[]
   only_a: CodingCompareItem[]
   only_b: CodingCompareItem[]
+  /** 逐条裁决留痕：按句子记「以谁为准」，只含双方各自的记录。 */
+  resolutions?: {
+    mine: Record<string, CodingResolutionRecord>
+    peer: Record<string, CodingResolutionRecord>
+  }
 }
 
 export async function compareGroupCoding(
@@ -772,6 +794,21 @@ export async function compareGroupCoding(
     await fetch(
       `${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding/compare?other=${encodeURIComponent(other)}`,
     ),
+  )
+}
+
+export async function saveGroupCodingResolution(
+  groupId: string,
+  materialId: string,
+  sentenceId: string,
+  chosen: string,
+): Promise<{ sentence_id: string; resolution: CodingResolutionRecord; mine: Record<string, CodingResolutionRecord> }> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding/resolutions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sentence_id: sentenceId, chosen }),
+    }),
   )
 }
 

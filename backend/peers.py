@@ -661,7 +661,7 @@ def _three_way_material(local: dict, remote: dict, group: dict) -> bool:
 
 
 _CODING_KEYS = (
-    "personal_codebooks", "coding_saved_at", "codings",
+    "personal_codebooks", "coding_saved_at", "codings", "resolutions_by",
     "shared_codebook", "codebook_proposals", "legacy_codes", "legacy_codebook",
 )
 
@@ -730,6 +730,18 @@ def _merge_coding_fields(local: dict, remote: dict, prior: dict) -> bool:
     merged.sort(key=lambda c: (str(c.get("coder_id") or ""), str(c.get("created_at") or ""), str(c.get("id") or "")))
     if _canon(merged) != _canon(local.get("codings") or []):
         local["codings"] = merged
+        changed = True
+
+    # 对比裁决也是各人的：逐条取时间较新的记录。
+    resolutions = {k: dict(v) for k, v in (prior.get("resolutions_by") or {}).items()}
+    for dev, table in (remote.get("resolutions_by") or {}).items():
+        cur = resolutions.setdefault(dev, {})
+        for sid, record in (table or {}).items():
+            old = cur.get(sid)
+            if old is None or str(record.get("at") or "") > str(old.get("at") or ""):
+                cur[sid] = record
+    if resolutions != (local.get("resolutions_by") or {}):
+        local["resolutions_by"] = resolutions
         changed = True
 
     # 共享码本：版本高者胜；同版本看更新时间。

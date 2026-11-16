@@ -396,6 +396,8 @@ export type CodingStore = {
   codes: CodingCode[]
   codings: CodingEntry[]
   resolutions: CodingResolution[]
+  /** 最后一次写入时间：本机与后端的 coding.json 之间用它判断谁更新。 */
+  saved_at?: string
 }
 
 /** AI 智能脱敏建议：只给位置与类别，采纳后仍走人工确认的 addRedactions。 */

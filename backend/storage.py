@@ -84,6 +84,24 @@ def project_dir(project_id: str) -> Path:
     return projects_dir() / project_id
 
 
+def coding_path(project_id: str) -> Path:
+    return project_dir(project_id) / "coding.json"
+
+
+def load_coding_store(project_id: str) -> dict | None:
+    """本机编码库（码本 + 编码 + 案例属性）落盘位置。
+
+    和 sentences.csv 一样属于项目数据：换浏览器 / 清缓存不会丢，
+    但只在本人机器上，不进入群组。
+    """
+    return _read_json(coding_path(project_id))
+
+
+def save_coding_store(project_id: str, store: dict) -> dict:
+    _write_json(coding_path(project_id), store)
+    return store
+
+
 def create_project(name: str, description: str = "") -> dict:
     project = {
         "id": _new_id(),

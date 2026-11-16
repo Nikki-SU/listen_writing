@@ -1459,6 +1459,7 @@ def _ensure_coding(material: dict) -> dict:
     """
     material.setdefault("codings", [])
     material.setdefault("coding_saved_at", {})
+    material.setdefault("resolutions_by", {})
     material.setdefault("resolutions", [])
     material.setdefault("personal_codebooks", {})
     material.setdefault("shared_codebook", None)
@@ -1904,4 +1905,36 @@ def material_coding_compare(group_id: str, material_id: str, device_code: str, o
         "both": both[:200],
         "only_a": only_a[:200],
         "only_b": only_b[:200],
+        # 裁决留痕：每人对每个句子记录「以谁为准」，只写自己那一份。
+        "resolutions": {
+            "mine": (material.get("resolutions_by") or {}).get(a_id, {}),
+            "peer": (material.get("resolutions_by") or {}).get(b_id, {}),
+        },
     }
+
+
+def save_coding_resolution(group_id: str, material_id: str, device_code: str, body: dict) -> dict:
+    """对比裁决：记录「这句以谁为准」。只写自己的裁决，不替对方表态。"""
+    group = load_group(group_id)
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    material = _ensure_coding(_material(group, material_id))
+    if not _can_code(group, member, material, material_id):
+        raise CollabError("当前权限不允许在这份材料上裁决", status=403)
+
+    sentence_id = str(body.get("sentence_id") or "").strip()
+    chosen = str(body.get("chosen") or "").strip()
+    if not sentence_id:
+        raise CollabError("缺少 sentence_id", status=400)
+    if chosen != "me" and _member(group, chosen) is None:
+        raise CollabError("裁决对象不是本群成员", status=400)
+
+    mine = str(device_code)
+    table = material.setdefault("resolutions_by", {}).setdefault(mine, {})
+    record = {"chosen": chosen, "at": _now()}
+    table[sentence_id] = record
+    material["updated_at"] = _now()
+    _log(group, member, "coding_resolution", material_id, f"{sentence_id}:{chosen}")
+    _save(group)
+    return {"sentence_id": sentence_id, "resolution": record, "mine": table}

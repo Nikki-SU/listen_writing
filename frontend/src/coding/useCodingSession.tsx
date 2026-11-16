@@ -20,6 +20,7 @@ import {
   deleteCode,
   documentId,
   ensureDocument,
+  hydrateCodingStore,
   loadCodingStore,
   makeCode,
   makeCoding,
@@ -86,6 +87,20 @@ export function useCodingSession(
   const [store, setStore] = useState<CodingStore>(() =>
     ensureDocument(loadCodingStore(projectId), recordingId, recording.name, version),
   )
+
+  // 切换录音 / 项目时重新读取，并与后端 coding.json 对齐（本机换浏览器不丢编码）。
+  useEffect(() => {
+    let cancelled = false
+    setStore(ensureDocument(loadCodingStore(projectId), recordingId, recording.name, version))
+    void hydrateCodingStore(projectId).then((remote) => {
+      if (!cancelled && remote) {
+        setStore(ensureDocument(remote, recordingId, recording.name, version))
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, recordingId, recording.name, version])
   const [selection, setSelection] = useState<PendingSelection | null>(null)
   const [activeSentenceId, setActiveSentenceId] = useState<string | null>(null)
   const [activeCodingId, setActiveCodingId] = useState<string | null>(null)

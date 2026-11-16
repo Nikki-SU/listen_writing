@@ -901,6 +901,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._collab_call(lambda m=m, fn=fn: fn(*m))
                 return
 
+        m = _match(path, r"^/api/projects/([^/]+)/coding$")
+        if m:
+            if storage.get_project(m[0]) is None:
+                self._send_json({"error": "project not found"}, status=404)
+                return
+            self._send_json({"store": storage.load_coding_store(m[0])})
+            return
+
         m = _match(path, r"^/api/projects/([^/]+)/redaction$")
         if m:
             if storage.get_project(m[0]) is None:
@@ -2570,6 +2578,15 @@ class Handler(BaseHTTPRequestHandler):
             self._collab_call(lambda: collab.add_material(m[0], project_id, recording_id, device))
             return
 
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/coding/resolutions$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.save_coding_resolution(m[0], m[1], device, data))
+            return
+
         m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/coding/proposals/decide$")
         if m:
             data = self._read_json_body()
@@ -2722,6 +2739,21 @@ class Handler(BaseHTTPRequestHandler):
             # 先回包再退出，避免前端拿不到响应。若不是通过启动器运行，进程直接结束。
             self._send_json({"status": "restarting"})
             threading.Timer(0.3, lambda: os._exit(86)).start()
+            return
+
+        m = _match(path, r"^/api/projects/([^/]+)/coding$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            if storage.get_project(m[0]) is None:
+                self._send_json({"error": "project not found"}, status=404)
+                return
+            store = data.get("store")
+            if not isinstance(store, dict) or store.get("schema") != 1:
+                self._send_json({"error": "store 必须是本机编码库对象"}, status=400)
+                return
+            self._send_json({"store": storage.save_coding_store(m[0], store)})
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/redaction$")

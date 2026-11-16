@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { CodingEntry, CodingStore, Recording, RecordingDetail } from '../types'
 import { CodeChip, SideTitle } from './common'
@@ -8,6 +8,7 @@ import {
   caseFor,
   codeById,
   documentId,
+  hydrateCodingStore,
   loadCodingStore,
   subtreeIds,
 } from './store'
@@ -42,7 +43,20 @@ export default function AnalysisPanel({
   detail: RecordingDetail | null
   onJump?: (recordingId: string, sentenceId: string) => void
 }) {
-  const [store] = useState<CodingStore>(() => loadCodingStore(projectId))
+  const [store, setStore] = useState<CodingStore>(() => loadCodingStore(projectId))
+
+  // 分析是跨录音的：切项目时重读本机码库，再与后端 coding.json 对齐一次。
+  useEffect(() => {
+    setStore(loadCodingStore(projectId))
+    let cancelled = false
+    void hydrateCodingStore(projectId).then((remote) => {
+      if (!cancelled && remote) setStore(remote)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
   const [tab, setTab] = useState<Tab>('matrix')
   const [dimension, setDimension] = useState<string>('case')
   const [matrixMode, setMatrixMode] = useState<'case' | 'cooccur'>('case')

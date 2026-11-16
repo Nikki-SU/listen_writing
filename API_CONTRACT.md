@@ -250,12 +250,14 @@ Project
 }
 ```
 
-### 预留接口（后端落地时按此实现，前端已按同一对象建模）
+### 本机编码库（C 系列，已实现）
+
+本机「我的录音」的编码库同时写 `localStorage`（即时）与项目目录 `data/projects/{p}/coding.json`（持久化），换浏览器/清缓存不丢；数据只在本人机器，不进入群组。
 
 | 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
 |---|---|---|---|---|---|
-| C-1 | 后端 | `GET /api/projects/{project_id}/coding` | 无 | `CodingStore` | 读整个项目的码本、文档、编码、裁决 |
-| C-2 | 后端 | `PUT /api/projects/{project_id}/coding` | `CodingStore`（去掉 `schema` 也可） | `CodingStore` | 全量保存；前端当前用 localStorage 走同一份 JSON |
+| C-1 | 后端 | `GET /api/projects/{project_id}/coding` | 无 | `{"store": CodingStore \| null}` | 读整个项目的码本、文档、编码、裁决 |
+| C-2 | 后端 | `POST /api/projects/{project_id}/coding` | `{"store": CodingStore}` | `{"store": CodingStore}` | 全量保存；`store.schema` 必须为 `1`。前端以 `saved_at` 判断本机与后端谁更新 |
 | C-3 | 后端 | `GET /api/projects/{project_id}/coding/documents/{recording_id}` | 无 | `{document, codes, codings}` | 单份文档视图；`document.id=doc_<recording_id>` |
 | C-4 | 后端 | `POST /api/projects/{project_id}/coding/codings` | `{document_id, code_id, spans, quote, coder_id}` | `{coding}` | 新增编码；重复（同码同区间同人）返回已有记录 |
 | C-5 | 后端 | `DELETE /api/projects/{project_id}/coding/codings/{coding_id}` | 无 | `{codings}` | 删除编码 |
@@ -270,9 +272,10 @@ Project
 | G-1 | 后端 | `GET /api/groups/{g}/materials/{m}/coding` | 无 | `{material_id, me, nick, my_codebook, codebooks, shared_codebook, legacy_codes, legacy_codebook, codes, codings, resolutions, proposals, can_approve, approvers}` | 读共享材料的编码库；能看材料即可读。`codes` 是全量去重码表（兼容对比页），`my_codebook` 才是可写的那一份 |
 | G-2 | 后端 | `POST /api/groups/{g}/materials/{m}/coding` | `{codes, codings, codebook_name?, resolutions?}` | 同 G-1 | 只写**自己的**码本与编码；别人的原样保留，共享码本不受影响 |
 | G-3 | 后端 | `GET /api/groups/{g}/materials/{m}/coding/coders` | 无 | `{coders:[{coder_id, nick, count}], me}` | 对比页据此列出可比的编码者 |
-| G-4 | 后端 | `GET /api/groups/{g}/materials/{m}/coding/compare?other=<device_code>` | 无 | `{a, b, stats, both, only_a, only_b}` | 按「句子 × 码名」判定一致/分歧；个人码本按码名对齐，附 `code_name` |
+| G-4 | 后端 | `GET /api/groups/{g}/materials/{m}/coding/compare?other=<device_code>` | 无 | `{a, b, stats, both, only_a, only_b, resolutions:{mine,peer}}` | 按「句子 × 码名」判定一致/分歧；个人码本按码名对齐，附 `code_name`；`resolutions` 是双方各自的逐句裁决留痕 |
 | G-5 | 后端 | `POST /api/groups/{g}/materials/{m}/coding/proposals` | `{name?}` | 同 G-1 | 用自己的码本提案建立 / 修改共享码本；提案人若是群主或管理员视为已同意 |
 | G-6 | 后端 | `POST /api/groups/{g}/materials/{m}/coding/proposals/decide` | `{ids:[proposal_id], decision:"approve"\|"reject"}` | 同 G-1 | 群主 + 全部管理员同意才生效；任一拒绝即驳回；支持批量同意 / 拒绝；7 天未决自动过期，不默认同意 |
+| G-7 | 后端 | `POST /api/groups/{g}/materials/{m}/coding/resolutions` | `{"sentence_id","chosen":"me"\|<device_code>}` | `{sentence_id, resolution:{chosen,at}, mine}` | 逐条裁决：只写自己的那一份（`resolutions_by[device]`），不替对方表态；需 `edit` 能力 |
 
 ### 共享码本与个人码本
 
@@ -287,7 +290,7 @@ Project
 - 编码读写**只挂在 Document** 上；录音重转写生成新版本后，Document 的 `transcript_version` 落后时界面提示“编码可能需重锚定”，不静默丢弃编码。
 - 脱敏是展示层叠加，不改变 `codings.spans` 的原文锚点。
 - **单人任务不提供「对比」**：没有第二位编码者，就不做假数据。对比只出现在共享材料里，用真实的两位 `coder_id`。
-- 本机「我的录音」的编码仍存 `localStorage`（C 系列后端接口尚未落地）；共享材料的编码走 G 系列，已落后端。
+- 本机「我的录音」的编码走 C 系列，落项目目录 `coding.json`（`localStorage` 只作即时缓存）；共享材料的编码走 G 系列，已落后端。
 
 ## 字段与命名约定
 
