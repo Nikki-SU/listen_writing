@@ -673,11 +673,11 @@ export default function App() {
       {health === 'down' && !restarting ? (
         <BootstrapGuide onRetry={() => void boot()} />
       ) : view === 'collab' ? (
-        <main className="workspace-grid">
-          <section className="workspace-card" style={{ gridColumn: 'span 5', display: 'flex', minHeight: 0, minWidth: 0 }}>
-            <CollabPanel projects={projects} embedded mainView={collabView} onClose={() => setView('workspace')} />
-          </section>
-        </main>
+        <div style={{ flex: 1, minHeight: 0, padding: '0 12px 12px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+          <main className="workspace-grid">
+            <CollabPanel projects={projects} embedded gridMode mainView={collabView} onClose={() => setView('workspace')} />
+          </main>
+        </div>
       ) : (
         <div
           style={{
@@ -741,7 +741,7 @@ export default function App() {
                   }}
                 />
               ) : (
-                <section className="workspace-card transcript-workspace">
+                <section className="workspace-card transcript-workspace" style={{ gridColumn: 'span 4' }}>
                   <TranscriptPanel
                     key={`${projectId}/${recordingId}`}
                     projectId={projectId!}

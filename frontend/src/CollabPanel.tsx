@@ -79,11 +79,14 @@ export default function CollabPanel({
   projects,
   onClose,
   embedded = false,
+  gridMode = false,
   mainView: mainViewProp,
 }: {
   projects: Project[]
   onClose: () => void
   embedded?: boolean
+  /** true 时三栏直接作为父级 workspace-grid 的子元素（span1/span3/span1），与个人页视觉对齐 */
+  gridMode?: boolean
   mainView?: 'collab' | 'approve'
 }) {
   const [groups, setGroups] = useState<CollabGroupSummary[]>([])
@@ -589,7 +592,9 @@ export default function CollabPanel({
   return (
     <div
       style={
-        embedded
+        gridMode
+          ? { display: 'contents' }
+          : embedded
           ? { display: 'flex', gap: 20, width: '100%', height: '100%', minHeight: 0 }
           : {
               position: 'fixed',
@@ -610,7 +615,9 @@ export default function CollabPanel({
     >
       <div
         style={
-          embedded
+          gridMode
+            ? { display: 'contents' }
+            : embedded
             ? {
                 flex: 1,
                 width: '100%',
@@ -645,13 +652,21 @@ export default function CollabPanel({
           </div>
         )}
 
-        {error && <div style={{ color: '#b00020', fontSize: 12, marginBottom: 8 }}>{error}</div>}
-        {notice && <div style={{ color: '#1e7e34', fontSize: 12, marginBottom: 8 }}>{notice}</div>}
+        {(error || notice) && (
+          <div style={gridMode
+            ? { position: 'fixed', top: 60, left: '50%', transform: 'translateX(-50%)', zIndex: 90, background: '#fff', border: `1px solid ${error ? '#f0c9cc' : '#c9e6cf'}`, borderRadius: 8, padding: '6px 12px', fontSize: 12, color: error ? '#b00020' : '#1e7e34', boxShadow: '0 4px 16px rgba(0,0,0,.12)', maxWidth: '80%' }
+            : { marginBottom: 8 }}>
+            {error && <div style={{ color: '#b00020' }}>{error}</div>}
+            {notice && <div style={{ color: '#1e7e34' }}>{notice}</div>}
+          </div>
+        )}
 
-        <div style={{ display: 'flex', gap: 20, width: '100%', flex: 1, minHeight: 0 }}>
+        <div style={gridMode ? { display: 'contents' } : { display: 'flex', gap: 20, width: '100%', flex: 1, minHeight: 0 }}>
           <aside
+            className={gridMode ? 'workspace-card task-rail scroll-hidden' : undefined}
             style={{
-              width: 260,
+              width: gridMode ? undefined : 260,
+              gridColumn: gridMode ? 'span 1' : undefined,
               flexShrink: 0,
               background: '#fff',
               border: '1px solid #e8ebf0',
@@ -838,8 +853,10 @@ export default function CollabPanel({
           </aside>
 
           <section
+            className={gridMode ? 'workspace-card' : undefined}
             style={{
-              flex: 1,
+              flex: gridMode ? undefined : 1,
+              gridColumn: gridMode ? 'span 3' : undefined,
               minWidth: 0,
               background: '#fff',
               border: '1px solid #e8ebf0',
@@ -1630,8 +1647,10 @@ export default function CollabPanel({
           {/* 右栏：群聊（辅助）。文件是文件：附件可下载、不在聊天打开；
               材料是材料：从工作区另行灌入，聊天里只给入口。 */}
           {chatOpen ? (
-            <aside style={{
-              width: 220, flexShrink: 0, background: '#fff', border: '1px solid #e8ebf0',
+            <aside className={gridMode ? 'workspace-card' : undefined} style={{
+              width: gridMode ? undefined : 220,
+              gridColumn: gridMode ? 'span 1' : undefined,
+              flexShrink: 0, background: '#fff', border: '1px solid #e8ebf0',
               borderRadius: 12, padding: 12, display: 'flex', flexDirection: 'column',
               minHeight: 0, boxSizing: 'border-box',
             }}>
@@ -1699,7 +1718,7 @@ export default function CollabPanel({
             <button
               onClick={() => setChatOpen(true)}
               title="展开群聊" aria-label="展开群聊"
-              style={{ ...ICON_BTN, width: 30, flexShrink: 0, alignSelf: 'stretch', minHeight: 60, color: '#245c9c' }}
+              style={{ ...ICON_BTN, width: gridMode ? '100%' : 30, gridColumn: gridMode ? 'span 1' : undefined, flexShrink: 0, alignSelf: 'stretch', minHeight: 60, color: '#245c9c' }}
             >▸</button>
           )}
         </div>
