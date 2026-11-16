@@ -13,6 +13,7 @@ import { speakerColor, SPEAKER_PALETTE } from './speakerColors'
 import CodingPanel from './coding/CodingPanel'
 import AnalysisPanel from './coding/AnalysisPanel'
 import ComparePanel from './coding/ComparePanel'
+import SentenceRow from './SentenceRow'
 import './coding/coding.css'
 import {
   ICON_BTN,
