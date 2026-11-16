@@ -1032,6 +1032,18 @@ function RecordingList({
                 {r.name}
               </span>
             )}
+            {/* 顺序：分享（对外行为）→ 重命名、删除（对条目自身的 CRUD）。两类行为不混放。 */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onShare(r)
+              }}
+              title="分享到协作组"
+              aria-label="分享到协作组"
+              style={{ ...ICON_BTN, width: 22, height: 20, color: '#245c9c' }}
+            >
+              <ShareIcon size={13} />
+            </button>
             {!renaming && (
               <button
                 onClick={(e) => {
@@ -1045,17 +1057,6 @@ function RecordingList({
                 <EditIcon size={12} />
               </button>
             )}
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                onShare(r)
-              }}
-              title="分享到协作组"
-              aria-label="分享到协作组"
-              style={{ ...ICON_BTN, width: 22, height: 20, color: '#245c9c' }}
-            >
-              <ShareIcon size={13} />
-            </button>
             <button
               onClick={(e) => {
                 e.stopPropagation()
