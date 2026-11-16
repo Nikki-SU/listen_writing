@@ -12,7 +12,7 @@ import { BOOTSTRAP_FILES, BUNDLE_VERSION } from './bootstrapFiles'
 import { speakerColor, SPEAKER_PALETTE } from './speakerColors'
 import CodingPanel from './coding/CodingPanel'
 import AnalysisPanel from './coding/AnalysisPanel'
-import ComparePanel from './coding/ComparePanel'
+import { CodingContext, useCodingSession, useOptionalCoding } from './coding/CodingContext'
 import SentenceRow from './SentenceRow'
 import './coding/coding.css'
 import {
@@ -574,7 +574,6 @@ export default function App() {
                   ['transcript', '转写'],
                   ['coding', '编码'],
                   ['analysis', '分析'],
-                  ['compare', '对比'],
                 ] as const
               ).map(([key, label]) => (
                 <button
@@ -651,12 +650,13 @@ export default function App() {
 
             {detail ? (
               workspaceMode === 'coding' ? (
-                <CodingPanel
+                <CodingWorkspace
                   key={`coding/${projectId}/${recordingId}`}
                   projectId={projectId!}
                   recordingId={recordingId!}
                   detail={detail}
                   onError={setError}
+                  onRetry={() => setDetailNonce((n) => n + 1)}
                 />
               ) : workspaceMode === 'analysis' ? (
                 <AnalysisPanel
@@ -664,13 +664,13 @@ export default function App() {
                   projectId={projectId!}
                   recordings={recordings}
                   detail={detail}
-                />
-              ) : workspaceMode === 'compare' ? (
-                <ComparePanel
-                  key={`compare/${projectId}/${recordingId}`}
-                  projectId={projectId!}
-                  detail={detail}
-                  onOpenCollab={() => setView('collab')}
+                  onJump={(recId, sentenceId) => {
+                    setWorkspaceMode('transcript')
+                    if (recId !== recordingId) setRecordingId(recId)
+                    window.setTimeout(() => {
+                      document.getElementById(`sentence-${sentenceId}`)?.scrollIntoView({ block: 'center' })
+                    }, 300)
+                  }}
                 />
               ) : (
                 <section className="workspace-card transcript-workspace">
@@ -920,6 +920,40 @@ function RecordingList({
   )
 }
 
+/**
+ * 编码工作区：录音区与「转写」用的是同一个 TranscriptPanel，一行样式都没改；
+ * 只在右侧附加编码右栏。编码状态通过 Context 下发给录音区（荧光/密度条/选区）。
+ */
+function CodingWorkspace({
+  projectId,
+  recordingId,
+  detail,
+  onError,
+  onRetry,
+}: {
+  projectId: string
+  recordingId: string
+  detail: RecordingDetail
+  onError: (msg: string) => void
+  onRetry: () => void
+}) {
+  const session = useCodingSession(projectId, recordingId, detail)
+  return (
+    <CodingContext.Provider value={session}>
+      <section className="workspace-card transcript-workspace" style={{ gridColumn: 'span 3' }}>
+        <TranscriptPanel
+          projectId={projectId}
+          recordingId={recordingId}
+          detail={detail}
+          onError={onError}
+          onRetry={onRetry}
+        />
+      </section>
+      <CodingPanel />
+    </CodingContext.Provider>
+  )
+}
+
 function TranscriptPanel({
   projectId,
   recordingId,
@@ -934,6 +968,9 @@ function TranscriptPanel({
   onRetry: () => void
 }) {
   const { transcribe, sentences, recording } = detail
+  // 编码模式：录音区本身不改造，只从 Context 拿增强（荧光正文 / 页边密度 / 选区）。
+  // 普通转写模式这里恒为 null，行为与改动前逐字一致。
+  const coding = useOptionalCoding()
   const [localSentences, setLocalSentences] = useState<Sentence[]>(sentences)
   const [version, setVersion] = useState(recording.version?.current ?? '')
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -1002,6 +1039,11 @@ function TranscriptPanel({
   const llmDownloaded = llmModelInfo?.downloaded ?? null
   const llmJob = jobFor(modelState, 'llm', llmKey)
   const llmDownloading = llmJob?.status === 'running'
+
+  // 把本录音区的 seek 注册给编码会话：右栏“播放这一句/片段”复用同一播放器，不另起一套。
+  useEffect(() => {
+    coding?.registerSeek((s, onlyThis) => seek(s, onlyThis))
+  }, [coding])
 
   // 服务端轮询到的句子是权威值；转写结束后不再轮询，本地编辑结果不会被覆盖
   useEffect(() => {
@@ -2625,10 +2667,18 @@ function TranscriptPanel({
                       </button>
                       <span
                         id={`stext-${s.id}`}
-                        onMouseUp={() => void markSelection(s)}
+                        data-coding-sentence={coding ? s.id : undefined}
+                        onMouseUp={(e) => {
+                          void markSelection(s)
+                          if (coding) coding.readSelection(e.currentTarget.closest('.transcript-line') || null)
+                        }}
                         style={{ fontSize: 15, lineHeight: 1.6, flex: 1, whiteSpace: 'pre-wrap' }}
                       >
-                        {renderText(s)}
+                        {coding
+                          ? coding.decorateText(s, (entry) => coding.selectCoding(entry, (sid) => {
+                              document.getElementById(`sentence-${sid}`)?.scrollIntoView({ block: 'nearest' })
+                            }))
+                          : renderText(s)}
                       </span>
                       {!mergeMode && (
                         <button
@@ -2644,6 +2694,30 @@ function TranscriptPanel({
                       )}
                     </div>
                   )
+                }
+                gutter={
+                  coding ? (
+                    <span
+                      title={`本句编码密度 ${Math.round(coding.coverageOf(s) * 100)}%`}
+                      style={{
+                        width: 5,
+                        alignSelf: 'stretch',
+                        minHeight: 20,
+                        borderRadius: 3,
+                        flexShrink: 0,
+                        background: coding.sentenceCodings(s.id).length
+                          ? (() => {
+                              const r = coding.coverageOf(s)
+                              const from = r < 0.5 ? [46, 160, 67] : [234, 179, 8]
+                              const to = r < 0.5 ? [234, 179, 8] : [220, 38, 38]
+                              const k = r < 0.5 ? r * 2 : (r - 0.5) * 2
+                              const c = from.map((v, i) => Math.round(v + (to[i] - v) * k))
+                              return `rgb(${c[0]}, ${c[1]}, ${c[2]})`
+                            })()
+                          : 'transparent',
+                      }}
+                    />
+                  ) : undefined
                 }
               />
             )
