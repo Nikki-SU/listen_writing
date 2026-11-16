@@ -75,6 +75,7 @@ body {
 .project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 录音/上传图标：紧跟项目行、在材料之上；只用图标 */
 .material-toolbar { display: flex; align-items: center; gap: 6px; padding: 4px 4px 8px 20px; }
+.material-hint { font-size: 11px; color: '#9aa0a6'; margin-right: auto; cursor: help; }
 .project-materials {
   margin: 0 0 0 18px; padding-left: 10px;
   border-left: 2px solid #e4e9f0;

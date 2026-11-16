@@ -829,6 +829,7 @@ function ProjectList({
       </div>
       {/* 录音/上传图标：项目行下方、材料上方；只用图标，文字退到 hover */}
       <div className="material-toolbar">
+        <span className="material-hint" title="点一份材料进入任务，在转写 / 编码 / 分析之间切换">材料 · 点开进入任务</span>
         <input
           ref={fileInputRef}
           type="file"
