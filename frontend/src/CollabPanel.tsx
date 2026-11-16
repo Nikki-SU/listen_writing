@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
 import { TranscriptAudio, TranscriptList } from './TranscriptBody'
 import { useSentencePlayer } from './useSentencePlayer'
+import SpeakerTag, { speakerOrderFrom } from './SpeakerTag'
 import {
   DownloadIcon,
   EnterIcon,
@@ -165,6 +166,8 @@ export default function CollabPanel({
   const [localText, setLocalText] = useState('')
   // 播放逻辑与本地录音共用同一个 hook（播放器行为只有一份，杜绝两套）。
   const player = useSentencePlayer(materialView?.material.sentences ?? [], groupAudioRef)
+  // 发言人配色顺序与个人页同源：按句子出场顺序取色，同一个人在两处颜色一致。
+  const speakerOrder = useMemo(() => speakerOrderFrom(materialView?.material.sentences ?? []), [materialView?.material.sentences])
   const [mergeConflicts, setMergeConflicts] = useState<{
     sentence_id: string
     index: number
@@ -1029,7 +1032,7 @@ export default function CollabPanel({
                     renderBody={(s) => {
                       const draft = localEdits[s.id]
                       return <>
-                          {s.speaker && <span style={{ fontSize: 11, color: '#245c9c', marginRight: 6 }}>{s.speaker}</span>}
+                          <SpeakerTag speaker={s.speaker} order={speakerOrder} />
                           <span style={{ fontSize: 13, lineHeight: 1.7, color: draft !== undefined ? '#8a5a00' : undefined }}>{draft ?? s.text}</span>
                           {draft !== undefined && (
                             <span style={{ marginLeft: 6, fontSize: 10, color: '#8a5a00', background: '#fff4e0', padding: '1px 5px', borderRadius: 4 }}>本地草稿</span>

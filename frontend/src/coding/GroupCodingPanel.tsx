@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import * as api from '../api'
 import { TranscriptAudio, TranscriptList } from '../TranscriptBody'
 import { useSentencePlayer } from '../useSentencePlayer'
+import SpeakerTag, { speakerOrderFrom } from '../SpeakerTag'
 import type { CodingCode, CodingEntry, CodingSpan, Sentence } from '../types'
 import { CodeChip, SideTitle, blendColors, densityColor, fmtMs, hexToRgba } from './common'
 
@@ -101,6 +102,8 @@ export default function GroupCodingPanel({
   // 播放逻辑与本地/协作转写共用同一个 hook（播放器行为只有一份）。
   const player = useSentencePlayer(sentences, audioRef)
   const { activeId: activeSentenceId, setActiveId: setActiveSentenceId } = player
+  // 与个人页同源的发言人配色：同一个人在所有视图同色。
+  const speakerOrder = useMemo(() => speakerOrderFrom(sentences), [sentences])
 
   const applyPayload = useCallback((d: api.GroupCoding) => {
     setData(d)
@@ -589,9 +592,7 @@ export default function GroupCodingPanel({
               renderBody={(s) => {
                 const list = mine.filter((c) => c.spans.some((sp) => sp.sentence_id === s.id))
                 return <div className="transcript-line">
-                  <button type="button" style={{ fontSize: 11, color: '#8a8f98', background: '#f7f8fa', border: '1px dashed #d7dce3', borderRadius: 4, padding: '1px 6px', alignSelf: 'flex-start', flexShrink: 0 }}>
-                    {s.speaker || '未标注'}
-                  </button>
+                  <SpeakerTag speaker={s.speaker} order={speakerOrder} />
                   <span data-sentence-id={s.id} style={{ fontSize: 15, lineHeight: 1.6, flex: 1, whiteSpace: 'pre-wrap' }}>
                     {renderText(s)}
                   </span>

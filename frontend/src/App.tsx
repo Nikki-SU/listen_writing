@@ -15,6 +15,7 @@ import AnalysisPanel from './coding/AnalysisPanel'
 import { CodingContext, useCodingSession, useOptionalCoding } from './coding/CodingContext'
 import { TranscriptAudio, TranscriptList } from './TranscriptBody'
 import { useSentencePlayer } from './useSentencePlayer'
+import SpeakerTag from './SpeakerTag'
 import './coding/coding.css'
 import {
   ICON_BTN,
@@ -2676,29 +2677,15 @@ function TranscriptPanel({
                     </div>
                   ) : (
                     <div className="transcript-line">
-                      <button
-                        type="button"
+                      <SpeakerTag
+                        speaker={s.speaker}
+                        order={speakerOrder}
+                        title="点一下换下一位发言人；Shift + 点击把这一整段同标签的句子一起换"
                         onClick={(e) => {
                           e.stopPropagation()
                           void cycleSentenceSpeaker(s, e.shiftKey)
                         }}
-                        title="点一下换下一位发言人；Shift + 点击把这一整段同标签的句子一起换"
-                        style={{
-                          fontSize: 11,
-                          color: s.speaker ? speakerColor(s.speaker, speakerOrder).fg : '#8a8f98',
-                          background: s.speaker ? speakerColor(s.speaker, speakerOrder).bg : '#f7f8fa',
-                          border: s.speaker
-                            ? `1px solid ${speakerColor(s.speaker, speakerOrder).border}`
-                            : '1px dashed #d7dce3',
-                          borderRadius: 4,
-                          padding: '1px 6px',
-                          alignSelf: 'flex-start',
-                          flexShrink: 0,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {s.speaker || '未标注'}
-                      </button>
+                      />
                       <span
                         id={`stext-${s.id}`}
                         data-coding-sentence={coding ? s.id : undefined}
