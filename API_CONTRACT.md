@@ -261,11 +261,23 @@ Project
 | C-5 | 后端 | `DELETE /api/projects/{project_id}/coding/codings/{coding_id}` | 无 | `{codings}` | 删除编码 |
 | C-6 | 后端 | `PATCH /api/projects/{project_id}/coding/codes/{code_id}` | `{name?, definition?, color?, status?, parent_id?}` | `{code}` | 码改名/改定义/合并级联由后端实现 |
 
+### 共享材料的编码（G 系列，已实现）
+
+多人对比的前提是编码不能只存在各自浏览器：共享材料上的编码落进群组 `group.json` 的 `materials[].codings`，按 `coder_id`（即设备码）区分编码者。
+
+| # | | 端点 | 入参 | 出参 | 说明 |
+|---|---|---|---|---|---|
+| G-1 | 后端 | `GET /api/groups/{g}/materials/{m}/coding` | 无 | `{material_id, codebook, codes, codings, resolutions, me, nick}` | 读共享材料的编码库；能看材料即可读 |
+| G-2 | 后端 | `POST /api/groups/{g}/materials/{m}/coding` | `{codes, codings, codebook?, resolutions?}` | 同 G-1 | 只覆盖**自己的**编码，别人的原样保留（多人协作不互相覆盖） |
+| G-3 | 后端 | `GET /api/groups/{g}/materials/{m}/coding/coders` | 无 | `{coders:[{coder_id, nick, count}], me}` | 对比页据此列出可比的编码者 |
+| G-4 | 后端 | `GET /api/groups/{g}/materials/{m}/coding/compare?other=<device_code>` | 无 | `{a, b, stats, both, only_a, only_b}` | 按「句子 × 码」判定一致/分歧；给一致率与 Jaccard |
+
 ### 编码库与正文版本的关系
 
 - 编码读写**只挂在 Document** 上；录音重转写生成新版本后，Document 的 `transcript_version` 落后时界面提示“编码可能需重锚定”，不静默丢弃编码。
 - 脱敏是展示层叠加，不改变 `codings.spans` 的原文锚点。
-- 对比的 “P02” 目前是前端按稳定规则模拟的第二位编码者（`coder_id` 为 `peer`），只用于验证分歧/裁决交互；接后端后删除模拟层，改读真实 `coder_id`。
+- **单人任务不提供「对比」**：没有第二位编码者，就不做假数据。对比只出现在共享材料里，用真实的两位 `coder_id`。
+- 本机「我的录音」的编码仍存 `localStorage`（C 系列后端接口尚未落地）；共享材料的编码走 G 系列，已落后端。
 
 ## 字段与命名约定
 
