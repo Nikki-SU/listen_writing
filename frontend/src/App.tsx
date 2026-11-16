@@ -17,6 +17,7 @@ import { TranscriptAudio, TranscriptList } from './TranscriptBody'
 import { useSentencePlayer } from './useSentencePlayer'
 import SentenceLine from './SentenceLine'
 import PolishCompare from './PolishCompare'
+import ResegmentPanel from './ResegmentPanel'
 import './coding/coding.css'
 import {
   ICON_BTN,
@@ -27,7 +28,6 @@ import {
   MicIcon,
   PlusIcon,
   ShareIcon,
-  StopIcon,
   TrashIcon,
   UploadIcon,
 } from './icons'
@@ -2635,78 +2635,19 @@ function TranscriptPanel({
           </aside>
         )}
 
-        {reviewMode === 'resegment' && resegPreview && (
-          <aside style={{ flex: '1 1 0', minWidth: 240, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <h3 style={{ fontSize: 13, margin: '0 0 6px', flex: 1 }}>AI 整理断句预览</h3>
-              <span style={{ fontSize: 11, color: resegPreview.after < resegPreview.before ? '#1e7e34' : '#7a869a' }}>
-                {resegPreview.before} 句 → {resegPreview.after} 句
-              </span>
-            </div>
-            <div style={{ fontSize: 11, color: '#8a8f98', lineHeight: 1.7, marginBottom: 8 }}>
-              左边几个停顿碎片合并成一句；只动断句与标点，不增删内容。
-              {resegStage ? ` ${resegStage}` : ''}
-            </div>
-            {!resegmenting && !resegDone && (
-              <div style={{ fontSize: 11, color: '#b26b00', marginBottom: 8 }}>
-                任务已停止，下面是已完成的部分；再点「AI 整理断句」会从断点继续。未处理的句子还没整理，所以暂时不能应用。
-              </div>
-            )}
-            <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-              {resegPreview.sentences.map((s, idx) => {
-                const srcIds = s.source_ids ?? [s.id]
-                const sources = srcIds
-                  .map((id) => localSentences.find((x) => x.id === id))
-                  .filter((x): x is Sentence => Boolean(x))
-                const merged = srcIds.length > 1
-                const tone = SPEAKER_PALETTE[idx % SPEAKER_PALETTE.length]
-                return (
-                  <div key={s.id} style={{ border: `1px solid ${merged ? tone.border : '#e6ecf5'}`, borderRadius: 8, padding: 8, marginBottom: 8, background: merged ? tone.bg : '#fff' }}>
-                    {merged && (
-                      <div style={{ fontSize: 11, color: '#8a94a6', marginBottom: 4 }}>
-                        由左边 {sources.length} 个碎片合并
-                      </div>
-                    )}
-                    <div style={{ fontSize: merged ? 13 : 12, color: merged ? '#1e7e34' : '#5b6472', lineHeight: 1.75 }}>
-                      {s.text}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              {resegmenting ? (
-                <>
-                  <button onClick={() => setResegOpen(false)} style={{ fontSize: 12, padding: '6px 12px' }}>转到后台</button>
-                  <button onClick={() => void stopResegment()} title="停止整理" aria-label="停止整理" style={{ ...ICON_BTN, width: 28, height: 28, color: '#b00020' }}><StopIcon size={12} /></button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={() => {
-                      setResegOpen(false)
-                      setResegPreview(null)
-                      setResegDone(false)
-                    }}
-                    title="关闭预览"
-                    aria-label="关闭预览"
-                    style={{ ...ICON_BTN, width: 28, height: 28 }}
-                  >
-                    <CloseIcon size={12} />
-                  </button>
-                  <button
-                    onClick={() => void applyResegment()}
-                    disabled={!resegDone}
-                    style={{ fontSize: 12, padding: '6px 12px', background: resegDone ? '#245c9c' : '#e3e8ef', color: resegDone ? '#fff' : '#9aa0a6', border: 'none', borderRadius: 4, flex: 1 }}
-                  >
-                    应用并生成新版本
-                  </button>
-                </>
-              )}
-            </div>
-          </aside>
-        )}
-          </>
+{reviewMode === 'resegment' && resegPreview && (
+          <ResegmentPanel
+            preview={resegPreview}
+            sourceSentences={localSentences}
+            stage={resegStage}
+            running={resegmenting}
+            done={resegDone}
+            applyLabel="应用并生成新版本"
+            onApply={() => { void applyResegment() }}
+            onClose={() => { setResegOpen(false); setResegPreview(null); setResegDone(false) }}
+            onStop={() => { void stopResegment() }}
+          />
+        )}          </>
         )}
         </div>
       </div>

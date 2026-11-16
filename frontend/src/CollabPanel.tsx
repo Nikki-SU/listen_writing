@@ -5,6 +5,7 @@ import { useSentencePlayer } from './useSentencePlayer'
 import { speakerOrderFrom } from './SpeakerTag'
 import SentenceLine from './SentenceLine'
 import PolishCompare from './PolishCompare'
+import ResegmentPanel from './ResegmentPanel'
 import {
   DownloadIcon,
   EditIcon,
@@ -166,12 +167,19 @@ export default function CollabPanel({
   const [editSentence, setEditSentence] = useState<Sentence | null>(null)
   const [editText, setEditText] = useState('')
   const [localEdits, setLocalEdits] = useState<Record<string, string>>({})
+  // 本地分支的整段句子替换（AI 整理断句等会改句子结构/id）；null=用主分支原句。
+  // 本地可以做任何事；提交公认版本仍必须走 PR。
+  const [sentencesOverride, setSentencesOverride] = useState<Sentence[] | null>(null)
   // 本地分支里勾选提交为 PR 的句子（Git: 从本地分支挑部分 commit 发 PR）。
   const [localSel, setLocalSel] = useState<string[]>([])
   // 协作材料的 AI 纠错：与个人录音共用同一套 job/建议机制。
   const [aiJob, setAiJob] = useState<api.AiJob | null>(null)
   const [aiOpen, setAiOpen] = useState(false)
   const [aiDecided, setAiDecided] = useState<string[]>([])
+  // AI 整理断句：预览→本地整段替换；提交公认版本仍走 PR。
+  const [resegJob, setResegJob] = useState<api.AiJob | null>(null)
+  const [resegOpen, setResegOpen] = useState(false)
+  const [resegDone, setResegDone] = useState(false)
   const [localEditing, setLocalEditing] = useState<Sentence | null>(null)
   const [localText, setLocalText] = useState('')
   // 播放逻辑与本地录音共用同一个 hook（播放器行为只有一份，杜绝两套）。
@@ -191,6 +199,20 @@ export default function CollabPanel({
     }, 1200)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [aiJob?.status, selected?.id, materialView?.material.id])
+
+  // AI 整理断句轮询。
+  useEffect(() => {
+    if (!resegJob || !selected || !materialView) return
+    if (resegJob.status !== 'running') return
+    let cancelled = false
+    const timer = window.setInterval(() => {
+      void api.fetchMaterialResegmentJob(selected.id, materialView.material.id)
+        .then((job) => { if (!cancelled) { setResegJob(job); if (job.status === 'done') setResegDone(true) } })
+        .catch(() => { /* 保留上次 */ })
+    }, 900)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [resegJob?.status, selected?.id, materialView?.material.id])
+
   const [mergeConflicts, setMergeConflicts] = useState<{
     sentence_id: string
     index: number
@@ -448,8 +470,32 @@ export default function CollabPanel({
     setAiDecided((prev) => [...prev, sug.sentence_id])
   }
 
+  async function runMaterialResegment() {
+    if (!selected || !materialView) return
+    await run(async () => {
+      setResegOpen(true)
+      setResegDone(false)
+      setResegJob(await api.startMaterialResegment(selected.id, materialView.material.id, identity.device_code))
+    })
+  }
+
+  async function applyMaterialResegment() {
+    if (!resegJob || resegJob.status !== 'done' || !selected || !materialView) return
+    await run(async () => {
+      // 本地整段替换（本地分支可以做任何事）；提交公认版本仍必须走 PR。
+      setSentencesOverride(resegJob.sentences as Sentence[])
+      setLocalEdits({})
+      setLocalSel([])
+      setResegOpen(false)
+      setResegJob(null)
+      setNotice('已应用整理结果到本地分支；提交到主版本请走 PR 审批')
+    })
+  }
+
   function localSentences(): Sentence[] {
     if (!materialView) return []
+    // 整段替换优先（整理断句改了句子结构/id），否则按 id 应用本地文字草稿。
+    if (sentencesOverride) return sentencesOverride
     return materialView.material.sentences.map((s) =>
       localEdits[s.id] !== undefined ? { ...s, text: localEdits[s.id] } : s,
     )
@@ -1009,17 +1055,27 @@ export default function CollabPanel({
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 13, fontWeight: 600 }}>{materialView.material.name}</span>
                   <span style={{ fontSize: 11, color: '#8a8f98' }}>
-                    版本 {materialView.material.version} · 阶段 {materialView.material.stage} · {materialView.material.sentences.length} 句
+                    版本 {materialView.material.version} · 阶段 {materialView.material.stage} · {localSentences().length} 句
                   </span>
                   {!materialView.review_mode && workspaceMode === 'transcript' && (
-                    <button
-                      onClick={() => void runMaterialPolish()}
-                      disabled={aiJob?.status === 'running'}
-                      title="用本地 AI 逐句检查错别字/语病；只给建议，采纳后写入本地草稿，提交走审批"
-                      style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px', borderRadius: 4, cursor: 'pointer', border: '1px solid #ddd', color: '#245c9c', background: '#fff' }}
-                    >
-                      {aiJob?.status === 'running' ? `AI 检查中 ${aiJob.processed}/${aiJob.total}…` : 'AI 纠错'}
-                    </button>
+                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                      <button
+                        onClick={() => void runMaterialPolish()}
+                        disabled={aiJob?.status === 'running'}
+                        title="用本地 AI 逐句检查错别字/语病；只给建议，采纳后写入本地草稿，提交走审批"
+                        style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, cursor: 'pointer', border: '1px solid #ddd', color: '#245c9c', background: '#fff' }}
+                      >
+                        {aiJob?.status === 'running' ? `AI 检查中 ${aiJob.processed}/${aiJob.total}…` : 'AI 纠错'}
+                      </button>
+                      <button
+                        onClick={() => (resegJob?.status === 'running' || resegDone ? setResegOpen(true) : void runMaterialResegment())}
+                        disabled={resegJob?.status === 'running' && !resegOpen}
+                        title="把按停顿切碎的片段合并成完整句子；只给预览，应用后整段替换本地分支，提交走 PR"
+                        style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, cursor: 'pointer', border: '1px solid #ddd', color: '#245c9c', background: '#fff' }}
+                      >
+                        {resegJob?.status === 'running' ? `整理中 ${resegJob.processed}/${resegJob.total}…` : 'AI 整理断句'}
+                      </button>
+                    </div>
                   )}
                   {materialView.review_mode && (
                     <span style={{ fontSize: 11, color: '#8a5a00', background: '#fff4e0', padding: '2px 8px', borderRadius: 4 }}>
@@ -1104,9 +1160,21 @@ export default function CollabPanel({
                         sentences={materialView.material.sentences}
                       />
                     </div>
+                  ) : resegOpen && resegJob ? (
+<ResegmentPanel
+                    preview={{ sentences: resegJob.sentences ?? [], before: resegJob.before, after: resegJob.after, model: resegJob.model }}
+                    sourceSentences={localSentences()}
+                    stage={resegJob.message}
+                    running={resegJob.status === 'running'}
+                    done={resegDone}
+                    applyLabel="应用到本地分支（提交走 PR）"
+                    onApply={() => { void applyMaterialResegment() }}
+                    onClose={() => { setResegOpen(false) }}
+                    onStop={() => { void run(async () => { setResegJob(await api.cancelMaterialResegmentJob(selected.id, materialView.material.id)) }) }}
+                  />
                   ) : aiOpen && aiJob ? (
 <PolishCompare
-                    sentences={materialView.material.sentences}
+                    sentences={localSentences()}
                     suggestions={aiJob.suggestions.filter((s) => !aiDecided.includes(s.sentence_id))}
                     order={speakerOrder}
                     polishing={aiJob.status === 'running'}
@@ -1120,7 +1188,7 @@ export default function CollabPanel({
                   />
                   ) : (
 <TranscriptList
-                    sentences={materialView.material.sentences}
+                    sentences={localSentences()}
                     activeId={player.activeId}
                     onPlayPressStart={player.playPressStart}
                     onPlayPressEnd={player.playPressEnd}
@@ -1256,7 +1324,7 @@ renderBody={(s) => {
                         有副本模式：先在本地改，再提交节点合并（三方合并，冲突人工判断）。
                       </div>
                       <button
-                        disabled={busy || Object.keys(localEdits).length === 0}
+                        disabled={busy || (Object.keys(localEdits).length === 0 && !sentencesOverride)}
                         onClick={() =>
                           void run(async () => {
                             setMergeConflicts(null)
@@ -1265,6 +1333,8 @@ renderBody={(s) => {
                               materialView.material.id,
                               materialView.material.version,
                               localSentences(),
+                              false,
+                              Boolean(sentencesOverride),
                             )
                             if (res.status === 'conflict') {
                               setMergeConflicts(res.conflicts || [])
@@ -1272,6 +1342,7 @@ renderBody={(s) => {
                             } else {
                               setNotice(`节点合并完成，新版本 ${res.version}`)
                               setLocalEdits({})
+                              setSentencesOverride(null)
                               setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
                               await loadGroup(selected.id)
                             }
@@ -1279,14 +1350,15 @@ renderBody={(s) => {
                         }
                         style={{ fontSize: 11, padding: '2px 10px' }}
                       >
-                        提交节点合并（{Object.keys(localEdits).length} 句本地修改）
+                        提交节点合并（{sentencesOverride ? `${sentencesOverride.length} 句整段替换` : `${Object.keys(localEdits).length} 句本地修改`}）
                       </button>
-                      {Object.keys(localEdits).length > 0 && (
+                      {(Object.keys(localEdits).length > 0 || sentencesOverride) && (
                         <button
                           disabled={busy}
                           onClick={() =>
                             void run(async () => {
                               setLocalEdits({})
+                              setSentencesOverride(null)
                               setLocalEditing(null)
                               setMergeConflicts(null)
                               setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
@@ -1320,6 +1392,7 @@ renderBody={(s) => {
                                   materialView.material.version,
                                   localSentences(),
                                   true,
+                                  Boolean(sentencesOverride),
                                 )
                                 if (res.status === 'conflict') {
                                   setError('仍有冲突未解决')
@@ -1327,6 +1400,7 @@ renderBody={(s) => {
                                   setNotice(`已采用本地版本强制合并，新版本 ${res.version}`)
                                   setMergeConflicts(null)
                                   setLocalEdits({})
+                                  setSentencesOverride(null)
                                   setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
                                   await loadGroup(selected.id)
                                 }

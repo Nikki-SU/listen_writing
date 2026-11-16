@@ -239,6 +239,31 @@ export async function cancelMaterialPolishJob(groupId: string, materialId: strin
   )
 }
 
+/** 协作材料 AI 整理断句：只出预览；采纳在本地整段替换句子，提交走 PR。 */
+export async function startMaterialResegment(groupId: string, materialId: string, deviceCode: string): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/resegment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_code: deviceCode }),
+    }),
+  )
+}
+
+export async function fetchMaterialResegmentJob(groupId: string, materialId: string): Promise<AiJob> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/resegment`))
+}
+
+export async function cancelMaterialResegmentJob(groupId: string, materialId: string): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/resegment/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_code: '' }),
+    }),
+  )
+}
+
 /** 告诉后端「这条建议已处理」：轮询时不再把它塞回来，任务跑完也不会重现。 */
 export async function dismissPolishSuggestion(
   projectId: string,
@@ -984,6 +1009,7 @@ export async function mergeSnapshot(
   parent: string,
   sentences: Sentence[],
   force = false,
+  replace = false,
 ): Promise<{
   status: 'merged' | 'conflict'
   conflicts?: { sentence_id: string; index: number; base: string; current: string; incoming: string }[]
@@ -993,7 +1019,7 @@ export async function mergeSnapshot(
     await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/merge`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ parent, sentences, force }),
+      body: JSON.stringify({ parent, sentences, force, replace }),
     }),
   )
 }

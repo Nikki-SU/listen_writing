@@ -1194,7 +1194,7 @@ def merge_proposals(
     }
 
 
-def merge_snapshot(group_id: str, material_id: str, parent: str, sentences: list[dict], device_code: str, force: bool = False) -> dict:
+def merge_snapshot(group_id: str, material_id: str, parent: str, sentences: list[dict], device_code: str, force: bool = False, replace: bool = False) -> dict:
     """有副本模式下的节点合并：以 base 做三方合并，能自动合的就合，冲突列出来人工判断。"""
     group = load_group(group_id)
     actor = _require(group, device_code, "merge")
@@ -1241,6 +1241,12 @@ def merge_snapshot(group_id: str, material_id: str, parent: str, sentences: list
             cur = current.get(sid, {})
             inc = incoming.get(sid, {})
             merged[sid] = {**cur, "text": inc.get("text", cur.get("text", "")), "speaker": inc.get("speaker", cur.get("speaker", ""))}
+
+    if replace:
+        # 整段替换（如 AI 整理断句改了句子结构/id）：以本地句子列表为准，
+        # 删掉主分支里不在本地列表中的旧句，避免新旧句并存重复。
+        incoming_ids = set(incoming.keys())
+        merged = {sid: s for sid, s in merged.items() if sid in incoming_ids}
 
     ordered = sorted(merged.values(), key=lambda s: int(s.get("index", 0)))
     before_map = {str(s.get("id")): s.get("text", "") for s in material.get("sentences", [])}
