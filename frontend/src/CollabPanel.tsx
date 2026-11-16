@@ -4,6 +4,7 @@ import { TranscriptAudio, TranscriptList } from './TranscriptBody'
 import { useSentencePlayer } from './useSentencePlayer'
 import { speakerOrderFrom } from './SpeakerTag'
 import SentenceLine from './SentenceLine'
+import PolishCompare from './PolishCompare'
 import {
   DownloadIcon,
   EditIcon,
@@ -170,7 +171,6 @@ export default function CollabPanel({
   // 协作材料的 AI 纠错：与个人录音共用同一套 job/建议机制。
   const [aiJob, setAiJob] = useState<api.AiJob | null>(null)
   const [aiOpen, setAiOpen] = useState(false)
-  const [aiError, setAiError] = useState('')
   const [aiDecided, setAiDecided] = useState<string[]>([])
   const [localEditing, setLocalEditing] = useState<Sentence | null>(null)
   const [localText, setLocalText] = useState('')
@@ -432,16 +432,20 @@ export default function CollabPanel({
     if (!selected || !materialView) return
     await run(async () => {
       setAiOpen(true)
-      setAiError('')
       setAiDecided([])
       setAiJob(await api.polishMaterial(selected.id, materialView.material.id, identity.device_code))
     })
   }
 
-  function acceptAiSuggestion(sug: PolishSuggestion) {
-    setLocalEdits((prev) => ({ ...prev, [sug.sentence_id]: sug.after }))
+  function acceptAiSuggestion(sug: PolishSuggestion, override?: string) {
+    const after = (override ?? sug.after).trim() || sug.after
+    setLocalEdits((prev) => ({ ...prev, [sug.sentence_id]: after }))
     setAiDecided((prev) => [...prev, sug.sentence_id])
     setNotice('已采纳 AI 建议，写入本地草稿；提交后走审批')
+  }
+
+  function dismissAiSuggestion(sug: PolishSuggestion) {
+    setAiDecided((prev) => [...prev, sug.sentence_id])
   }
 
   function localSentences(): Sentence[] {
@@ -1041,36 +1045,6 @@ export default function CollabPanel({
                     </div>
                   )}
 
-                  {aiOpen && aiJob && (
-                    <div style={{ border: '1px solid #c7dafc', background: '#f8fbff', borderRadius: 8, padding: 8, marginBottom: 10 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                        <span style={{ fontSize: 12, fontWeight: 500, color: '#245c9c' }}>AI 纠错建议</span>
-                        <span style={{ fontSize: 11, color: '#8a8f98' }}>{aiJob.message || `${aiJob.processed}/${aiJob.total} 句`}</span>
-                        <span style={{ flex: 1 }} />
-                        {aiJob.status === 'running' && (
-                          <button onClick={() => void run(async () => { setAiJob(await api.cancelMaterialPolishJob(selected.id, materialView.material.id)) })} style={{ fontSize: 11, padding: '2px 8px' }}>停止</button>
-                        )}
-                        <button onClick={() => { setAiOpen(false) }} style={{ fontSize: 11, padding: '2px 8px' }} title="收起面板">✕</button>
-                      </div>
-                      {aiError && <div style={{ fontSize: 11, color: '#b00020', marginBottom: 6 }}>{aiError}</div>}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto' }}>
-                        {aiJob.suggestions.filter((s) => !aiDecided.includes(s.sentence_id)).length === 0 ? (
-                          <div style={{ fontSize: 12, color: '#8a8f98' }}>{aiJob.status === 'running' ? '正在检查…' : '没有建议，或已全部处理。'}</div>
-                        ) : aiJob.suggestions.filter((s) => !aiDecided.includes(s.sentence_id)).map((sug) => (
-                          <div key={sug.sentence_id} style={{ borderBottom: '1px solid #eef2f8', paddingBottom: 6 }}>
-                            <div style={{ fontSize: 11, color: '#8a8f98' }}>第 {sug.index + 1} 句</div>
-                            <div style={{ fontSize: 12, color: '#b00020', textDecoration: 'line-through' }}>{sug.before}</div>
-                            <div style={{ fontSize: 12, color: '#1e7e34' }}>{sug.after}</div>
-                            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                              <button onClick={() => acceptAiSuggestion(sug)} style={{ fontSize: 11, padding: '2px 10px' }}>采纳</button>
-                              <button onClick={() => setAiDecided((prev) => [...prev, sug.sentence_id])} style={{ fontSize: 11, padding: '2px 10px' }}>忽略</button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#8a8f98', marginTop: 6 }}>采纳后写入本地草稿；提交合并请到下方「本地分支」或「审批」。</div>
-                    </div>
-                  )}
 
                   {materialView.can_play && materialView.approval && workspaceMode === 'coding' ? null : materialView.can_play && materialView.approval ? (
                     <TranscriptAudio
@@ -1130,6 +1104,20 @@ export default function CollabPanel({
                         sentences={materialView.material.sentences}
                       />
                     </div>
+                  ) : aiOpen && aiJob ? (
+<PolishCompare
+                    sentences={materialView.material.sentences}
+                    suggestions={aiJob.suggestions.filter((s) => !aiDecided.includes(s.sentence_id))}
+                    order={speakerOrder}
+                    polishing={aiJob.status === 'running'}
+                    stage={aiJob.message}
+                    onSeek={(s, onlyThis) => player.seek(s, onlyThis)}
+                    onAccept={(sug, override) => acceptAiSuggestion(sug, override)}
+                    onDismiss={dismissAiSuggestion}
+                    renderText={(s) => localEdits[s.id] ?? s.text}
+                    onClose={() => setAiOpen(false)}
+                    onStop={() => { void run(async () => { setAiJob(await api.cancelMaterialPolishJob(selected.id, materialView.material.id)) }) }}
+                  />
                   ) : (
 <TranscriptList
                     sentences={materialView.material.sentences}
