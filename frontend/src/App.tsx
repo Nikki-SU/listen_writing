@@ -27,11 +27,13 @@ import {
   MergeIcon,
   PlayIcon,
   PlusIcon,
+  ShareIcon,
   StopIcon,
   TrashIcon,
   UploadIcon,
 } from './icons'
 import type {
+  CollabGroupSummary,
   Project,
   Recording,
   RecordingDetail,
@@ -106,6 +108,7 @@ export default function App() {
   const [recordingId, setRecordingId] = useState<string | null>(null)
   const [detail, setDetail] = useState<RecordingDetail | null>(null)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [upd, setUpd] = useState<UpdateState>('idle')
   const [updText, setUpdText] = useState('')
   const [updProgress, setUpdProgress] = useState<{ done: number; total: number }>()
@@ -122,6 +125,10 @@ export default function App() {
   const [projectsExpanded, setProjectsExpanded] = useState(true)
   // 左栏“条目”区：展开列全部条目，折叠只留当前条目。与项目区各自独立。
   const [entriesExpanded, setEntriesExpanded] = useState(true)
+  // 左栏材料的“分享”：把一条录音加入某个协作组（复用已有的 addGroupMaterial）。
+  const [shareTarget, setShareTarget] = useState<Recording | null>(null)
+  const [shareGroups, setShareGroups] = useState<CollabGroupSummary[]>([])
+  const [shareBusy, setShareBusy] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [liveOpen, setLiveOpen] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -246,6 +253,35 @@ export default function App() {
     },
     [projectId, recordings, recordingId],
   )
+
+  // 分享条目：点材料行的分享图标 → 拉取我所在的协作组 → 选一个把这条录音加入。
+  async function openShare(r: Recording) {
+    setShareTarget(r)
+    setShareGroups([])
+    setError('')
+    try {
+      const data = await api.listGroups()
+      setShareGroups(data.groups)
+    } catch (e) {
+      setError(`读取协作组失败：${String(e)}`)
+    }
+  }
+
+  async function doShare(groupId: string) {
+    if (!shareTarget || !projectId || shareBusy) return
+    setShareBusy(true)
+    setError('')
+    try {
+      await api.addGroupMaterial(groupId, projectId, shareTarget.id)
+      const g = shareGroups.find((x) => x.id === groupId)
+      setNotice(`已把「${shareTarget.name}」分享到协作组「${g?.name || groupId}」。`)
+      setShareTarget(null)
+    } catch (e) {
+      setError(`分享失败：${String(e)}`)
+    } finally {
+      setShareBusy(false)
+    }
+  }
 
   // 删除项目：项目下所有录音、音频、转写与历史版本一起删除，删前必须二次确认。
   const handleDeleteProject = useCallback(
@@ -531,6 +567,28 @@ export default function App() {
         </div>
       )}
 
+      {/* 分享条目到协作组：点材料行的分享图标调出 */}
+      {shareTarget && (
+        <div className="share-overlay" onClick={() => setShareTarget(null)}>
+          <div className="share-dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="分享到协作组">
+            <div className="share-title">
+              <span>分享「{shareTarget.name}」</span>
+              <button onClick={() => setShareTarget(null)} title="关闭" aria-label="关闭">×</button>
+            </div>
+            <p className="share-sub">选择要加入的协作组；分享后对方可在该组材料里看到这条录音。</p>
+            <div className="share-list">
+              {shareGroups.length === 0 && <div className="share-empty">你还没有加入任何协作组，请先到「共享任务」创建或加入一个组。</div>}
+              {shareGroups.map((g) => (
+                <button key={g.id} className="share-group" disabled={shareBusy} onClick={() => void doShare(g.id)}>
+                  <span>{g.name}</span>
+                  <span className="share-go">加入 →</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="app-header">
         {/* 左：软件标志 + 标题（身份区，固定） */}
         <div className="app-brand">
@@ -614,6 +672,7 @@ export default function App() {
           }}
         >
           {error && <div className="workspace-error">{error}</div>}
+          {notice && <div className="workspace-notice" onClick={() => setNotice('')}>{notice}</div>}
           <main className="workspace-grid">
             {/* 第 1 列：项目区两态——展开列全部项目选项目；折叠只显当前项目+其材料 */}
             <aside className="workspace-card task-rail scroll-hidden">
@@ -632,6 +691,7 @@ export default function App() {
                 onSelectRecording={setRecordingId}
                 onDeleteRecording={handleDeleteRecording}
                 onRenameRecording={(id, name) => void handleRenameRecording(id, name)}
+                onShareRecording={(r) => void openShare(r)}
                 onUpload={onUpload}
                 onLive={() => setLiveOpen(true)}
                 fileInputRef={fileInputRef}
@@ -767,6 +827,7 @@ function ProjectList({
   onSelectRecording,
   onDeleteRecording,
   onRenameRecording,
+  onShareRecording,
   onUpload,
   onLive,
   fileInputRef,
@@ -784,6 +845,7 @@ function ProjectList({
   onSelectRecording: (id: string) => void
   onDeleteRecording: (id: string) => void
   onRenameRecording: (id: string, name: string) => void
+  onShareRecording: (r: Recording) => void
   onUpload: (f: File) => void
   onLive: () => void
   fileInputRef: React.RefObject<HTMLInputElement>
@@ -876,6 +938,7 @@ function ProjectList({
           onSelect={onSelectRecording}
           onDelete={onDeleteRecording}
           onRename={onRenameRecording}
+          onShare={onShareRecording}
         />
       </div>
     </div>
@@ -888,12 +951,14 @@ function RecordingList({
   onSelect,
   onDelete,
   onRename,
+  onShare,
 }: {
   recordings: Recording[]
   activeId: string | null
   onSelect: (id: string) => void
   onDelete: (id: string) => void
   onRename: (id: string, name: string) => void
+  onShare: (r: Recording) => void
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
@@ -980,6 +1045,17 @@ function RecordingList({
                 <EditIcon size={12} />
               </button>
             )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onShare(r)
+              }}
+              title="分享到协作组"
+              aria-label="分享到协作组"
+              style={{ ...ICON_BTN, width: 22, height: 20, color: '#245c9c' }}
+            >
+              <ShareIcon size={13} />
+            </button>
             <button
               onClick={(e) => {
                 e.stopPropagation()
