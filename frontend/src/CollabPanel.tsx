@@ -788,6 +788,16 @@ export default function CollabPanel({
     })
   }
 
+  async function onRemoveMaterial(materialId: string, name: string) {
+    if (!selected) return
+    if (!window.confirm(`撤回材料「${name}」？相关的提案也会一起清掉。`)) return
+    await run(async () => {
+      await api.deleteMaterial(selected.id, materialId, identity.device_code)
+      if (materialView?.material.id === materialId) setMaterialView(null)
+      await loadGroup(selected.id)
+    })
+  }
+
   async function onProjectChange(pid: string) {
     setAddProject(pid)
     setAddRecording('')
@@ -1201,20 +1211,18 @@ export default function CollabPanel({
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {materials.map((m) => (
-                        <button
-                          key={m.id}
-                          onClick={() => void openMaterial(m.id)}
-                          style={{
-                            textAlign: 'left',
-                            border: `1px solid ${materialView?.material.id === m.id ? '#c7d7f2' : '#e2e6ec'}`,
-                            borderRadius: 8,
-                            background: materialView?.material.id === m.id ? '#e8f0fe' : '#fbfcfe',
-                            padding: '7px 9px',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          <div style={{ fontSize: 12, fontWeight: 600 }}>{m.name}</div>
-                        </button>
+                        <div key={m.id} style={{
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          border: `1px solid ${materialView?.material.id === m.id ? '#c7d7f2' : '#e2e6ec'}`,
+                          borderRadius: 8,
+                          background: materialView?.material.id === m.id ? '#e8f0fe' : '#fbfcfe',
+                          padding: '7px 9px',
+                        }}>
+                          <span onClick={() => void openMaterial(m.id)} style={{ flex: 1, fontSize: 12, fontWeight: 600, cursor: 'pointer', minWidth: 0 }}>{m.name}</span>
+                          {m.can_remove && (
+                            <button onClick={() => void onRemoveMaterial(m.id, m.name)} title="撤回这份材料（相关提案一并清掉）" style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, color: '#b00020', border: '1px solid #f0c9cc', background: '#fff', cursor: 'pointer' }}>×</button>
+                          )}
+                        </div>
                       ))}
                     </div>
                   )}

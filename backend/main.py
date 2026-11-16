@@ -1955,6 +1955,50 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send_json({"marks": marks, "version": version, "current": version["version"]})
 
+    def _delete_sentence(self, project_id: str, recording_id: str, sentence_id: str):
+        """删除一句无意义句子（如逐字稿里的噪声行）。重排 index、清该句脱敏标记、提交版本。"""
+        recording = storage.get_recording(project_id, recording_id)
+        if recording is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if (recording.get("transcribe") or {}).get("status") != "done":
+            self._send_json({"error": "转写尚未完成，暂不能删除"}, status=409)
+            return
+
+        with _sentence_io_lock:
+            sentences = storage.load_sentences(project_id, recording_id)
+            target = next((s for s in sentences if str(s.get("id")) == sentence_id), None)
+            if target is None:
+                self._send_json({"error": "sentence not found"}, status=404)
+                return
+            if len(sentences) <= 1:
+                self._send_json({"error": "至少保留一句"}, status=400)
+                return
+            before = _sentence_snapshot(target)
+            target_index = int(target.get("index", 0))
+            kept = [s for s in sentences if str(s.get("id")) != sentence_id]
+            for i, s in enumerate(kept):
+                s["index"] = i
+            storage.save_sentences(project_id, recording_id, kept)
+            storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(kept))
+            marks = [m for m in storage.get_redactions(project_id, recording_id)
+                     if m.get("sentence_id") != sentence_id]
+            storage.save_redactions(project_id, recording_id, marks)
+
+        diff = [{
+            "sentence_id": sentence_id,
+            "index": target_index,
+            "op": "delete",
+            "before": before,
+            "after": None,
+        }]
+        nick = storage.get_settings()["identity"]["nick"]
+        version = storage.commit_version(
+            project_id, recording_id, kept, diff,
+            message=f"删除第 {target_index + 1} 句", author_nick=nick, redactions=marks,
+        )
+        self._send_json({"sentences": kept, "version": version, "current": version["version"]})
+
     def _delete_redaction(self, project_id: str, recording_id: str, mark_id: str):
         """移除一处脱敏标记；同样提交版本，保证“撤掉”也留痕。"""
         recording = storage.get_recording(project_id, recording_id)
@@ -3229,6 +3273,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"status": "deleted"})
             return
 
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/sentences/([^/]+)$")
+        if m:
+            self._delete_sentence(*m)
+            return
+
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/redactions/([^/]+)$")
         if m:
             self._delete_redaction(*m)
@@ -3237,6 +3286,12 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)$")
         if m:
             self._delete_recording(*m)
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)$")
+        if m:
+            device = self._collab_device()
+            self._collab_call(lambda: collab.remove_material(m[0], m[1], device))
             return
 
         m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/redactions/([^/]+)$")
@@ -3296,8 +3351,8 @@ class Handler(BaseHTTPRequestHandler):
         timed = re.compile(r"^\s*([^(:（\n]+?)\s*[\(（](\d{1,2}):(\d{2}):(\d{2})[\)）]\s*[:：]\s*(.*?)\s*$")
         untimed = re.compile(r"^\s*([^:：\n]{1,24}?)\s*[:：]\s*(.*?)\s*$")
 
-        # 首行判题目：Markdown # 标题，或「短且无句末标点」的孤立行才算题目。
-        # 长的孤立行（Word 粘来的无格式正文）不当题目，作为 speaker 为空的一句收进正文，不丢内容。
+        # 首行判题目：Markdown # 标题，或任何「孤立行」——既没时间戳、也没「名字:内容」。
+        # 逐字稿的题目就是这种长相，一律当题目，不进正文（不再按长短/标点猜）。
         lines = text.splitlines()
         first = next((ln for ln in lines if ln.strip()), '')
         title = ''
@@ -3305,7 +3360,7 @@ class Handler(BaseHTTPRequestHandler):
             s = first.strip()
             if s.startswith('#'):
                 title = s.lstrip('#').strip()
-            elif not timed.match(first) and not untimed.match(first) and len(s) <= 30 and not s.endswith(('。', '？', '！', '.', '?', '!')):
+            elif not timed.match(first) and not untimed.match(first):
                 title = s
         manual = str(data.get("name") or "").strip()
         name = manual or title or f"逐字稿 {time.strftime('%m-%d %H:%M')}"

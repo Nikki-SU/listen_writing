@@ -1320,6 +1320,20 @@ function TranscriptPanel({
     }
   }
 
+  async function handleDeleteSentence(s: Sentence) {
+    if (!window.confirm(`删除第 ${s.index + 1} 句？此操作会生成一个新版本，可在历史里找回。`)) return
+    const snapshot = localSentences
+    setLocalSentences((list) => list.filter((x) => x.id !== s.id).map((x, i) => ({ ...x, index: i })))
+    try {
+      const res = await api.deleteSentence(projectId, recordingId, s.id)
+      setVersion(res.current || version)
+      onError('')
+    } catch (e) {
+      setLocalSentences(snapshot)
+      onError(`删除失败：${String(e)}`)
+    }
+  }
+
   // AI 调用前的就绪检查：运行时缺失直接说明；模型没下载就先起后台下载任务，
   // 绝不让一个 HTTP 请求在服务端同步拉几 GB（界面看起来就是卡死）。
   async function ensureLlmReady(): Promise<boolean> {
@@ -2442,6 +2456,15 @@ function TranscriptPanel({
                           style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 22, alignSelf: 'flex-start', color: '#666', flexShrink: 0, padding: 0 }}
                         >
                           <EditIcon />
+                        </button>
+                      )}
+                      {!mergeMode && !coding && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); void handleDeleteSentence(s) }}
+                          title="删除这一句"
+                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 22, alignSelf: 'flex-start', color: '#b00020', flexShrink: 0, padding: 0, border: '1px solid #f0c9cc', borderRadius: 4, background: '#fff' }}
+                        >
+                          ×
                         </button>
                       )}
                       {/* 句尾色点：这一句挂了哪几个码，一眼可见（NVivo 式） */}

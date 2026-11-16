@@ -166,6 +166,8 @@ export type CollabMaterial = {
   can_play: boolean
   /** 材料是否真有可播放音频；「申请播放」按钮据此启用 */
   has_audio?: boolean
+  /** 可否撤回（本人灌入或群主） */
+  can_remove?: boolean
 }
 
 export type CollabMaterialDetail = {

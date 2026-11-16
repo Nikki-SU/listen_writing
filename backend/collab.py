@@ -718,6 +718,8 @@ def _material_meta(group: dict, material: dict, member: dict) -> dict:
         # 申请按钮必须看 has_audio，否则永远点不动（要先获批才能点申请）。
         "can_play": _playback_state(group, material, member)[0],
         "has_audio": _material_has_audio(material),
+        # 撤回：本人灌入的或群主可见按钮（与 remove_material 的服务端校验一致）。
+        "can_remove": member.get("role") == "owner" or material.get("source_device") == member.get("device_code"),
     }
 
 
@@ -2188,3 +2190,23 @@ def delete_material_redaction(group_id: str, material_id: str, mark_id: str, dev
     _log(group, member, "delete_redaction", material_id)
     _save(group)
     return {"marks": marks, "material": _material_meta(group, material, member)}
+
+
+def remove_material(group_id: str, material_id: str, device_code: str) -> dict:
+    """撤回自己灌入的材料；群主可撤回任何材料。相关提案一并清理。"""
+    group = load_group(group_id)
+    member = _require(group, device_code, "view")
+    material = next((m for m in group.get("materials", []) if m.get("id") == material_id), None)
+    if material is None:
+        raise CollabError("材料不存在", status=404)
+    is_owner = member.get("role") == "owner"
+    is_source = material.get("source_device") == device_code
+    if not is_owner and not is_source:
+        raise CollabError("只能撤回自己灌入的材料（群主可撤回任意材料）", status=403)
+
+    group["materials"] = [m for m in group["materials"] if m.get("id") != material_id]
+    group["proposals"] = [p for p in group.get("proposals", []) if p.get("material_id") != material_id]
+    group["approvals"] = [a for a in group.get("approvals", []) if a.get("material_id") != material_id]
+    _log(group, member, "remove_material", material_id, material.get("name", ""))
+    _save(group)
+    return {"status": "deleted", "material_id": material_id}

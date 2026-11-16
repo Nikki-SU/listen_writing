@@ -155,6 +155,15 @@ export async function importTranscript(
   }))
 }
 
+/** 删除一句（无意义句子）：重排 index、提交版本。 */
+export async function deleteSentence(
+  projectId: string, recordingId: string, sentenceId: string,
+): Promise<{ sentences: Sentence[]; current: string }> {
+  return json(await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/sentences/${sentenceId}`, {
+    method: 'DELETE',
+  }))
+}
+
 export async function updateSentence(
   projectId: string,
   recordingId: string,
@@ -317,6 +326,17 @@ export async function addMaterialRedactions(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ marks, device_code: deviceCode }),
+  }))
+}
+
+/** 撤回自己灌入的材料（群主可撤任意材料）。 */
+export async function deleteMaterial(
+  groupId: string, materialId: string, deviceCode: string,
+): Promise<{ status: string }> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_code: deviceCode }),
   }))
 }
 
