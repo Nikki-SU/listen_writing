@@ -119,6 +119,8 @@ export default function App() {
   // 选中录音后的四个工作状态：转写 / 编码 / 分析 / 对比。
   // 编码、分析、对比读取同一条录音的音频与转写稿，不复制正文。
   const [workspaceMode, setWorkspaceMode] = useState<'transcript' | 'coding' | 'analysis' | 'compare'>('transcript')
+  // 项目区：true=列出所有项目（选项目用）；false=折叠到当前项目，直接显示其材料。
+  const [projectsExpanded, setProjectsExpanded] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [liveOpen, setLiveOpen] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -243,6 +245,7 @@ export default function App() {
           setRecordings([])
           setRecordingId(null)
           setDetail(null)
+          setProjectsExpanded(true)
         }
         setError('')
       } catch (e) {
@@ -300,6 +303,7 @@ export default function App() {
       const p = await api.createProject(trimmed, '')
       setProjects((prev) => prev.map((x) => (x.id === tempId ? p : x)))
       setProjectId(p.id)
+      setProjectsExpanded(false)
     } catch (e) {
       setProjects((prev) => prev.filter((x) => x.id !== tempId))
       setError(`新建项目失败：${String(e)}`)
@@ -589,15 +593,16 @@ export default function App() {
         >
           {error && <div className="workspace-error">{error}</div>}
           <main className="workspace-grid">
-            {/* 第 1 列：手风琴项目树——项目是父，材料是子，一次只展开一个项目 */}
+            {/* 第 1 列：项目区两态——展开列全部项目选项目；折叠只显当前项目+其材料 */}
             <aside className="workspace-card task-rail scroll-hidden">
               <ProjectCreator onCreate={onCreateProject} />
-              <div className="rail-label">项目</div>
               <ProjectList
                 projects={projects}
                 activeId={projectId}
                 onSelect={setProjectId}
                 onDelete={handleDeleteProject}
+                expanded={projectsExpanded}
+                onToggleExpand={() => setProjectsExpanded((v) => !v)}
                 recordings={recordings}
                 activeRecordingId={recordingId}
                 onSelectRecording={setRecordingId}
@@ -720,14 +725,18 @@ function ProjectCreator({ onCreate }: { onCreate: (name: string) => void }) {
 }
 
 /**
- * 手风琴式项目列表：项目是父，材料是子。
- * 一次只展开一个项目——选中的项目在自己行下面直接跟着材料列表，其余项目折叠（材料不显示）。
+ * 项目区两态（项目是父、材料是数据结构上的子）：
+ *  - 展开态：列出全部项目，只用来选项目，不显示任何材料；
+ *  - 折叠态：只显示当前项目一行，其材料默认直接跟在下面（无需再展开），
+ *    录音/上传图标位于项目行与材料之间。选中项目即折叠；点当前项目行可重新展开去选别的项目。
  */
 function ProjectList({
   projects,
   activeId,
   onSelect,
   onDelete,
+  expanded,
+  onToggleExpand,
   recordings,
   activeRecordingId,
   onSelectRecording,
@@ -741,6 +750,8 @@ function ProjectList({
   activeId: string | null
   onSelect: (id: string) => void
   onDelete: (id: string) => void
+  expanded: boolean
+  onToggleExpand: () => void
   recordings: Recording[]
   activeRecordingId: string | null
   onSelectRecording: (id: string) => void
@@ -753,61 +764,73 @@ function ProjectList({
   if (projects.length === 0) {
     return <div style={{ color: '#aaa', fontSize: 13 }}>还没有项目</div>
   }
-  return (
-    <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
-      {projects.map((p) => {
-        const expanded = p.id === activeId
-        return (
+
+  const deleteBtn = (p: Project) => (
+    <button
+      onClick={(e) => { e.stopPropagation(); onDelete(p.id) }}
+      title="删除项目（连同其下所有材料与版本）"
+      aria-label="删除项目"
+      style={{ ...ICON_BTN, width: 22, height: 20, color: '#b00020', border: '1px solid #f0c9cc' }}
+    >
+      <TrashIcon size={12} />
+    </button>
+  )
+
+  if (expanded) {
+    return (
+      <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
+        {projects.map((p) => (
           <li key={p.id} className="project-node">
             <div
-              className={`project-row${expanded ? ' expanded' : ''}`}
-              onClick={() => onSelect(p.id)}
+              className={`project-row${p.id === activeId ? ' current' : ''}`}
+              onClick={() => { onSelect(p.id); onToggleExpand() }}
               role="button"
               tabIndex={0}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelect(p.id) }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { onSelect(p.id); onToggleExpand() } }}
             >
-              <span className="project-caret">{expanded ? '▾' : '▸'}</span>
+              <span className="project-caret">▸</span>
               <span className="project-name" title={p.name}>{p.name}</span>
-              <button
-                onClick={(e) => { e.stopPropagation(); onDelete(p.id) }}
-                title="删除项目（连同其下所有材料与版本）"
-                aria-label="删除项目"
-                style={{ ...ICON_BTN, width: 22, height: 20, color: '#b00020', border: '1px solid #f0c9cc' }}
-              >
-                <TrashIcon size={12} />
-              </button>
+              {deleteBtn(p)}
             </div>
-            {/* 材料是项目的子节点：只有展开的项目才渲染它的材料 */}
-            {expanded && (
-              <div className="project-materials">
-                <div className="material-toolbar">
-                  <span className="material-count">{recordings.length} 份材料</span>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    hidden
-                    accept=".wav,.mp3,.m4a,.wma,.flac,.ogg,.opus,.aac,.aiff,audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/flac,audio/ogg,audio/aac"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0]
-                      if (f) onUpload(f)
-                    }}
-                  />
-                  <button onClick={onLive} title="实时录音" aria-label="实时录音" style={ICON_BTN}><MicIcon /></button>
-                  <button onClick={() => fileInputRef.current?.click()} title="上传录音" aria-label="上传录音" style={ICON_BTN}><UploadIcon /></button>
-                </div>
-                <RecordingList
-                  recordings={recordings}
-                  activeId={activeRecordingId}
-                  onSelect={onSelectRecording}
-                  onDelete={onDeleteRecording}
-                  onRename={onRenameRecording}
-                />
-              </div>
-            )}
           </li>
-        )
-      })}
-    </ul>
+        ))}
+      </ul>
+    )
+  }
+
+  const current = projects.find((p) => p.id === activeId) || projects[0]
+  return (
+    <div className="scroll-hidden" style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+      <div className="project-row expanded" onClick={onToggleExpand} role="button" tabIndex={0}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onToggleExpand() }}
+        title="点开切换项目"
+      >
+        <span className="project-caret">▾</span>
+        <span className="project-name" title={current.name}>{current.name}</span>
+        {deleteBtn(current)}
+      </div>
+      {/* 录音/上传图标：项目行下方、材料上方；只用图标，文字退到 hover */}
+      <div className="material-toolbar">
+        <input
+          ref={fileInputRef}
+          type="file"
+          hidden
+          accept=".wav,.mp3,.m4a,.wma,.flac,.ogg,.opus,.aac,.aiff,audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/flac,audio/ogg,audio/aac"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(f) }}
+        />
+        <button onClick={onLive} title="实时录音" aria-label="实时录音" style={ICON_BTN}><MicIcon /></button>
+        <button onClick={() => fileInputRef.current?.click()} title="上传录音" aria-label="上传录音" style={ICON_BTN}><UploadIcon /></button>
+      </div>
+      <div className="project-materials">
+        <RecordingList
+          recordings={recordings}
+          activeId={activeRecordingId}
+          onSelect={onSelectRecording}
+          onDelete={onDeleteRecording}
+          onRename={onRenameRecording}
+        />
+      </div>
+    </div>
   )
 }
 
