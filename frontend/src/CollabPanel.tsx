@@ -949,18 +949,20 @@ export default function CollabPanel({
               </div>
             ) : (
               <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-                  {!materialView && <span style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</span>}
-                  {!chatOpen && (
-                    <button onClick={() => setChatOpen(true)} title="展开群聊" aria-label="展开群聊"
-                      style={{ ...ICON_BTN, width: 24, height: 22, color: '#245c9c' }}>▸</button>
-                  )}
-                  {requests.filter((r) => r.status === 'pending').length > 0 && has('roles') && (
-                    <span style={{ fontSize: 11, color: '#8a5a00' }}>
-                      {requests.filter((r) => r.status === 'pending').length} 条管理员任免待你决定
-                    </span>
-                  )}
-                </div>
+                {((mainView === 'collab' && !materialView) || !chatOpen || (requests.filter((r) => r.status === 'pending').length > 0 && has('roles'))) && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                    {mainView === 'collab' && !materialView && <span style={{ fontSize: 14, fontWeight: 600 }}>{selected.name}</span>}
+                    {!chatOpen && (
+                      <button onClick={() => setChatOpen(true)} title="展开群聊" aria-label="展开群聊"
+                        style={{ ...ICON_BTN, width: 24, height: 22, color: '#245c9c' }}>▸</button>
+                    )}
+                    {requests.filter((r) => r.status === 'pending').length > 0 && has('roles') && (
+                      <span style={{ fontSize: 11, color: '#8a5a00' }}>
+                        {requests.filter((r) => r.status === 'pending').length} 条管理员任免待你决定
+                      </span>
+                    )}
+                  </div>
+                )}
 
             <div style={{ display: mainView === 'collab' ? 'none' : 'flex', gap: 4, borderBottom: '1px solid #eee', marginBottom: 12 }}>
               {visibleTabs.map(([key, label]) => (
