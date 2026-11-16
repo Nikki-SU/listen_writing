@@ -143,6 +143,42 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
           <p style={{ margin: '4px 0 0' }}>macOS：终端里 bash + 拖入 start-mac.command</p>
           <p style={{ margin: '4px 0 0' }}>Linux：bash start.sh</p>
         </details>
+
+        <details style={{ marginTop: 10, fontSize: 12, color: '#666', background: '#f8fafc', border: '1px solid #e8ebf0', borderRadius: 8, padding: '8px 10px' }}>
+          <summary style={{ cursor: 'pointer', color: '#245c9c' }}>不想每次都去文件夹里找启动器？让它更好打开</summary>
+          <div style={{ marginTop: 8, lineHeight: 1.7 }}>
+            {isWindows() && (
+              <>
+                <p style={{ margin: '0 0 6px' }}><strong>Windows · 放一个快捷方式到桌面：</strong></p>
+                <p style={{ margin: '0 0 6px' }}>1. 打开启动器所在文件夹，找到 <code>start-windows.bat</code>。</p>
+                <p style={{ margin: '0 0 6px' }}>2. 右键它 →「发送到」→「桌面快捷方式」。以后双击桌面图标就能启动。</p>
+                <p style={{ margin: '0 0 6px' }}><strong>想开机自动启动：</strong>按 <code>Win + R</code> 输入 <code>shell:startup</code> 回车，把上面那个快捷方式复制进去即可（不想要时删掉这个副本）。</p>
+                <p style={{ margin: 0 }}>注意：快捷方式只是「指针」，别把原文件夹删了或挪走。</p>
+              </>
+            )}
+            {isMac() && (
+              <>
+                <p style={{ margin: '0 0 6px' }}><strong>macOS · 做个别名放桌面：</strong></p>
+                <p style={{ margin: '0 0 6px' }}>1. 在 Finder 里找到 <code>start-mac.command</code>。</p>
+                <p style={{ margin: '0 0 6px' }}>2. 右键 →「制作别名」，把别名拖到桌面，以后双击别名即可。</p>
+                <p style={{ margin: 0 }}><strong>想开机自动启动：</strong>系统设置 →「通用」→「登录项与扩展」→ 把别名加进「登录时打开」。</p>
+              </>
+            )}
+            {!isWindows() && !isMac() && (
+              <>
+                <p style={{ margin: '0 0 6px' }}><strong>Linux · 建一个桌面启动器：</strong></p>
+                <p style={{ margin: '0 0 6px' }}>在桌面新建一个 <code>listen-writing.desktop</code> 文件，内容如下，然后右键设为「允许启动」：</p>
+                <pre style={{ margin: '0 0 6px', padding: 8, background: '#fff', border: '1px solid #e8ebf0', borderRadius: 6, overflowX: 'auto', fontSize: 11 }}>
+{`[Desktop Entry]
+Type=Application
+Name=Listen Writing
+Exec=bash ${'启动器完整路径'}/start.sh
+Terminal=true`}
+                </pre>
+              </>
+            )}
+          </div>
+        </details>
         <p style={{ fontSize: 12, color: '#999', margin: '8px 0 0' }}>不需要自己安装 Python：启动器会自动准备好所需的全部运行组件（主指令：{primaryCmd}）。</p>
       </section>
 

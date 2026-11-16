@@ -8,7 +8,7 @@ import ModelSetup from './ModelSetup'
 import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { jobFor, useModels } from './useModels'
-import { BOOTSTRAP_FILES, BUNDLE_VERSION } from './bootstrapFiles'
+import { BOOTSTRAP_FILES } from './bootstrapFiles'
 import { speakerColor, SPEAKER_PALETTE } from './speakerColors'
 import CodingPanel from './coding/CodingPanel'
 import AnalysisPanel from './coding/AnalysisPanel'
@@ -47,7 +47,6 @@ import type {
 import {
   applyUpdate,
   backendOutdated,
-  bundleApplied,
   ensureWritePermission,
   isOutdated,
   loadDirHandle,
@@ -112,6 +111,8 @@ export default function App() {
   const [updText, setUpdText] = useState('')
   const [updProgress, setUpdProgress] = useState<{ done: number; total: number }>()
   const [updDismissed, setUpdDismissed] = useState(false)
+  // 仅前端更新：只提示刷新页面，不写本地文件、不重启后端（用户明确要求）。
+  const [needRefresh, setNeedRefresh] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
   // 共享任务不是弹层里的“小入口”：它和「我的录音」并列，是同一层级的常驻工作区。
   const [view, setView] = useState<'workspace' | 'collab'>('workspace')
@@ -140,15 +141,12 @@ export default function App() {
       const v = await api.fetchVersion()
       setProjects(await api.listProjects())
       setError('')
-      // 页面内置版本比本地后端新 → 提示可更新。自动检查只做提示，
-      // 真正写文件要用户点按钮（浏览器要求写权限必须由点击触发）。
-      // 纯页面改版不重启后端，运行中的进程仍返回旧的 frontend 段：
-      // 本浏览器已经更新过这个整包、且后端代码段一致时，不再重复提示。
-      setUpd((prev) =>
-        isOutdated(v) && !(bundleApplied() && v.backend >= BUNDLE_VERSION.backend)
-          ? prev === 'idle' ? 'available' : prev
-          : 'idle',
-      )
+      // 两种更新分开处理（用户明确要求）：
+      //  1) 后端代码落后（backend 段旧）→ 需要写本地文件 + 可能重启，走 onUpdate 流程（需用户点击授权写）。
+      //  2) 只有前端落后 → 纯页面改版，只需提示用户刷新；绝不写文件、绝不重启后端。
+      const backendBehind = backendOutdated(v)
+      setUpd((prev) => (backendBehind ? (prev === 'idle' ? 'available' : prev) : 'idle'))
+      setNeedRefresh(!backendBehind && isOutdated(v))
     } catch (e) {
       setError(String(e))
     }
@@ -498,6 +496,15 @@ export default function App() {
         </div>
       )}
 
+      {/* 仅前端更新：不写本地文件、不重启后端，只提示刷新页面 */}
+      {needRefresh && upd === 'idle' && (
+        <div className="refresh-hint" role="status">
+          <span>界面已更新，刷新后生效。本地程序无需重启。</span>
+          <button type="button" onClick={() => window.location.reload()}>刷新</button>
+          <button type="button" className="refresh-hint-close" onClick={() => setNeedRefresh(false)} title="稍后再说" aria-label="关闭">×</button>
+        </div>
+      )}
+
       <header className="app-header">
         {/* 左：软件标志 + 标题（身份区，固定） */}
         <div className="app-brand">
@@ -582,61 +589,24 @@ export default function App() {
         >
           {error && <div className="workspace-error">{error}</div>}
           <main className="workspace-grid">
-            {/* 第 1 列：项目 + 任务（录音） */}
+            {/* 第 1 列：手风琴项目树——项目是父，材料是子，一次只展开一个项目 */}
             <aside className="workspace-card task-rail scroll-hidden">
               <ProjectCreator onCreate={onCreateProject} />
-
-              <div className="task-rail-projects">
-                <div className="rail-label">项目</div>
-                <ProjectList
-                  projects={projects}
-                  activeId={projectId}
-                  onSelect={setProjectId}
-                  onDelete={handleDeleteProject}
-                />
-              </div>
-
-              {projectId && (
-                <div className="task-rail-tasks">
-                  <div className="rail-label-row">
-                    <span className="rail-label">材料</span>
-                    <span className="rail-count">{recordings.length}</span>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      hidden
-                      accept=".wav,.mp3,.m4a,.wma,.flac,.ogg,.opus,.aac,.aiff,audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/flac,audio/ogg,audio/aac"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0]
-                        if (f) onUpload(f)
-                      }}
-                    />
-                    <button
-                      onClick={() => setLiveOpen(true)}
-                      title="实时录音"
-                      aria-label="实时录音"
-                      style={{ ...ICON_BTN, marginLeft: 'auto' }}
-                    >
-                      <MicIcon />
-                    </button>
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      title="上传录音"
-                      aria-label="上传录音"
-                      style={ICON_BTN}
-                    >
-                      <UploadIcon />
-                    </button>
-                  </div>
-                  <RecordingList
-                    recordings={recordings}
-                    activeId={recordingId}
-                    onSelect={setRecordingId}
-                    onDelete={handleDeleteRecording}
-                    onRename={(id, name) => void handleRenameRecording(id, name)}
-                  />
-                </div>
-              )}
+              <div className="rail-label">项目</div>
+              <ProjectList
+                projects={projects}
+                activeId={projectId}
+                onSelect={setProjectId}
+                onDelete={handleDeleteProject}
+                recordings={recordings}
+                activeRecordingId={recordingId}
+                onSelectRecording={setRecordingId}
+                onDeleteRecording={handleDeleteRecording}
+                onRenameRecording={(id, name) => void handleRenameRecording(id, name)}
+                onUpload={onUpload}
+                onLive={() => setLiveOpen(true)}
+                fileInputRef={fileInputRef}
+              />
             </aside>
 
             {detail ? (
@@ -749,58 +719,94 @@ function ProjectCreator({ onCreate }: { onCreate: (name: string) => void }) {
   )
 }
 
+/**
+ * 手风琴式项目列表：项目是父，材料是子。
+ * 一次只展开一个项目——选中的项目在自己行下面直接跟着材料列表，其余项目折叠（材料不显示）。
+ */
 function ProjectList({
   projects,
   activeId,
   onSelect,
   onDelete,
+  recordings,
+  activeRecordingId,
+  onSelectRecording,
+  onDeleteRecording,
+  onRenameRecording,
+  onUpload,
+  onLive,
+  fileInputRef,
 }: {
   projects: Project[]
   activeId: string | null
   onSelect: (id: string) => void
   onDelete: (id: string) => void
+  recordings: Recording[]
+  activeRecordingId: string | null
+  onSelectRecording: (id: string) => void
+  onDeleteRecording: (id: string) => void
+  onRenameRecording: (id: string, name: string) => void
+  onUpload: (f: File) => void
+  onLive: () => void
+  fileInputRef: React.RefObject<HTMLInputElement>
 }) {
   if (projects.length === 0) {
     return <div style={{ color: '#aaa', fontSize: 13 }}>还没有项目</div>
   }
   return (
     <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minHeight: 0 }}>
-      {projects.map((p) => (
-        <li
-          key={p.id}
-          onClick={() => onSelect(p.id)}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '8px 10px',
-            cursor: 'pointer',
-            borderRadius: 6,
-            fontSize: 14,
-            background: p.id === activeId ? '#e8f0fe' : 'transparent',
-            marginBottom: 4,
-          }}
-        >
-          {/* 展开指示：一次只展开一个项目（选中即展开，其余折叠） */}
-          <span style={{ color: '#9aa0a6', fontSize: 11, width: 10, flexShrink: 0, textAlign: 'center' }}>
-            {p.id === activeId ? '▾' : '▸'}
-          </span>
-          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name}>
-            {p.name}
-          </span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onDelete(p.id)
-            }}
-            title="删除项目（连同其下所有材料与版本）"
-            aria-label="删除项目"
-            style={{ ...ICON_BTN, width: 22, height: 20, color: '#b00020', border: '1px solid #f0c9cc' }}
-          >
-            <TrashIcon size={12} />
-          </button>
-        </li>
-      ))}
+      {projects.map((p) => {
+        const expanded = p.id === activeId
+        return (
+          <li key={p.id} className="project-node">
+            <div
+              className={`project-row${expanded ? ' expanded' : ''}`}
+              onClick={() => onSelect(p.id)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelect(p.id) }}
+            >
+              <span className="project-caret">{expanded ? '▾' : '▸'}</span>
+              <span className="project-name" title={p.name}>{p.name}</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(p.id) }}
+                title="删除项目（连同其下所有材料与版本）"
+                aria-label="删除项目"
+                style={{ ...ICON_BTN, width: 22, height: 20, color: '#b00020', border: '1px solid #f0c9cc' }}
+              >
+                <TrashIcon size={12} />
+              </button>
+            </div>
+            {/* 材料是项目的子节点：只有展开的项目才渲染它的材料 */}
+            {expanded && (
+              <div className="project-materials">
+                <div className="material-toolbar">
+                  <span className="material-count">{recordings.length} 份材料</span>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    hidden
+                    accept=".wav,.mp3,.m4a,.wma,.flac,.ogg,.opus,.aac,.aiff,audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/flac,audio/ogg,audio/aac"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0]
+                      if (f) onUpload(f)
+                    }}
+                  />
+                  <button onClick={onLive} title="实时录音" aria-label="实时录音" style={ICON_BTN}><MicIcon /></button>
+                  <button onClick={() => fileInputRef.current?.click()} title="上传录音" aria-label="上传录音" style={ICON_BTN}><UploadIcon /></button>
+                </div>
+                <RecordingList
+                  recordings={recordings}
+                  activeId={activeRecordingId}
+                  onSelect={onSelectRecording}
+                  onDelete={onDeleteRecording}
+                  onRename={onRenameRecording}
+                />
+              </div>
+            )}
+          </li>
+        )
+      })}
     </ul>
   )
 }

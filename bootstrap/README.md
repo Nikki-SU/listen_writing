@@ -17,6 +17,25 @@
 
 在文件夹里打开终端，运行 `bash start.sh`。
 
+## 不想每次去文件夹里找启动器？
+
+**Windows**：右键 `start-windows.bat` →「发送到」→「桌面快捷方式」，以后双击桌面图标即可。
+想开机自动启动：按 `Win + R` 输入 `shell:startup` 回车，把该快捷方式复制进打开的文件夹。
+（快捷方式只是指针，原文件夹不要删或挪走。）
+
+**macOS**：在 Finder 里右键 `start-mac.command` →「制作别名」，拖到桌面。
+想开机自动启动：系统设置 →「通用」→「登录项与扩展」→ 加入登录项。
+
+**Linux**：在桌面建 `listen-writing.desktop`，写入下面内容并右键设为允许启动：
+
+```
+[Desktop Entry]
+Type=Application
+Name=Listen Writing
+Exec=bash /你的完整路径/start.sh
+Terminal=true
+```
+
 ## 首次启动会做什么
 
 1. 下载便携 Python 运行时（约 25–70MB）。

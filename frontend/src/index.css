@@ -21,6 +21,19 @@ body {
   display: none; /* Chrome / Safari / Edge */
 }
 
+/* 纯前端更新的轻提示：只提示刷新，不阻塞、不重启后端 */
+.refresh-hint {
+  flex-shrink: 0; display: flex; align-items: center; gap: 12px;
+  padding: 7px 16px; font-size: 12px; background: #eef5ff;
+  border-bottom: 1px solid #d7e6fa; color: #245c9c;
+}
+.refresh-hint span { flex: 1; }
+.refresh-hint button {
+  font-size: 12px; padding: 3px 12px; border: 1px solid #8ab4f8; border-radius: 5px;
+  background: #fff; color: #245c9c; cursor: pointer;
+}
+.refresh-hint .refresh-hint-close { border: none; background: transparent; font-size: 16px; padding: 0 4px; color: #7a95b8; }
+
 /* 顶栏：身份 → 工作空间 → 模式 → 工具，单行不换行，高度固定（工作台外壳永不滚、不跳变） */
 .app-header {
   flex-shrink: 0; display: flex; align-items: center; gap: 14px;
@@ -49,6 +62,22 @@ body {
 .seg-nav button:disabled { cursor: not-allowed; opacity: .45; }
 .mode-nav { margin-left: auto; }
 .app-tools { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* 手风琴项目树：项目是父、材料是子；一次只展开一个 */
+.project-node { margin-bottom: 4px; }
+.project-row {
+  display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+  cursor: pointer; border-radius: 6px; font-size: 14px;
+}
+.project-row:hover { background: #f5f7fa; }
+.project-row.expanded { background: #e8f0fe; }
+.project-caret { color: #9aa0a6; font-size: 11px; width: 10px; flex-shrink: 0; text-align: center; }
+.project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-materials {
+  margin: 2px 0 0 18px; padding-left: 10px;
+  border-left: 2px solid #e4e9f0;
+}
+.material-toolbar { display: flex; align-items: center; gap: 6px; padding: 4px 4px 6px; }
+.material-count { font-size: 11px; color: '#8a8f98'; margin-right: auto; }
 /* 材料行状态点：颜色即状态，hover 的 title 才给文字 */
 .mat-status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 2px rgba(0,0,0,.04); }
 /* 转写稿工具栏：导出格式标签（去掉下载图标的迷惑，文字本身就是格式） */
