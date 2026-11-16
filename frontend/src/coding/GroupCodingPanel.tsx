@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import * as api from '../api'
-import SentenceRow from '../SentenceRow'
+import { TranscriptAudio, TranscriptList } from '../TranscriptBody'
+import { useSentencePlayer } from '../useSentencePlayer'
 import type { CodingCode, CodingEntry, CodingSpan, Sentence } from '../types'
 import { CodeChip, SideTitle, blendColors, densityColor, fmtMs, hexToRgba } from './common'
 
@@ -87,7 +88,6 @@ export default function GroupCodingPanel({
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState<Tab>('reading')
   const [selection, setSelection] = useState<{ spans: CodingSpan[]; quote: string } | null>(null)
-  const [activeSentenceId, setActiveSentenceId] = useState<string | null>(null)
   const [activeCodingId, setActiveCodingId] = useState<string | null>(null)
   const [activeCodeId, setActiveCodeId] = useState<string | null>(null)
   const [codeQuery, setCodeQuery] = useState('')
@@ -97,8 +97,10 @@ export default function GroupCodingPanel({
 
   const listRef = useRef<HTMLUListElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
-  const stopAtRef = useRef<number | null>(null)
   const dragRef = useRef<string | null>(null)
+  // 播放逻辑与本地/协作转写共用同一个 hook（播放器行为只有一份）。
+  const player = useSentencePlayer(sentences, audioRef)
+  const { activeId: activeSentenceId, setActiveId: setActiveSentenceId } = player
 
   const applyPayload = useCallback((d: api.GroupCoding) => {
     setData(d)
@@ -433,27 +435,6 @@ export default function GroupCodingPanel({
       .finally(() => setBusyProposal(false))
   }
 
-  function playSentence(s: Sentence) {
-    const audio = audioRef.current
-    if (!audio || !canPlay) return
-    stopAtRef.current = s.end_ms
-    audio.currentTime = s.start_ms / 1000
-    void audio.play().catch(() => setError('无法播放：请确认播放申请已获批'))
-  }
-
-  function onTimeUpdate() {
-    const audio = audioRef.current
-    if (!audio) return
-    const ms = audio.currentTime * 1000
-    const stop = stopAtRef.current
-    if (stop != null && ms >= stop) {
-      stopAtRef.current = null
-      audio.pause()
-    }
-    const cur = sentences.find((s) => ms >= s.start_ms && ms < s.end_ms)
-    if (cur) setActiveSentenceId(cur.id)
-  }
-
   function renderText(s: Sentence): ReactNode {
     const spans = mine.flatMap((entry) =>
       entry.spans.filter((sp) => sp.sentence_id === s.id).map((sp) => ({ ...sp, entry })),
@@ -571,13 +552,10 @@ export default function GroupCodingPanel({
             </div>
           )}
           {canPlay && (
-            <audio
-              ref={audioRef}
-              src={audioSrc}
-              controls
-              preload="metadata"
-              onTimeUpdate={onTimeUpdate}
-              style={{ width: '100%', height: 36, marginBottom: 10 }}
+            <TranscriptAudio
+              audioRef={audioRef}
+              audioUrl={audioSrc}
+              onTimeUpdate={player.onTimeUpdate}
             />
           )}
 
@@ -590,85 +568,42 @@ export default function GroupCodingPanel({
           {loading ? (
             <div style={{ fontSize: 12, color: '#8a8f98', marginTop: 20 }}>读取共享编码…</div>
           ) : (
-            <ul
-              ref={listRef}
-              className="scroll-hidden"
+<TranscriptList
+              sentences={sentences}
+              activeId={activeSentenceId}
+              listRef={listRef}
               onMouseUp={readSelection}
-              style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minWidth: 0, minHeight: 0 }}
-            >
-              {sentences.map((s) => {
+              onPlayPressStart={player.playPressStart}
+              onPlayPressEnd={player.playPressEnd}
+              onPlayPressCancel={player.playPressCancel}
+              onRowClick={(s) => {
+                if (window.getSelection()?.toString().trim()) return
+                setActiveSentenceId(s.id)
+                setActiveCodingId(null)
+                setTab('reading')
+              }}
+              rowStyle={(_s, active) => ({
+                background: active ? '#eef4ff' : 'transparent',
+                borderLeft: active ? '3px solid #4285f4' : '3px solid transparent',
+              })}
+              renderBody={(s) => {
+                const list = mine.filter((c) => c.spans.some((sp) => sp.sentence_id === s.id))
+                return <div className="transcript-line">
+                  <button type="button" style={{ fontSize: 11, color: '#8a8f98', background: '#f7f8fa', border: '1px dashed #d7dce3', borderRadius: 4, padding: '1px 6px', alignSelf: 'flex-start', flexShrink: 0 }}>
+                    {s.speaker || '未标注'}
+                  </button>
+                  <span data-sentence-id={s.id} style={{ fontSize: 15, lineHeight: 1.6, flex: 1, whiteSpace: 'pre-wrap' }}>
+                    {renderText(s)}
+                  </span>
+                  {list.length > 0 && <span style={{ fontSize: 10, color: '#8a8f98', alignSelf: 'flex-start' }}>{list.length} 码</span>}
+                </div>
+              }}
+              renderGutter={(s) => {
                 const list = mine.filter((c) => c.spans.some((sp) => sp.sentence_id === s.id))
                 const ratio = coverage(s, mine)
-                const active = s.id === activeSentenceId
-                return (
-                  <SentenceRow
-                    key={s.id}
-                    sentence={s}
-                    id={`gcs-${s.id}`}
-                    active={active}
-                    onClick={() => {
-                      if (window.getSelection()?.toString().trim()) return
-                      setActiveSentenceId(s.id)
-                      setActiveCodingId(null)
-                      setTab('reading')
-                    }}
-                    style={{
-                      background: active ? '#eef4ff' : 'transparent',
-                      borderLeft: active ? '3px solid #4285f4' : '3px solid transparent',
-                    }}
-                    playButton={
-                      <button
-                        type="button"
-                        title={canPlay ? '只播这一句' : '播放未获批'}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          playSentence(s)
-                        }}
-                        style={{
-                          flexShrink: 0, fontSize: 12, lineHeight: 1.2, padding: '3px 8px',
-                          alignSelf: 'flex-start', color: canPlay ? '#1d4ed8' : '#b9c0c9',
-                          background: canPlay ? '#eef4ff' : '#f4f5f7', border: 'none', borderRadius: 8,
-                          cursor: canPlay ? 'pointer' : 'not-allowed',
-                        }}
-                      >
-                        ▶
-                      </button>
-                    }
-                    body={
-                      <div className="transcript-line">
-                        <button
-                          type="button"
-                          style={{
-                            fontSize: 11, color: '#8a8f98', background: '#f7f8fa',
-                            border: '1px dashed #d7dce3', borderRadius: 4, padding: '1px 6px',
-                            alignSelf: 'flex-start', flexShrink: 0,
-                          }}
-                        >
-                          {s.speaker || '未标注'}
-                        </button>
-                        <span
-                          data-sentence-id={s.id}
-                          style={{ fontSize: 15, lineHeight: 1.6, flex: 1, whiteSpace: 'pre-wrap' }}
-                        >
-                          {renderText(s)}
-                        </span>
-                        {list.length > 0 && <span style={{ fontSize: 10, color: '#8a8f98', alignSelf: 'flex-start' }}>{list.length} 码</span>}
-                      </div>
-                    }
-                    gutter={
-                      <span
-                        title={`本句编码密度 ${Math.round(ratio * 100)}%`}
-                        style={{
-                          width: 5, alignSelf: 'stretch', minHeight: 20, borderRadius: 3, flexShrink: 0,
-                          background: list.length ? densityColor(ratio) : 'transparent',
-                        }}
-                      />
-                    }
-                  />
-                )
-              })}
-            </ul>
-          )}
+                return <span title={`本句编码密度 ${Math.round(ratio * 100)}%`} style={{ width: 5, alignSelf: 'stretch', minHeight: 20, borderRadius: 3, flexShrink: 0, background: list.length ? densityColor(ratio) : 'transparent' }} />
+              }}
+            />          )}
         </div>
 
         <aside
@@ -739,7 +674,7 @@ export default function GroupCodingPanel({
                       <button type="button" className="coding-primary-btn" onClick={() => {
                         const sp = activeCoding.spans[0]
                         const s = sp && sentences.find((x) => x.id === sp.sentence_id)
-                        if (s) playSentence(s)
+                        if (s) player.seek(s, true)
                       }}>▶ 播放片段</button>
                       <button type="button" className="coding-danger-btn" onClick={() => removeCoding(activeCoding.id)}>删除这条编码</button>
                     </div>

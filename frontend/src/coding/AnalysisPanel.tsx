@@ -285,9 +285,7 @@ export default function AnalysisPanel({
     <>
       <section className="workspace-card coding-analysis-left" style={{ gridColumn: 'span 2' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-          <div className="coding-modebar" style={{ margin: 0, border: 0, padding: 0, flex: 1 }}>
-            {' '}
-          </div>
+          <span style={{ flex: 1 }} />
           <button
             type="button"
             className={`coding-ghost-btn${tab === 'matrix' ? ' active' : ''}`}

@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode, RefObject } from 'react'
+import type { CSSProperties, MouseEventHandler, ReactNode, RefObject } from 'react'
 import type { Sentence } from './types'
 import SentenceRow from './SentenceRow'
 
@@ -42,6 +42,8 @@ export function TranscriptList({
   onPlayPressEnd,
   onPlayPressCancel,
   onRowClick,
+  onMouseUp,
+  listRef,
   renderBody,
   renderGutter,
   rowStyle,
@@ -53,6 +55,10 @@ export function TranscriptList({
   onPlayPressEnd: (s: Sentence) => void
   onPlayPressCancel: () => void
   onRowClick?: (s: Sentence) => void
+  /** 划选回调（编码面板读取选区用） */
+  onMouseUp?: MouseEventHandler<HTMLUListElement>
+  /** 列表 DOM 引用（编码面板读取选区用） */
+  listRef?: RefObject<HTMLUListElement>
   renderBody: (s: Sentence) => ReactNode
   renderGutter?: (s: Sentence) => ReactNode
   rowStyle?: (s: Sentence, active: boolean) => CSSProperties | undefined
@@ -62,7 +68,7 @@ export function TranscriptList({
     return <div style={{ fontSize: 13, color: '#aaa', padding: 16, textAlign: 'center' }}>{emptyText ?? '还没有句子。'}</div>
   }
   return (
-    <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minWidth: 0, minHeight: 0 }}>
+    <ul ref={listRef} onMouseUp={onMouseUp} className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minWidth: 0, minHeight: 0 }}>
       {sentences.map((s) => {
         const active = s.id === activeId
         return (
