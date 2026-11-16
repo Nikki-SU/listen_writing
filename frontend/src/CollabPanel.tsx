@@ -6,6 +6,9 @@ import { speakerOrderFrom } from './SpeakerTag'
 import SentenceLine from './SentenceLine'
 import PolishCompare from './PolishCompare'
 import ResegmentPanel from './ResegmentPanel'
+import SpeakerPanel from './SpeakerPanel'
+import MergePanel from './MergePanel'
+import { selectionRangeById, renderRedactedText } from './redaction'
 import {
   DownloadIcon,
   EditIcon,
@@ -30,6 +33,9 @@ import type {
   CollabProposal,
   CollabRole,
   PolishSuggestion,
+  RedactionMark,
+  RedactionCategory,
+  RedactionSuggestion,
   PeerSnapshot,
   Project,
   Recording,
@@ -167,6 +173,27 @@ export default function CollabPanel({
   const [editSentence, setEditSentence] = useState<Sentence | null>(null)
   const [editText, setEditText] = useState('')
   const [localEdits, setLocalEdits] = useState<Record<string, string>>({})
+  // 本地分支对发言人的改动（句内换人/批量/改名/并入）；提交走 PR。
+  const [localSpeakerEdits, setLocalSpeakerEdits] = useState<Record<string, string>>({})
+  const [speakerPanelOpen, setSpeakerPanelOpen] = useState(false)
+  // 本地新增的发言人名字（花名册）；按 Git 模型提交走 PR。
+  const [localRoster, setLocalRoster] = useState<string[]>([])
+  const [detectSpeakersBusy, setDetectSpeakersBusy] = useState(false)
+  // 多句合并：涂色分组 → 本地整段替换（提交走 PR）。与个人页同一套交互。
+  const [mergeMode, setMergeMode] = useState(false)
+  const [paintColors, setPaintColors] = useState<Record<string, 1 | 2>>({})
+  const [paintBrush, setPaintBrush] = useState<0 | 1 | 2>(1)
+  const [merging, setMerging] = useState(false)
+  // 协作脱敏：标记来自材料快照，类别模板是群组级（全员共用）。
+  const [redactMode, setRedactMode] = useState(false)
+  const [redactMarks, setRedactMarks] = useState<RedactionMark[]>([])
+  const [redactCats, setRedactCats] = useState<RedactionCategory[]>([])
+  const [activeCat, setActiveCat] = useState('')
+  const [catPanel, setCatPanel] = useState(false)
+  const [catDraft, setCatDraft] = useState<RedactionCategory[]>([])
+  const [aiSuggesting, setAiSuggesting] = useState(false)
+  const [aiSuggestions, setAiSuggestions] = useState<RedactionSuggestion[]>([])
+  const [redactError, setRedactError] = useState('')
   // 本地分支的整段句子替换（AI 整理断句等会改句子结构/id）；null=用主分支原句。
   // 本地可以做任何事；提交公认版本仍必须走 PR。
   const [sentencesOverride, setSentencesOverride] = useState<Sentence[] | null>(null)
@@ -199,6 +226,21 @@ export default function CollabPanel({
     }, 1200)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [aiJob?.status, selected?.id, materialView?.material.id])
+
+  // 材料切换/刷新后同步脱敏标记；进入脱敏态时拉群组级类别模板。
+  useEffect(() => {
+    if (materialView) setRedactMarks(materialView.material.redactions ?? [])
+  }, [materialView?.material.id, materialView?.material.version, materialView])
+  useEffect(() => {
+    if (!redactMode || !selected) return
+    let cancelled = false
+    void api.fetchGroupRedactionCategories(selected.id).then((cats) => {
+      if (cancelled) return
+      setRedactCats(cats)
+      setActiveCat((prev) => prev || cats.find((c) => c.enabled)?.id || cats[0]?.id || '')
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [redactMode, selected?.id])
 
   // AI 整理断句轮询。
   useEffect(() => {
@@ -450,6 +492,121 @@ export default function CollabPanel({
     })
   }
 
+  // ---- 发言人（本地分支操作，提交走 PR，与个人页同一套交互）----
+  const localSpeakers = useMemo(
+    () => [...new Set([...localSentences().map((s) => s.speaker).filter(Boolean), ...localRoster])],
+    // 依赖序列化后的本地句子，避免每次渲染新数组带来的失效
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [JSON.stringify(localEdits), JSON.stringify(localSpeakerEdits), JSON.stringify(localRoster), sentencesOverride, materialView?.material.id],
+  )
+
+  function paintWithBrush(id: string) {
+    setPaintColors((prev) => {
+      const next = { ...prev }
+      if (paintBrush === 0) delete next[id]
+      else next[id] = paintBrush
+      return next
+    })
+  }
+
+  const paintCount = Object.keys(paintColors).length
+  // 只有同色且连续才成组；白色（未涂）不参与合并。与个人页同一算法。
+  const mergeGroups: string[][] = []
+  localSentences().forEach((s, i) => {
+    const color = paintColors[s.id]
+    if (!color) return
+    const prev = localSentences()[i - 1]
+    if (prev && paintColors[prev.id] === color) mergeGroups[mergeGroups.length - 1].push(s.id)
+    else mergeGroups.push([s.id])
+  })
+  const mergeableGroups = mergeGroups.filter((g) => g.length > 1)
+  const mergeReducible = mergeableGroups.reduce((n, g) => n + g.length - 1, 0)
+
+  // 合并全部：把每组句子合成一句，整段替换本地分支（提交走 PR）。
+  async function applyMergeGroups() {
+    if (mergeableGroups.length === 0 || merging) return
+    await run(async () => {
+      setMerging(true)
+      try {
+        const list = localSentences()
+        const mergedIds = new Set(mergeableGroups.flat())
+        const result: Sentence[] = []
+        for (const s of list) {
+          if (!mergedIds.has(s.id)) { result.push(s); continue }
+          const group = mergeableGroups.find((g) => g.includes(s.id))!
+          if (group[0] !== s.id) continue // 每组只在第一句位置产出合并句
+          const items = group.map((id) => list.find((x) => x.id === id)!).filter(Boolean)
+          const text = items.map((x) => x.text.trim().replace(/[，。；：、,.!?;:…]+$/, '')).join('，') + '。'
+          result.push({ ...s, text })
+        }
+        setSentencesOverride(result)
+        setLocalEdits({})
+        setLocalSpeakerEdits({})
+        setPaintColors({})
+        setMergeMode(false)
+        setNotice('已合并到本地分支；提交公认版本请走 PR')
+      } finally {
+        setMerging(false)
+      }
+    })
+  }
+
+  function assignLocalSpeakers(ids: string[], speaker: string) {
+    setLocalSpeakerEdits((prev) => {
+      const next = { ...prev }
+      for (const id of ids) next[id] = speaker
+      return next
+    })
+  }
+
+  // 句内点胶囊：单击换下一位，Shift+点把同标签连续段一起换。
+  function cycleLocalSpeaker(s: Sentence, batch: boolean) {
+    const list = localSentences()
+    const cycle = [...localSpeakers, '']
+    const current = s.speaker ?? ''
+    const next = cycle[(cycle.indexOf(current) + 1) % cycle.length]
+    let ids = [s.id]
+    if (batch) {
+      const i = list.findIndex((x) => x.id === s.id)
+      let l = i, r = i
+      while (l > 0 && (list[l - 1].speaker ?? '') === current) l -= 1
+      while (r < list.length - 1 && (list[r + 1].speaker ?? '') === current) r += 1
+      ids = list.slice(l, r + 1).map((x) => x.id)
+    }
+    assignLocalSpeakers(ids, next)
+    setNotice('已改发言人（本地草稿）；提交后走审批')
+  }
+
+  // 面板：改名 / 并入 / 新增，都是本地分支操作。
+  function renameLocalSpeaker(from: string, to: string) {
+    const ids = localSentences().filter((s) => s.speaker === from).map((s) => s.id)
+    assignLocalSpeakers(ids, to)
+    setNotice('已改名（本地草稿）；提交后走审批')
+  }
+
+  function mergeLocalSpeaker(from: string, into: string) {
+    const ids = localSentences().filter((s) => s.speaker === from).map((s) => s.id)
+    assignLocalSpeakers(ids, into)
+    setNotice('已并入（本地草稿）；提交后走审批')
+  }
+
+  async function runMaterialDetectSpeakers() {
+    if (!selected || !materialView || detectSpeakersBusy) return
+    await run(async () => {
+      setDetectSpeakersBusy(true)
+      try {
+        // 服务端按音色聚类，返回新的 speaker 序列（不写主分支）。
+        const res = await api.detectMaterialSpeakers(selected.id, materialView.material.id, identity.device_code)
+        setSentencesOverride(res.sentences)
+        setLocalSpeakerEdits({})
+        setLocalRoster(res.speakers ?? [])
+        setNotice('已按音色重新识别（本地草稿）；提交后走审批')
+      } finally {
+        setDetectSpeakersBusy(false)
+      }
+    })
+  }
+
   async function runMaterialPolish() {
     if (!selected || !materialView) return
     await run(async () => {
@@ -495,10 +652,103 @@ export default function CollabPanel({
   function localSentences(): Sentence[] {
     if (!materialView) return []
     // 整段替换优先（整理断句改了句子结构/id），否则按 id 应用本地文字草稿。
-    if (sentencesOverride) return sentencesOverride
-    return materialView.material.sentences.map((s) =>
-      localEdits[s.id] !== undefined ? { ...s, text: localEdits[s.id] } : s,
-    )
+    const applySpeaker = (s: Sentence): Sentence =>
+      localSpeakerEdits[s.id] !== undefined ? { ...s, speaker: localSpeakerEdits[s.id] } : s
+    if (sentencesOverride) return sentencesOverride.map(applySpeaker)
+    return materialView.material.sentences.map((s) => {
+      const withSpeaker = applySpeaker(s)
+      return localEdits[s.id] !== undefined ? { ...withSpeaker, text: localEdits[s.id] } : withSpeaker
+    })
+  }
+
+  // ---- 协作脱敏（标记写进材料快照；标记本身是客观事实，提交仍走 PR 留痕）----
+  async function markSelection(s: Sentence) {
+    if (!redactMode || !selected || !materialView) return
+    const cat = redactCats.find((c) => c.id === activeCat && c.enabled)
+    if (!cat) { setRedactError('请先选择一个脱敏类别'); return }
+    const range = selectionRangeById(`stext-${s.id}`)
+    if (!range) return
+    const original = s.text.slice(range.start, range.end)
+    const temp: RedactionMark = {
+      id: 'tmp-' + Date.now(), sentence_id: s.id, start: range.start, end: range.end, original,
+      category_id: cat.id, category_name: cat.name,
+      placeholder: cat.placeholder || `[${cat.name}]`, color: cat.color,
+      timestamp: new Date().toISOString(),
+    }
+    const snapshot = redactMarks
+    setRedactMarks([...snapshot, temp])
+    try {
+      const res = await api.addMaterialRedactions(selected.id, materialView.material.id, identity.device_code, [
+        { sentence_id: s.id, start: range.start, end: range.end, category_id: cat.id },
+      ])
+      setRedactMarks(res.marks)
+      setRedactError('')
+      setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
+    } catch (e) {
+      setRedactMarks(snapshot)
+      setRedactError(String(e).replace(/^Error:\s*/, ''))
+    }
+  }
+
+  async function removeRedactMark(mark: RedactionMark) {
+    if (!redactMode || !selected || !materialView) return
+    const snapshot = redactMarks
+    setRedactMarks(snapshot.filter((m) => m.id !== mark.id))
+    try {
+      const res = await api.deleteMaterialRedaction(selected.id, materialView.material.id, mark.id, identity.device_code)
+      setRedactMarks(res.marks)
+      setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
+    } catch (e) {
+      setRedactMarks(snapshot)
+      setRedactError(String(e).replace(/^Error:\s*/, ''))
+    }
+  }
+
+  async function suggestRedactions() {
+    if (!selected || !materialView) return
+    await run(async () => {
+      setAiSuggesting(true)
+      setRedactError('')
+      try {
+        const res = await api.suggestMaterialRedactions(selected.id, materialView.material.id, identity.device_code)
+        setAiSuggestions(res.suggestions)
+        if (!res.suggestions.length) setRedactError('没有发现匹配已启用类别的敏感片段。')
+      } catch (e) {
+        setRedactError(String(e).replace(/^Error:\s*/, ''))
+      } finally {
+        setAiSuggesting(false)
+      }
+    })
+  }
+
+  async function acceptRedactSuggestions(items: RedactionSuggestion[]) {
+    if (!selected || !materialView || !items.length) return
+    await run(async () => {
+      const res = await api.addMaterialRedactions(selected.id, materialView.material.id, identity.device_code, items.map((x) => ({
+        sentence_id: x.sentence_id, start: x.start, end: x.end, category_id: x.category_id,
+      })))
+      setRedactMarks(res.marks)
+      const done = new Set(items.map((x) => `${x.sentence_id}:${x.start}:${x.end}`))
+      setAiSuggestions((list) => list.filter((x) => !done.has(`${x.sentence_id}:${x.start}:${x.end}`)))
+      setMaterialView(await api.groupMaterial(selected.id, materialView.material.id))
+    })
+  }
+
+  function openCatPanel() { setCatDraft(redactCats.map((c) => ({ ...c }))); setCatPanel((v) => !v) }
+
+  async function saveCats() {
+    if (!selected) return
+    const cleaned = catDraft.map((c) => ({ ...c, name: c.name.trim() })).filter((c) => c.name)
+    if (!cleaned.length) { setRedactError('至少保留一个类别'); return }
+    setRedactCats(cleaned)
+    try {
+      const cs = await api.updateGroupRedactionCategories(selected.id, cleaned, identity.device_code)
+      setRedactCats(cs)
+      setActiveCat((prev) => (cs.some((c) => c.id === prev && c.enabled) ? prev : cs.find((c) => c.enabled)?.id || ''))
+      setCatPanel(false)
+    } catch (e) {
+      setRedactError(String(e).replace(/^Error:\s*/, ''))
+    }
   }
 
   async function onCreate() {
@@ -1075,6 +1325,27 @@ export default function CollabPanel({
                       >
                         {resegJob?.status === 'running' ? `整理中 ${resegJob.processed}/${resegJob.total}…` : 'AI 整理断句'}
                       </button>
+                      <button
+                        onClick={() => setSpeakerPanelOpen((v) => !v)}
+                        title="新增 / 改名 / 并入发言人，句内点标签可换人（本地草稿，提交走审批）"
+                        style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, cursor: 'pointer', border: `1px solid ${speakerPanelOpen ? '#8ab4f8' : '#ddd'}`, color: '#245c9c', background: speakerPanelOpen ? '#eef5ff' : '#fff' }}
+                      >
+                        发言人
+                      </button>
+                      <button
+                        onClick={() => { setMergeMode((v) => !v); setPaintColors({}) }}
+                        title="把被 ASR 切碎的连续句子合并成一句（本地草稿，提交走审批）"
+                        style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, cursor: 'pointer', border: `1px solid ${mergeMode ? '#8ab4f8' : '#ddd'}`, color: '#245c9c', background: mergeMode ? '#eef5ff' : '#fff' }}
+                      >
+                        {mergeMode ? '退出合并' : '合并句子'}
+                      </button>
+                      <button
+                        onClick={() => setRedactMode((v) => !v)}
+                        title="进入脱敏态：选中文字后点类别即可标记；导出时替换为占位符"
+                        style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, cursor: 'pointer', border: `1px solid ${redactMode ? '#f0b429' : '#ddd'}`, color: redactMode ? '#8a5a00' : '#555', background: redactMode ? '#fff4e0' : '#fff' }}
+                      >
+                        {redactMode ? '退出脱敏' : '脱敏'}
+                      </button>
                     </div>
                   )}
                   {materialView.review_mode && (
@@ -1083,6 +1354,82 @@ export default function CollabPanel({
                     </span>
                   )}
                 </div>
+
+                {speakerPanelOpen && !materialView.review_mode && workspaceMode === 'transcript' && (
+                  <SpeakerPanel
+                    speakers={localSpeakers}
+                    order={speakerOrder}
+                    onRename={renameLocalSpeaker}
+                    onMerge={mergeLocalSpeaker}
+                    onCreate={(name) => {
+                      // 新增发言人：记一个空句子占位不可行；用本地花名册状态。
+                      setLocalRoster((prev) => [...new Set([...prev, name])])
+                      setNotice('已新增发言人（本地草稿）；提交后走审批')
+                    }}
+                    onDetect={() => { void runMaterialDetectSpeakers() }}
+                    detecting={detectSpeakersBusy}
+                    detectDisabled={localSentences().length < 3}
+                    onClose={() => setSpeakerPanelOpen(false)}
+                  />
+                )}
+
+                {redactMode && !materialView.review_mode && workspaceMode === 'transcript' && (
+                  <div style={{ border: '1px solid #f0d9a8', background: '#fffcf5', borderRadius: 8, padding: 8, marginBottom: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                      <span style={{ fontSize: 11, color: '#8a5a00' }}>脱敏类别：</span>
+                      {redactCats.filter((c) => c.enabled).map((c) => (
+                        <button key={c.id} onClick={() => setActiveCat(c.id)} title={c.placeholder}
+                          style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, cursor: 'pointer', border: `1px solid ${activeCat === c.id ? c.color : '#ddd'}`, background: activeCat === c.id ? `${c.color}22` : '#fff', color: c.color }}>
+                          {c.name}
+                        </button>
+                      ))}
+                      <button onClick={openCatPanel} style={{ fontSize: 11, padding: '2px 8px', cursor: 'pointer' }} title="管理群组脱敏类别">管理类别</button>
+                      <button onClick={() => void suggestRedactions()} disabled={aiSuggesting} style={{ fontSize: 11, padding: '2px 8px', cursor: 'pointer' }} title="用本地 AI 识别敏感信息（只给建议，采纳后写入标记）">
+                        {aiSuggesting ? '识别中…' : 'AI 识别敏感信息'}
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 6 }}>选中正文里的文字即可标为当前类别；点已标记文字可移除。</div>
+                    {redactError && <div style={{ fontSize: 11, color: '#b00020', marginBottom: 6 }}>{redactError}</div>}
+                    {catPanel && (
+                      <div style={{ border: '1px solid #eee', borderRadius: 6, padding: 8, marginBottom: 8, background: '#fff' }}>
+                        <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>群组共用一套类别；改名不影响已有标记的语义。</div>
+                        {catDraft.map((c, i) => (
+                          <div key={i} style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4 }}>
+                            <input type="color" value={c.color} onChange={(e) => setCatDraft((prev) => prev.map((x, j) => j === i ? { ...x, color: e.target.value } : x))} style={{ width: 28, height: 22, padding: 0 }} />
+                            <input value={c.name} onChange={(e) => setCatDraft((prev) => prev.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} placeholder="类别名" style={{ fontSize: 11, width: 90, padding: '2px 5px' }} />
+                            <input value={c.placeholder} onChange={(e) => setCatDraft((prev) => prev.map((x, j) => j === i ? { ...x, placeholder: e.target.value } : x))} placeholder="[占位符]" style={{ fontSize: 11, width: 90, padding: '2px 5px' }} />
+                            <label style={{ fontSize: 10, color: '#666' }}><input type="checkbox" checked={c.enabled} onChange={(e) => setCatDraft((prev) => prev.map((x, j) => j === i ? { ...x, enabled: e.target.checked } : x))} />启用</label>
+                            <button onClick={() => setCatDraft((prev) => prev.filter((_, j) => j !== i))} disabled={catDraft.length <= 1} style={{ fontSize: 11 }} title="删除类别">×</button>
+                          </div>
+                        ))}
+                        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                          <button onClick={() => setCatDraft((prev) => [...prev, { id: 'c' + Date.now(), name: '', placeholder: '', color: '#0f766e', enabled: true }])} style={{ fontSize: 11, padding: '2px 8px' }}>+ 新增类别</button>
+                          <button onClick={() => void saveCats()} style={{ fontSize: 11, padding: '2px 10px' }}>保存</button>
+                          <button onClick={() => setCatPanel(false)} style={{ fontSize: 11, padding: '2px 10px' }}>取消</button>
+                        </div>
+                      </div>
+                    )}
+                    {aiSuggestions.length > 0 && (
+                      <div style={{ border: '1px solid #dce6f2', borderRadius: 6, padding: 8, background: '#f8fbff' }}>
+                        <div style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+                          <span style={{ fontSize: 11, color: '#245c9c', flex: 1 }}>AI 建议（{aiSuggestions.length}）</span>
+                          <button onClick={() => void acceptRedactSuggestions(aiSuggestions)} style={{ fontSize: 11, padding: '2px 8px' }}>全部采纳</button>
+                          <button onClick={() => setAiSuggestions([])} style={{ fontSize: 11, padding: '2px 8px' }}>清空</button>
+                        </div>
+                        {aiSuggestions.map((sug, i) => (
+                          <div key={i} style={{ fontSize: 11, borderBottom: '1px solid #eef2f8', paddingBottom: 4, marginBottom: 4, lineHeight: 1.6 }}>
+                            <div style={{ color: '#8a8f98' }}>第 {sug.index + 1} 句 · {sug.quote}</div>
+                            <div style={{ color: '#1e7e34' }}>→ {sug.placeholder}</div>
+                            <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                              <button onClick={() => void acceptRedactSuggestions([sug])} style={{ fontSize: 10, padding: '1px 8px' }}>采纳</button>
+                              <button onClick={() => setAiSuggestions((list) => list.filter((_, j) => j !== i))} style={{ fontSize: 10, padding: '1px 8px' }}>忽略</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {materialView.review_mode && (
                   <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', backgroundImage: watermark, zIndex: 0 }} />
@@ -1193,15 +1540,30 @@ export default function CollabPanel({
                     onPlayPressStart={player.playPressStart}
                     onPlayPressEnd={player.playPressEnd}
                     onPlayPressCancel={player.playPressCancel}
+                    onRowClick={(s) => { if (mergeMode) { paintWithBrush(s.id); return } player.seek(s, true) }}
+                    rowStyle={(s, active) => {
+                      const color = mergeMode ? paintColors[s.id] : undefined
+                      return {
+                        background: mergeMode ? (color === 1 ? '#eef4ff' : color === 2 ? '#fff4e6' : '#fff') : active ? '#eef4ff' : 'transparent',
+                        borderLeft: mergeMode ? `3px solid ${color === 1 ? '#1a73e8' : color === 2 ? '#f59e0b' : 'transparent'}` : active ? '3px solid #4285f4' : '3px solid transparent',
+                      }
+                    }}
 renderBody={(s) => {
                       const draft = localEdits[s.id]
                       return <SentenceLine
                         sentence={s}
                         order={speakerOrder}
+                        speakerOnClick={materialView.review_mode ? undefined : (e) => { e.stopPropagation(); cycleLocalSpeaker(s, e.shiftKey) }}
+                        speakerTitle="单击换下一位发言人；Shift + 点击改整段（本地草稿，提交走审批）"
+                        textId={redactMode ? `stext-${s.id}` : undefined}
+                        onTextMouseUp={redactMode ? () => { void markSelection(s) } : undefined}
                         textColor={draft !== undefined ? '#8a5a00' : undefined}
                         tail={<>
                           {draft !== undefined && (
                             <span style={{ fontSize: 10, color: '#8a5a00', background: '#fff4e0', padding: '1px 5px', borderRadius: 4, alignSelf: 'flex-start' }}>本地草稿</span>
+                          )}
+                          {localSpeakerEdits[s.id] !== undefined && (
+                            <span style={{ fontSize: 10, color: '#245c9c', background: '#eef4ff', padding: '1px 5px', borderRadius: 4, alignSelf: 'flex-start' }}>发言人已改</span>
                           )}
                           {!materialView.review_mode && has('view') && (
                             <button
@@ -1273,8 +1635,41 @@ renderBody={(s) => {
                           )}
 
                         </>}
-                      >{draft ?? s.text}</SentenceLine>
+                      >{renderRedactedText(
+                        draft ?? s.text,
+                        redactMarks.filter((m) => m.sentence_id === s.id),
+                        redactMode,
+                        (m) => { void removeRedactMark(m) },
+                      )}</SentenceLine>
                     }}                  />                  )}
+                  {mergeMode && !materialView.review_mode && (
+                    <div style={{ marginTop: 8, border: '1px solid #dce6f2', borderRadius: 8, padding: 8 }}>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 11, color: '#8a8f98' }}>画笔：</span>
+                        {([{ value: 1, label: '蓝', bg: '#1a73e8' }, { value: 0, label: '白', bg: '#fff' }, { value: 2, label: '橙', bg: '#f59e0b' }] as const).map((o) => (
+                          <button key={o.label} onClick={() => setPaintBrush(o.value)}
+                            title={o.value === 0 ? '白色：取消分组' : `${o.label}色：连续的涂色句合并为一组`}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '2px 8px', borderRadius: 12, border: '1px solid #ddd', background: '#fff', cursor: 'pointer', boxShadow: paintBrush === o.value ? '0 0 0 2px #1a73e8' : 'none' }}>
+                            <span style={{ width: 12, height: 12, borderRadius: 3, background: o.bg, border: '1px solid #ccc' }} />{o.label}
+                          </button>
+                        ))}
+                        <span style={{ fontSize: 11, color: '#1a73e8', fontWeight: 600 }}>
+                          {paintCount === 0 ? '尚未分组' : `${paintCount} 句已涂 · ${mergeableGroups.length} 组 · 可减少 ${mergeReducible} 句`}
+                        </span>
+                      </div>
+                      <div style={{ height: 220, overflowY: 'auto', display: 'flex' }}>
+                        <MergePanel
+                          sentences={localSentences()}
+                          groups={mergeableGroups}
+                          reducible={mergeReducible}
+                          busy={merging}
+                          applyLabel={`合并全部（可减少 ${mergeReducible} 句）`}
+                          hint="上方涂色 → 这里显示每组和合并结果；点「合并全部」写入本地分支，提交走 PR。"
+                          onApply={() => { void applyMergeGroups() }}
+                        />
+                      </div>
+                    </div>
+                  )}
                   <div style={{ marginTop: 10 }}>
                     <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4 }}>版本历史</div>
                     {materialView.material.history.map((h, i) => (

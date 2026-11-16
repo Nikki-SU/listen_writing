@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
 import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
 import CollabPanel from './CollabPanel'
@@ -9,7 +8,6 @@ import SettingsPanel from './SettingsPanel'
 import UpdateScreen, { type UpdatePhase } from './UpdateScreen'
 import { jobFor, useModels } from './useModels'
 import { BOOTSTRAP_FILES, BUNDLE_VERSION } from './bootstrapFiles'
-import { speakerColor, SPEAKER_PALETTE } from './speakerColors'
 import CodingPanel from './coding/CodingPanel'
 import AnalysisPanel from './coding/AnalysisPanel'
 import { CodingContext, useCodingSession, useOptionalCoding } from './coding/CodingContext'
@@ -18,10 +16,12 @@ import { useSentencePlayer } from './useSentencePlayer'
 import SentenceLine from './SentenceLine'
 import PolishCompare from './PolishCompare'
 import ResegmentPanel from './ResegmentPanel'
+import SpeakerPanel from './SpeakerPanel'
+import MergePanel from './MergePanel'
+import { selectionRangeById, renderRedactedText } from './redaction'
 import './coding/coding.css'
 import {
   ICON_BTN,
-  CloseIcon,
   EditIcon,
   GearIcon,
   HistoryIcon,
@@ -1146,11 +1146,8 @@ function TranscriptPanel({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [draftSpeaker, setDraftSpeaker] = useState('')
-  const [speakerEdit, setSpeakerEdit] = useState<string | null>(null)
-  const [speakerDraft, setSpeakerDraft] = useState('')
   // 发言人花名册：单独登记名字，才能在“原本只有 1 个发言人”时先加人再拆分。
   const [roster, setRoster] = useState<string[]>(detail.speakers ?? [])
-  const [newSpeakerOpen, setNewSpeakerOpen] = useState(false)
   // 发言人管理浮层：全局的改名/并入/新增/识别都收在这里，由标题栏图标调出。
   const [speakerPanelOpen, setSpeakerPanelOpen] = useState(false)
   const [newSpeakerName, setNewSpeakerName] = useState('')
@@ -1488,7 +1485,6 @@ function TranscriptPanel({
 
   async function renameSpeaker(from: string, to: string) {
     const name = to.trim()
-    setSpeakerEdit(null)
     if (!name || name === from) return
     const snapshot = localSentences
     setLocalSentences((list) => list.map((x) => (x.speaker === from ? { ...x, speaker: name } : x)))
@@ -1557,13 +1553,12 @@ function TranscriptPanel({
     }
   }
 
-  async function addSpeaker() {
-    const name = newSpeakerName.trim()
+  async function addSpeaker(nameArg?: string) {
+    const name = (nameArg ?? newSpeakerName).trim()
     if (!name) return
     try {
       const res = await api.updateSpeakers(projectId, recordingId, { action: 'create', name })
       if (res.speakers) setRoster(res.speakers)
-      setNewSpeakerOpen(false)
       setNewSpeakerName('')
       onError('')
     } catch (e) {
@@ -1658,18 +1653,7 @@ function TranscriptPanel({
 
   /** 从当前选区取出句子内的字符区间（只统计文字，不含任何按钮）。 */
   function selectionRange(s: Sentence): { start: number; end: number } | null {
-    const container = document.getElementById(`stext-${s.id}`)
-    const sel = window.getSelection()
-    if (!container || !sel || sel.isCollapsed || sel.rangeCount === 0) return null
-    const range = sel.getRangeAt(0)
-    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return null
-    const pre = document.createRange()
-    pre.selectNodeContents(container)
-    pre.setEnd(range.startContainer, range.startOffset)
-    const start = pre.toString().length
-    const end = start + range.toString().length
-    if (start >= end) return null
-    return { start, end }
+    return selectionRangeById(`stext-${s.id}`)
   }
 
   async function markSelection(s: Sentence) {
@@ -1785,38 +1769,12 @@ function TranscriptPanel({
   }
 
   function renderText(s: Sentence) {
-    const text = s.text
-    const list = marks
-      .filter((m) => m.sentence_id === s.id && m.start < m.end && m.end <= text.length)
-      .sort((a, b) => a.start - b.start)
-    if (list.length === 0) return text
-    const nodes: ReactNode[] = []
-    let cursor = 0
-    list.forEach((m, i) => {
-      if (m.start < cursor) return
-      if (m.start > cursor) nodes.push(text.slice(cursor, m.start))
-      nodes.push(
-        <span
-          key={`${m.id}-${i}`}
-          title={`${m.category_name}：导出时替换为 ${m.placeholder}${redactMode ? '（点击移除）' : ''}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            if (redactMode) void removeMark(m)
-          }}
-          style={{
-            background: `${m.color}22`,
-            borderBottom: `2px solid ${m.color}`,
-            borderRadius: 3,
-            cursor: redactMode ? 'pointer' : 'text',
-          }}
-        >
-          {text.slice(m.start, m.end)}
-        </span>,
-      )
-      cursor = m.end
-    })
-    if (cursor < text.length) nodes.push(text.slice(cursor))
-    return nodes
+    return renderRedactedText(
+      s.text,
+      marks.filter((m) => m.sentence_id === s.id),
+      redactMode,
+      (m) => { void removeMark(m) },
+    )
   }
 
   // 排队阶段还没内容可看，只给进度；一旦开始出句就进入正文，允许边出边改。
@@ -2005,99 +1963,19 @@ function TranscriptPanel({
         </div>
 
         {/* 发言人管理浮层：从工具栏图标调出，不在正文流里，AI 提示条出现也不会推着它跑 */}
-        {speakerPanelOpen && !coding && (
-          <div className="speaker-panel">
-            <div className="speaker-panel-title">
-              发言人管理
-              <button className="icon-tool" onClick={() => setSpeakerPanelOpen(false)} title="关闭" aria-label="关闭">
-                <CloseIcon size={12} />
-              </button>
-            </div>
-            <div className="speaker-panel-body">
-              {speakers.length === 0 && <div className="speaker-panel-empty">还没有发言人，可以新增或按音色自动识别。</div>}
-              {speakers.map((sp) =>
-                speakerEdit === sp ? (
-                  <div key={sp} className="speaker-edit-row">
-                    <input
-                      autoFocus
-                      value={speakerDraft}
-                      onChange={(e) => setSpeakerDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') setSpeakerEdit(null)
-                        if (e.key === 'Enter') void renameSpeaker(sp, speakerDraft)
-                      }}
-                      style={{ fontSize: 12, width: 110, padding: '2px 5px' }}
-                    />
-                    <button className="text-tool" onClick={() => void renameSpeaker(sp, speakerDraft)}>保存</button>
-                    <button className="text-tool" onClick={() => setSpeakerEdit(null)}>取消</button>
-                    {speakers.length > 1 && (
-                      <select
-                        defaultValue=""
-                        onChange={(e) => {
-                          const into = e.target.value
-                          e.target.value = ''
-                          if (into) void mergeSpeaker(sp, into)
-                        }}
-                        style={{ fontSize: 11 }}
-                        title="把这个发言人的全部句子并入另一个"
-                      >
-                        <option value="">并入…</option>
-                        {speakers.filter((x) => x !== sp).map((x) => (
-                          <option key={x} value={x}>{x}</option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                ) : (
-                  <button
-                    key={sp}
-                    className="speaker-chip"
-                    style={{
-                      background: speakerColor(sp, speakerOrder).bg,
-                      color: speakerColor(sp, speakerOrder).fg,
-                      borderColor: speakerColor(sp, speakerOrder).border,
-                    }}
-                    onClick={() => { setSpeakerEdit(sp); setSpeakerDraft(sp) }}
-                    title="点击改名 / 并入"
-                  >
-                    {sp}
-                  </button>
-                ),
-              )}
-              <div className="speaker-panel-actions">
-                {newSpeakerOpen ? (
-                  <span className="speaker-edit-row">
-                    <input
-                      autoFocus
-                      value={newSpeakerName}
-                      onChange={(e) => setNewSpeakerName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') { setNewSpeakerOpen(false); setNewSpeakerName('') }
-                        if (e.key === 'Enter') void addSpeaker()
-                      }}
-                      placeholder="如：受访者"
-                      style={{ fontSize: 12, width: 110, padding: '2px 5px' }}
-                    />
-                    <button className="text-tool" onClick={() => void addSpeaker()}>添加</button>
-                    <button className="text-tool" onClick={() => { setNewSpeakerOpen(false); setNewSpeakerName('') }}>取消</button>
-                  </span>
-                ) : (
-                  <button className="text-tool" onClick={() => setNewSpeakerOpen(true)}>+ 新增</button>
-                )}
-                <button
-                  className="text-tool"
-                  onClick={() => void detectSpeakersNow()}
-                  disabled={detectingSpeakers || localSentences.length < 3}
-                  title="按音色重新分说话人；会覆盖当前标注并生成新版本"
-                >
-                  {detectingSpeakers ? '识别中…' : speakers.length > 0 ? '重新识别' : '自动识别'}
-                </button>
-              </div>
-              <div className="speaker-panel-hint">点正文里的发言人标签可换下一位（只改这一句）；Shift+点改整段。</div>
-            </div>
-          </div>
+{speakerPanelOpen && !coding && (
+          <SpeakerPanel
+            speakers={speakers}
+            order={speakerOrder}
+            onRename={(from, to) => { void renameSpeaker(from, to) }}
+            onMerge={(from, into) => { void mergeSpeaker(from, into) }}
+            onCreate={(name) => { void addSpeaker(name) }}
+            onDetect={() => { void detectSpeakersNow() }}
+            detecting={detectingSpeakers}
+            detectDisabled={localSentences.length < 3}
+            onClose={() => setSpeakerPanelOpen(false)}
+          />
         )}
-
         {((polishing && !polishOpen) ||
           (resegPreview && !resegOpen && (resegmenting || resegDone))) && (
           <div
@@ -2590,51 +2468,17 @@ function TranscriptPanel({
 
           )}
         />
-        {reviewMode === 'merge' && (
-          <aside style={{ flex: '1 1 0', minWidth: 240, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <h3 style={{ fontSize: 13, margin: '0 0 6px' }}>合并预览（{mergeableGroups.length} 组）</h3>
-            <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 8 }}>
-              左边涂色 → 这里显示每组框住的句子和合并后的内容；点「合并全部」才写入新版本。
-            </div>
-            <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-              {mergeableGroups.length === 0 ? (
-                <div style={{ fontSize: 12, color: '#9aa0a6', marginTop: 20 }}>
-                  还没有分组：在左边用蓝 / 橙画笔点选连续句子（白色表示不合并）。
-                </div>
-              ) : (
-                mergeableGroups.map((ids, gi) => {
-                  const items = ids
-                    .map((id) => localSentences.find((x) => x.id === id))
-                    .filter((x): x is Sentence => Boolean(x))
-                  const chars = items.reduce((n, x) => n + x.text.length, 0)
-                  const tone = SPEAKER_PALETTE[gi % SPEAKER_PALETTE.length]
-                  return (
-                    <div key={gi} style={{ border: `1px solid ${tone.border}`, background: tone.bg, borderRadius: 8, padding: 10, marginBottom: 8 }}>
-                      <div style={{ fontSize: 11, color: tone.fg, marginBottom: 6 }}>
-                        第 {(items[0]?.index ?? 0) + 1}–{(items[items.length - 1]?.index ?? 0) + 1} 句 · {items.length} 句合一
-                      </div>
-                      <div style={{ fontSize: 13, color: '#1e7e34', lineHeight: 1.75 }}>
-                        {items
-                          .map((x) => x.text.trim().replace(/[，。；：、,.!?;:…]+$/, ''))
-                          .join('，')}
-                        。
-                      </div>
-                      <div style={{ marginTop: 6, fontSize: 11, color: '#8a8f98' }}>约 {chars} 字</div>
-                    </div>
-                  )
-                })
-              )}
-            </div>
-            <button
-              onClick={() => void mergeAllGroups()}
-              disabled={mergeReducible === 0 || merging}
-              style={{ marginTop: 8, fontSize: 12, padding: '6px 12px' }}
-            >
-              {merging ? '合并中…' : `合并全部（可减少 ${mergeReducible} 句）`}
-            </button>
-          </aside>
+{reviewMode === 'merge' && (
+          <MergePanel
+            sentences={localSentences}
+            groups={mergeableGroups}
+            reducible={mergeReducible}
+            busy={merging}
+            applyLabel={`合并全部（可减少 ${mergeReducible} 句）`}
+            hint="左边涂色 → 这里显示每组框住的句子和合并后的内容；点「合并全部」才写入新版本。"
+            onApply={() => { void mergeAllGroups() }}
+          />
         )}
-
 {reviewMode === 'resegment' && resegPreview && (
           <ResegmentPanel
             preview={resegPreview}

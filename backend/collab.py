@@ -310,6 +310,8 @@ def create_group(name: str, mode: str, device_code: str, nick: str, code_days: i
         "approvals": [],
         "grants": [],
         "access": [],
+        # 群组级脱敏类别模板（全员共用一套）；深拷贝避免污染 storage 默认。
+        "redaction_categories": json.loads(json.dumps(storage.DEFAULT_REDACTION_CATEGORIES)),
     }
     _save(group)
     _log(group, _member(group, device_code), "create_group", detail=name)
@@ -2059,3 +2061,130 @@ def save_coding_resolution(group_id: str, material_id: str, device_code: str, bo
     _log(group, member, "coding_resolution", material_id, f"{sentence_id}:{chosen}")
     _save(group)
     return {"sentence_id": sentence_id, "resolution": record, "mine": table}
+
+
+# ---- 群组级脱敏（全员共用一套类别模板；标记写进材料快照，提交公认版本仍走 PR）----
+
+def _group_redaction_categories(group: dict) -> list[dict]:
+    """老群组没有该字段时回退默认模板，并写回，保证升级平滑。"""
+    cats = group.get("redaction_categories")
+    if not isinstance(cats, list):
+        cats = json.loads(json.dumps(storage.DEFAULT_REDACTION_CATEGORIES))
+        group["redaction_categories"] = cats
+        _save(group)
+    return cats
+
+
+def get_redaction_categories(group_id: str, device_code: str) -> list[dict]:
+    group = load_group(group_id)
+    _require(group, device_code, "view")
+    return _group_redaction_categories(group)
+
+
+def update_redaction_categories(group_id: str, device_code: str, categories: list) -> list[dict]:
+    group = load_group(group_id)
+    _require(group, device_code, "material")
+    cleaned = []
+    for c in categories:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "").strip()
+        if not name:
+            continue
+        cid = str(c.get("id") or "c" + uuid.uuid4().hex[:8])
+        cleaned.append({
+            "id": cid,
+            "name": name,
+            "color": str(c.get("color") or "#e5484d"),
+            "enabled": bool(c.get("enabled", True)),
+            "placeholder": str(c.get("placeholder") or "").strip() or f"[{name}]",
+        })
+    if not cleaned:
+        raise CollabError("至少保留一个类别", status=400)
+    group["redaction_categories"] = cleaned
+    _log(group, _member(group, device_code), "update_redaction_categories")
+    _save(group)
+    return cleaned
+
+
+def add_material_redactions(group_id: str, material_id: str, device_code: str, incoming: list) -> dict:
+    group = load_group(group_id)
+    member = _require(group, device_code, "edit", material_id)
+    material = next((m for m in group.get("materials", []) if m.get("id") == material_id), None)
+    if material is None:
+        raise CollabError("材料不存在", status=404)
+    by_id = {str(s.get("id")): s for s in material.get("sentences", [])}
+    categories = {str(c.get("id")): c for c in _group_redaction_categories(group)}
+    marks = list(material.get("redactions") or [])
+    added, diff = [], []
+    for item in incoming:
+        if not isinstance(item, dict):
+            raise CollabError("mark 项必须是对象", status=400)
+        sid = str(item.get("sentence_id") or "")
+        target = by_id.get(sid)
+        if target is None:
+            raise CollabError(f"句子不存在：{sid}", status=400)
+        category = categories.get(str(item.get("category_id") or ""))
+        if category is None:
+            raise CollabError("类别不存在，请先在群组脱敏类别里创建", status=400)
+        text = str(target.get("text") or "")
+        try:
+            start, end = int(item.get("start")), int(item.get("end"))
+        except (TypeError, ValueError):
+            raise CollabError("start / end 必须是整数", status=400)
+        while start < end and start < len(text) and text[start].isspace():
+            start += 1
+        while end > start and end <= len(text) and text[end - 1].isspace():
+            end -= 1
+        if start < 0 or end > len(text) or start >= end:
+            raise CollabError("标记位置超出句子范围", status=400)
+        if any(m.get("sentence_id") == sid and start < int(m.get("end", 0)) and end > int(m.get("start", 0)) for m in marks):
+            raise CollabError("与已有脱敏标记重叠", status=400)
+        original = text[start:end]
+        mark = {
+            "id": storage.new_id(),
+            "sentence_id": sid,
+            "start": start,
+            "end": end,
+            "original": original,
+            "category_id": category["id"],
+            "category_name": category["name"],
+            "placeholder": category.get("placeholder") or f"[{category['name']}]",
+            "color": category.get("color", "#e5484d"),
+            "timestamp": _now(),
+        }
+        marks.append(mark)
+        added.append(mark)
+        diff.append({"kind": "redaction", "sentence_id": sid, "index": int(target.get("index", 0)),
+                     "before": original, "after": mark["placeholder"], "category": category["name"]})
+    material["redactions"] = marks
+    material["stale_redactions"] = False
+    material["updated_at"] = _now()
+    _bump_revision(material)
+    message = f"脱敏标记（{len(added)} 处）"
+    _snapshot_history(material, message, member.get("nick", ""), diff)
+    _log(group, member, "add_redactions", material_id, f"{len(added)} 处")
+    _save(group)
+    return {"marks": marks, "material": _material_meta(group, material, member)}
+
+
+def delete_material_redaction(group_id: str, material_id: str, mark_id: str, device_code: str) -> dict:
+    group = load_group(group_id)
+    member = _require(group, device_code, "edit", material_id)
+    material = next((m for m in group.get("materials", []) if m.get("id") == material_id), None)
+    if material is None:
+        raise CollabError("材料不存在", status=404)
+    marks = list(material.get("redactions") or [])
+    target = next((m for m in marks if m.get("id") == mark_id), None)
+    if target is None:
+        raise CollabError("标记不存在", status=404)
+    marks = [m for m in marks if m.get("id") != mark_id]
+    material["redactions"] = marks
+    material["updated_at"] = _now()
+    _bump_revision(material)
+    diff = [{"kind": "redaction", "sentence_id": target.get("sentence_id", ""), "index": 0,
+             "before": target.get("placeholder", ""), "after": target.get("original", ""), "category": target.get("category_name", "")}]
+    _snapshot_history(material, "移除脱敏标记", member.get("nick", ""), diff)
+    _log(group, member, "delete_redaction", material_id)
+    _save(group)
+    return {"marks": marks, "material": _material_meta(group, material, member)}

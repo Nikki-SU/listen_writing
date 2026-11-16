@@ -168,7 +168,7 @@ export type CollabMaterialDetail = {
   material: CollabMaterial & {
     sentences: Sentence[]
     history: { version: string; stage: number; at: string; by: string; message: string }[]
-    redactions: unknown[]
+    redactions: RedactionMark[]
     stale_redactions?: boolean
   }
   can_play: boolean

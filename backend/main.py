@@ -889,6 +889,7 @@ class Handler(BaseHTTPRequestHandler):
                 (parse_qs(urlparse(self.path).query).get("name") or [""])[0],
             )),
             (r"^/api/groups/([^/]+)/materials$", lambda g: collab.list_materials(g, device)),
+            (r"^/api/groups/([^/]+)/redaction$", lambda g: {"categories": collab.get_redaction_categories(g, device)}),
             (r"^/api/groups/([^/]+)/materials/([^/]+)/versions/([^/]+)$", lambda g, mid, v: collab.get_material_version(g, mid, v, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)/coding/coders$", lambda g, mid: collab.list_material_coders(g, mid, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)/coding/compare$", lambda g, mid: collab.material_coding_compare(g, mid, device, str(parse_qs(urlparse(self.path).query).get('other', [''])[0]))),
@@ -2290,6 +2291,87 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(target=run, daemon=True).start()
         self._send_json(_ai_job_get(key), status=202)
 
+    def _detect_material_speakers(self, group_id: str, material_id: str):
+        """协作材料按音色重新识别发言人：只返回新句子，不写主分支（采纳在本地、提交走 PR）。"""
+        data = self._read_json_body()
+        if data is None:
+            return
+        device = self._collab_device(data)
+        try:
+            detail = collab.get_material(group_id, material_id, device)
+        except collab.CollabError as e:
+            self._send_json({"error": str(e)}, status=e.status)
+            return
+        material = detail.get("material") or detail
+        sentences = [dict(s) for s in (material.get("sentences") or [])]
+        if len(sentences) < 3:
+            self._send_json({"error": "句子太少（至少 3 句）才能识别发言人"}, status=409)
+            return
+        # 音频路径：材料自带，或回退到本机来源录音。
+        audio_path = str(material.get("audio_path") or "")
+        if not audio_path or not Path(audio_path).is_file():
+            rid = str(material.get("recording_id") or "")
+            pid = str(material.get("project_id") or "")
+            rec = storage.get_recording(pid, rid) if pid and rid else None
+            if rec and rec.get("audio_path") and Path(str(rec["audio_path"])).is_file():
+                audio_path = str(rec["audio_path"])
+        if not audio_path or not Path(audio_path).is_file():
+            self._send_json({"error": "本机没有这份材料的音频，无法按音色识别；可改用手动改发言人"}, status=409)
+            return
+        if not diarize.assign_speakers(audio_path, sentences):
+            self._send_json({"error": "未能识别出多个说话人（可能是单人录音或音频太短）"}, status=409)
+            return
+        speakers: list[str] = []
+        for s in sentences:
+            sp = str(s.get("speaker") or "")
+            if sp and sp not in speakers:
+                speakers.append(sp)
+        self._send_json({"sentences": sentences, "speakers": speakers})
+
+    def _suggest_material_redactions(self, group_id: str, material_id: str):
+        """协作材料 AI 脱敏建议：复用 llm.redact + 群组类别模板，只返回建议不落盘。"""
+        data = self._read_json_body()
+        if data is None:
+            return
+        device = self._collab_device(data)
+        try:
+            detail = collab.get_material(group_id, material_id, device)
+        except collab.CollabError as e:
+            self._send_json({"error": str(e)}, status=e.status)
+            return
+        material = detail.get("material") or detail
+        sentences = material.get("sentences") or []
+        if not sentences:
+            self._send_json({"error": "没有可检查的句子"}, status=409)
+            return
+        model_key = str(data.get("model") or storage.get_settings().get("llm_model") or llm.DEFAULT_LLM_MODEL)
+        if model_key not in llm.LLM_MODELS:
+            self._send_json({"error": f"未知的 AI 模型：{model_key}"}, status=400)
+            return
+        if not llm.runtime_available():
+            self._send_json({"error": llm.RUNTIME_MISSING_MSG}, status=503)
+            return
+        if llm.model_file(model_key) is None:
+            self._send_json({
+                "error": f"AI 模型尚未下载，请先在设置里下载",
+                "need_download": {"kind": "llm", "key": model_key},
+            }, status=409)
+            return
+        categories = [c for c in collab.get_redaction_categories(group_id, device) if c.get("enabled", True) is not False]
+        if not categories:
+            self._send_json({"error": "群组尚未启用任何脱敏类别"}, status=409)
+            return
+        asked = data.get("categories")
+        if isinstance(asked, list) and asked:
+            wanted = {str(c) for c in asked}
+            categories = [c for c in categories if str(c.get("id")) in wanted]
+        try:
+            suggestions = llm.redact(sentences, categories, model_key)
+        except Exception as e:  # noqa: BLE001
+            self._send_json({"error": f"AI 脱敏失败：{e}"}, status=503)
+            return
+        self._send_json({"suggestions": suggestions, "model": model_key})
+
     def _resegment_recording(self, project_id: str, recording_id: str):
         """AI 整理断句：把按停顿切碎的片段合并成人类可读的句子。
 
@@ -3031,6 +3113,43 @@ class Handler(BaseHTTPRequestHandler):
             self._detect_speakers(*m)
             return
 
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/speakers/detect$")
+        if m:
+            self._detect_material_speakers(*m)
+            return
+
+        # 协作材料脱敏：新增标记 / AI 建议 / 群组类别模板。
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/redactions/suggest$")
+        if m:
+            self._suggest_material_redactions(*m)
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/redactions$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            marks = data.get("marks")
+            if not isinstance(marks, list) or not marks:
+                self._send_json({"error": "marks 必须是非空数组"}, status=400)
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.add_material_redactions(m[0], m[1], device, marks))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/redaction$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            cats = data.get("categories")
+            if not isinstance(cats, list):
+                self._send_json({"error": "categories 必须是数组"}, status=400)
+                return
+            self._collab_call(lambda: collab.update_redaction_categories(m[0], device, cats))
+            return
+
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/sentences/merge$")
         if m:
             self._merge_sentences(*m)
@@ -3113,6 +3232,12 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)$")
         if m:
             self._delete_recording(*m)
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/redactions/([^/]+)$")
+        if m:
+            self._collab_call(lambda: collab.delete_material_redaction(
+                m[0], m[1], m[2], self._collab_device()))
             return
 
         m = _match(path, r"^/api/groups/([^/]+)/members/([^/]+)$")

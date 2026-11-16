@@ -264,6 +264,71 @@ export async function cancelMaterialResegmentJob(groupId: string, materialId: st
   )
 }
 
+/** 协作材料按音色重新识别发言人：只返回新句子序列，采纳写入本地分支、提交走 PR。 */
+export async function detectMaterialSpeakers(
+  groupId: string, materialId: string, deviceCode: string,
+): Promise<{ sentences: Sentence[]; speakers: string[] }> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/speakers/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_code: deviceCode }),
+    }),
+  )
+}
+
+// ---- 协作材料脱敏（群组级类别模板，标记写进材料快照，提交公认版本走 PR）----
+export async function fetchGroupRedactionCategories(groupId: string): Promise<RedactionCategory[]> {
+  const data = await json<{ categories: RedactionCategory[] }>(
+    await fetch(`${BACKEND}/api/groups/${groupId}/redaction`),
+  )
+  return data.categories
+}
+
+export async function updateGroupRedactionCategories(
+  groupId: string, categories: RedactionCategory[], deviceCode: string,
+): Promise<RedactionCategory[]> {
+  const data = await json<{ categories: RedactionCategory[] }>(
+    await fetch(`${BACKEND}/api/groups/${groupId}/redaction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ categories, device_code: deviceCode }),
+    }),
+  )
+  return data.categories
+}
+
+export async function addMaterialRedactions(
+  groupId: string, materialId: string, deviceCode: string,
+  marks: { sentence_id: string; start: number; end: number; category_id: string }[],
+): Promise<{ marks: RedactionMark[] }> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/redactions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ marks, device_code: deviceCode }),
+  }))
+}
+
+export async function deleteMaterialRedaction(
+  groupId: string, materialId: string, markId: string, deviceCode: string,
+): Promise<{ marks: RedactionMark[] }> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/redactions/${markId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_code: deviceCode }),
+  }))
+}
+
+export async function suggestMaterialRedactions(
+  groupId: string, materialId: string, deviceCode: string,
+): Promise<{ suggestions: RedactionSuggestion[] }> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/redactions/suggest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_code: deviceCode }),
+  }))
+}
+
 /** 告诉后端「这条建议已处理」：轮询时不再把它塞回来，任务跑完也不会重现。 */
 export async function dismissPolishSuggestion(
   projectId: string,
