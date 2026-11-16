@@ -828,6 +828,16 @@ export default function CollabPanel({
     })
   }
 
+  async function onSubmitDeleteSentence(s: Sentence) {
+    if (!selected || !materialView) return
+    if (!window.confirm(`提交删除第 ${s.index + 1} 句的提案？合并后生效，可在历史里找回。`)) return
+    await run(async () => {
+      await api.createDeleteProposal(selected.id, materialView.material.id, s.id)
+      setNotice('删除提案已提交，等待合并')
+      await loadGroup(selected.id)
+    })
+  }
+
   async function onBatchMerge(ids: string[] | null, mineOnly = false) {
     if (!selected) return
     await run(async () => {
@@ -1579,6 +1589,15 @@ renderBody={(s) => {
                               <EditIcon />
                             </button>
                           )}
+                          {!materialView.review_mode && has('submit') && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); void onSubmitDeleteSentence(s) }}
+                              title="提交删除这一句的提案（合并后生效）"
+                              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 22, alignSelf: 'flex-start', color: '#b00020', border: '1px solid #f0c9cc', borderRadius: 4, background: '#fff', flexShrink: 0, padding: 0 }}
+                            >
+                              ×
+                            </button>
+                          )}
                         </>}
                         below={<>
                           {editSentence?.id === s.id && (
@@ -2052,13 +2071,14 @@ renderBody={(s) => {
                           )}
                           <span>
                             第 {p.index + 1} 句 · {p.by || p.by_device} · {fmtTime(p.created_at)} ·{' '}
+                            {p.kind === 'delete' && <span style={{ color: '#b00020', marginRight: 4 }}>[删除]</span>}
                             <span style={{ color: p.status === 'conflict' ? '#b00020' : p.status === 'accepted' ? '#1e7e34' : p.status === 'rejected' ? '#999' : '#8a5a00' }}>
                               {p.status === 'pending' ? '待合并' : p.status === 'accepted' ? '已合并' : p.status === 'rejected' ? '已拒绝' : '有冲突'}
                             </span>
                           </span>
                         </div>
                         <div style={{ fontSize: 12, color: '#b00020', textDecoration: 'line-through', lineHeight: 1.6 }}>{p.before}</div>
-                        <div style={{ fontSize: 12, color: '#1e7e34', lineHeight: 1.6 }}>{p.after}</div>
+                        {p.kind !== 'delete' && <div style={{ fontSize: 12, color: '#1e7e34', lineHeight: 1.6 }}>{p.after}</div>}
                         {p.conflict_text && (
                           <div style={{ fontSize: 11, color: '#8a5a00', marginTop: 3 }}>当前正文已变为：{p.conflict_text}</div>
                         )}

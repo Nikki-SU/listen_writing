@@ -950,6 +950,41 @@ def create_proposal(group_id: str, material_id: str, sentence_id: str, after: st
     return proposal
 
 
+def create_delete_proposal(group_id: str, material_id: str, sentence_id: str, device_code: str) -> dict:
+    """提交「删除这一句」提案：不直接改材料，等有 merge 权限者审批。"""
+    group = load_group(group_id)
+    actor = _require(group, device_code, "submit", material_id, consume=False)
+    material = next((m for m in group.get("materials", []) if m.get("id") == material_id), None)
+    if material is None:
+        raise CollabError("材料不存在", status=404)
+    target = next((s for s in material.get("sentences", []) if str(s.get("id")) == sentence_id), None)
+    if target is None:
+        raise CollabError("句子不存在", status=404)
+    # 已有同句待处理的删除提案就不重复建。
+    if any(p.get("material_id") == material_id and p.get("sentence_id") == sentence_id
+           and p.get("kind") == "delete" and p.get("status") in ("pending", "conflict")
+           for p in group.get("proposals", [])):
+        raise CollabError("这句已有待处理的删除提案", status=409)
+    _grant_for(group, actor, "submit", material_id)
+    proposal = {
+        "id": storage.new_id(),
+        "material_id": material_id,
+        "sentence_id": sentence_id,
+        "index": int(target.get("index", 0)),
+        "before": target.get("text", ""),
+        "after": "",
+        "kind": "delete",
+        "by_device": actor.get("device_code"),
+        "by": actor.get("nick", ""),
+        "created_at": _now(),
+        "status": "pending",
+    }
+    group.setdefault("proposals", []).append(proposal)
+    _log(group, actor, "create_delete_proposal", material_id, f"第 {proposal['index'] + 1} 句")
+    _save(group)
+    return proposal
+
+
 def list_proposals(group_id: str, device_code: str) -> dict:
     group = load_group(group_id)
     member = _member(group, device_code)
@@ -1049,11 +1084,38 @@ def decide_proposal(group_id: str, proposal_id: str, accept: bool, device_code: 
     if material is None:
         raise CollabError("材料不存在", status=404)
     target = next((s for s in material.get("sentences", []) if s.get("id") == proposal.get("sentence_id")), None)
+    is_delete = proposal.get("kind") == "delete"
     if target is None:
+        # 删除提案对应的句子已不存在：视为已生效，批准结案（重复点不再报错）。
+        if is_delete and accept:
+            proposal.update({"status": "accepted", "decided_by": actor.get("nick", ""), "decided_at": _now(), "conflict_text": ""})
+            _save(group)
+            return {"proposal": proposal, "material": _material_meta(group, material, actor)}
         raise CollabError("句子已不存在", status=409)
     if not accept:
         proposal.update({"status": "rejected", "decided_by": actor.get("nick", ""), "decided_at": _now()})
         _log(group, actor, "reject_proposal", material["id"], f"第 {proposal['index'] + 1} 句")
+        _save(group)
+        return {"proposal": proposal, "material": _material_meta(group, material, actor)}
+    # 删除：从材料里真正移除该句、重排 index、清标记，记一条 op=delete 的历史。
+    if is_delete:
+        sid = str(target.get("id", ""))
+        before_text = target.get("text", "")
+        idx = int(target.get("index", 0))
+        material["sentences"] = [s for s in material["sentences"] if str(s.get("id")) != sid]
+        for i, s in enumerate(material["sentences"]):
+            s["index"] = i
+        material["redactions"] = [m for m in material.get("redactions", []) if m.get("sentence_id") != sid]
+        material["base_sentences"] = [s for s in material.get("base_sentences", []) if str(s.get("id")) != sid]
+        material["version"] = _version_next(material.get("version", "2.0"))
+        material["updated_at"] = _now()
+        _bump_revision(material)
+        diff = [{"sentence_id": sid, "index": idx, "op": "delete", "before": before_text, "after": None}]
+        message = f"删除第 {idx + 1} 句（{proposal.get('by', '')} 提交）"
+        _snapshot_history(material, message, actor.get("nick", ""), diff)
+        _writeback(material, message, diff)
+        proposal.update({"status": "accepted", "decided_by": actor.get("nick", ""), "decided_at": _now(), "conflict_text": ""})
+        _log(group, actor, "merge_delete_proposal", material["id"], f"第 {idx + 1} 句")
         _save(group)
         return {"proposal": proposal, "material": _material_meta(group, material, actor)}
     # 不同句子的提案天然可并行合并；同一句被改两次时才需要人工判断。

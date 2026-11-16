@@ -204,6 +204,8 @@ export type CollabProposal = {
   index: number
   before: string
   after: string
+  /** text=改文字；delete=删除整句；coding=编码改动。 */
+  kind?: 'text' | 'delete' | 'coding'
   by_device: string
   by: string
   created_at: string

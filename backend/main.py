@@ -2948,6 +2948,13 @@ class Handler(BaseHTTPRequestHandler):
             self._collab_call(lambda: collab.save_material_coding(m[0], m[1], device, data))
             return
 
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/sentences/([^/]+)/delete-proposal$")
+        if m:
+            data = self._read_json_body() or {}
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.create_delete_proposal(m[0], m[1], m[2], device))
+            return
+
         m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/proposals$")
         if m:
             data = self._read_json_body()

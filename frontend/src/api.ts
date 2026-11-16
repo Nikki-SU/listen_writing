@@ -1005,6 +1005,19 @@ export async function saveGroupCodingResolution(
   )
 }
 
+/** 提交「删除这一句」提案，等有审批权者合并后生效。 */
+export async function createDeleteProposal(
+  groupId: string, materialId: string, sentenceId: string,
+): Promise<CollabProposal> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/sentences/${sentenceId}/delete-proposal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+  )
+}
+
 export async function createProposal(
   groupId: string,
   materialId: string,
