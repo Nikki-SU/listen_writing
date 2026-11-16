@@ -291,6 +291,31 @@ export function deleteCode(store: CodingStore, codeId: string): CodingStore {
   }
 }
 
+/**
+ * 批量删除多个码：连同它们名下的全部编码一起删。
+ * 被删码的子码若未被选中，上提到被删码原来的父级（父码被删时保持树完整）。
+ */
+export function deleteCodes(store: CodingStore, codeIds: string[]): CodingStore {
+  const doomed = new Set(codeIds)
+  if (!doomed.size) return store
+  const surviving = store.codes.filter((c) => !doomed.has(c.id))
+  const survivingIds = new Set(surviving.map((c) => c.id))
+  const codes = surviving.map((c) => {
+    // 父码被删了但自己活着：上提到最近的存活祖先。
+    let parent = c.parent_id
+    while (parent && !survivingIds.has(parent)) {
+      parent = store.codes.find((x) => x.id === parent)?.parent_id ?? null
+    }
+    return parent === c.parent_id ? c : { ...c, parent_id: parent }
+  })
+  return {
+    ...store,
+    codebook: { ...store.codebook, updated_at: now() },
+    codes,
+    codings: store.codings.filter((c) => !doomed.has(c.code_id)),
+  }
+}
+
 /** 移动码到另一个父级；拒绝移到自己或自己的后代，避免树成环。 */
 export function moveCode(store: CodingStore, codeId: string, parentId: string | null): CodingStore {
   const code = store.codes.find((c) => c.id === codeId)

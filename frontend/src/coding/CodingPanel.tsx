@@ -14,6 +14,9 @@ export default function CodingPanel() {
   const [newCodeName, setNewCodeName] = useState('')
   const [dragCodeId, setDragCodeId] = useState<string | null>(null)
   const [dropCodeId, setDropCodeId] = useState<string | null>(null)
+  // 码本多选：一次勾选多个码批量删（测试阶段清理一批试码用），区别于双击正文的单处删除。
+  const [multiSelect, setMultiSelect] = useState(false)
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set())
 
   if (!coding) return null
 
@@ -43,6 +46,7 @@ export default function CodingPanel() {
     attachNewCode,
     removeCoding,
     deleteCodeById,
+    deleteCodesById,
     moveCodeTo,
     submitCodeInput,
     createTopCode,
@@ -77,7 +81,29 @@ export default function CodingPanel() {
       .sort((a, b) => countOf(b.id) - countOf(a.id) || a.name.localeCompare(b.name, 'zh'))
       .flatMap((code) => {
         const count = countOf(code.id)
-        const row = (
+        const checked = selectedCodes.has(code.id)
+        const row = multiSelect ? (
+          <button
+            key={code.id}
+            type="button"
+            className={`coding-tree-row${checked ? ' checked' : ''}`}
+            style={{ paddingLeft: 8 + depth * 16 }}
+            title={checked ? '取消选中' : '选中这个码（连同它的编码一起删）'}
+            onClick={() => {
+              setSelectedCodes((prev) => {
+                const next = new Set(prev)
+                if (next.has(code.id)) next.delete(code.id)
+                else next.add(code.id)
+                return next
+              })
+            }}
+          >
+            <span className={`coding-checkbox${checked ? ' on' : ''}`}>{checked ? '✓' : ''}</span>
+            <span className="coding-dot" style={{ background: code.color }} />
+            <span className="coding-tree-name">{code.name}</span>
+            <span className="coding-tree-count">{count}</span>
+          </button>
+        ) : (
           <button
             key={code.id}
             type="button"
@@ -86,7 +112,7 @@ export default function CodingPanel() {
               dragCodeId === code.id ? ' dragging' : ''
             }${dropCodeId === code.id ? ' dnd-over' : ''}`}
             style={{ paddingLeft: 8 + depth * 16 }}
-            title="单击查看 · 双击删除 · 拖到另一个码上就变成它的子码"
+            title="单击查看 · 双击删除整个码（连同它的所有编码）· 拖到另一个码上变成它的子码"
             onClick={() => {
               setActiveCodeId(code.id)
               setRightTab('codebook')
@@ -355,6 +381,47 @@ export default function CodingPanel() {
     return (
       <div className="coding-inspector-body">
         <SideTitle extra={`${store.codes.length} 个码`}>码本</SideTitle>
+        {/* 批量删除：多选模式一次选中多个码删掉；区别于双击正文删单处编码。 */}
+        <div className="coding-bulk-bar">
+          <button
+            type="button"
+            className={`coding-ghost-btn${multiSelect ? ' on' : ''}`}
+            onClick={() => {
+              setMultiSelect((v) => !v)
+              setSelectedCodes(new Set())
+            }}
+            title="多选模式：一次勾选多个码批量删除"
+          >
+            {multiSelect ? '退出多选' : '多选删除'}
+          </button>
+          {multiSelect && (
+            <>
+              <button
+                type="button"
+                className="coding-ghost-btn"
+                onClick={() => setSelectedCodes(new Set(store.codes.filter((c) => c.status === 'active').map((c) => c.id)))}
+              >
+                全选
+              </button>
+              <span className="coding-bulk-count">已选 {selectedCodes.size}</span>
+              <button
+                type="button"
+                className="coding-danger-btn"
+                disabled={selectedCodes.size === 0}
+                title="删除选中的码及其名下全部编码"
+                onClick={() => {
+                  const affected = store.codings.filter((c) => selectedCodes.has(c.code_id)).length
+                  if (!window.confirm(`删除 ${selectedCodes.size} 个码、${affected} 条编码？此操作不可撤销。`)) return
+                  deleteCodesById(Array.from(selectedCodes))
+                  setSelectedCodes(new Set())
+                  setMultiSelect(false)
+                }}
+              >
+                删除 {selectedCodes.size} 个码
+              </button>
+            </>
+          )}
+        </div>
         <div className="coding-code-search">
           <input
             value={newCodeName}

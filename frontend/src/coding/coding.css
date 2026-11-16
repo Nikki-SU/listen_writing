@@ -476,6 +476,17 @@
   flex-direction: column;
 }
 
+/* 码本批量删除：多选工具条与勾选框 */
+.coding-bulk-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.coding-ghost-btn.on { border-color: #8ab4f8 !important; color: #245c9c !important; background: #eef5ff !important; }
+.coding-bulk-count { font-size: 11px; color: #8a8f98; }
+.coding-checkbox {
+  width: 14px; height: 14px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid #bcc2cc; border-radius: 3px; background: #fff; color: #fff; font-size: 11px; line-height: 1;
+}
+.coding-checkbox.on { background: #245c9c; border-color: #245c9c; }
+.coding-tree-row.checked { background: #eef5ff; }
+
 .coding-inspector-scroll {
   flex: 1;
   min-height: 0;

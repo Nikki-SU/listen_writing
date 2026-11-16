@@ -18,6 +18,7 @@ import {
   codingsFor,
   countCodings,
   deleteCode,
+  deleteCodes,
   documentId,
   ensureDocument,
   hydrateCodingStore,
@@ -311,6 +312,13 @@ export function useCodingSession(
     setActiveCodingId(null)
   }, [])
 
+  /** 批量删除多个码：连同各自名下全部编码一起删（测试阶段清理一次性码用）。 */
+  const deleteCodesById = useCallback((codeIds: string[]) => {
+    setStore((prev) => deleteCodes(prev, codeIds))
+    setActiveCodeId((cur) => (codeIds.includes(cur || '') ? null : cur))
+    setActiveCodingId(null)
+  }, [])
+
   /** 拖拽 / 下拉移动码：只改父子层级，不手排同级顺序。 */
   const moveCodeTo = useCallback((codeId: string, parentId: string | null) => {
     setStore((prev) => moveCode(prev, codeId, parentId))
@@ -508,6 +516,7 @@ export function useCodingSession(
     attachNewCode,
     removeCoding,
     deleteCodeById,
+    deleteCodesById,
     moveCodeTo,
     submitCodeInput,
     createTopCode,
