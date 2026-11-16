@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
-import SentenceRow from './SentenceRow'
+import { TranscriptAudio, TranscriptList } from './TranscriptBody'
+import { useSentencePlayer } from './useSentencePlayer'
 import {
   DownloadIcon,
   EnterIcon,
@@ -162,6 +163,8 @@ export default function CollabPanel({
   const [localEdits, setLocalEdits] = useState<Record<string, string>>({})
   const [localEditing, setLocalEditing] = useState<Sentence | null>(null)
   const [localText, setLocalText] = useState('')
+  // 播放逻辑与本地录音共用同一个 hook（播放器行为只有一份，杜绝两套）。
+  const player = useSentencePlayer(materialView?.material.sentences ?? [], groupAudioRef)
   const [mergeConflicts, setMergeConflicts] = useState<{
     sentence_id: string
     index: number
@@ -343,22 +346,6 @@ export default function CollabPanel({
     } finally {
       setChatSending(false)
     }
-  }
-
-  // 点句子只播这一句：复用同一个 audio，seek 到起点、到句尾暂停。
-  function playOneSentence(s: Sentence) {
-    const a = groupAudioRef.current
-    if (!a || !s.start_ms) return
-    a.currentTime = (s.start_ms || 0) / 1000
-    const end = (s.end_ms || 0) / 1000
-    void a.play()
-    const stop = () => {
-      if (end > 0 && a.currentTime >= end) {
-        a.pause()
-        a.removeEventListener('timeupdate', stop)
-      }
-    }
-    a.addEventListener('timeupdate', stop)
   }
 
   async function selectGroup(id: string) {
@@ -975,14 +962,12 @@ export default function CollabPanel({
                   )}
 
                   {materialView.can_play && materialView.approval ? (
-                    <audio
-                      ref={groupAudioRef}
-                      controls
-                      preload="metadata"
-                      src={api.groupAudioUrl(selected.id, materialView.material.id, materialView.approval.id)}
+                    <TranscriptAudio
+                      audioRef={groupAudioRef}
+                      onTimeUpdate={player.onTimeUpdate}
+                      audioUrl={api.groupAudioUrl(selected.id, materialView.material.id, materialView.approval.id)}
                       onPlay={() => { burnStarted.current = true }}
                       onEnded={() => { burnStarted.current = false; void onConsume(materialView.approval!.id) }}
-                      style={{ width: '100%', height: 36, marginBottom: 10 }}
                     />
                   ) : has('view') && materialView.material.has_audio ? (
                     <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10 }}>
@@ -1035,18 +1020,15 @@ export default function CollabPanel({
                       />
                     </div>
                   ) : (
-<ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, border: '1px solid #eee', borderRadius: 8, overflowY: 'auto', minHeight: 0 }}>
-                    {materialView.material.sentences.map((s) => {
+<TranscriptList
+                    sentences={materialView.material.sentences}
+                    activeId={player.activeId}
+                    onPlayPressStart={player.playPressStart}
+                    onPlayPressEnd={player.playPressEnd}
+                    onPlayPressCancel={player.playPressCancel}
+                    renderBody={(s) => {
                       const draft = localEdits[s.id]
-                      return (
-                      <SentenceRow
-                        key={s.id}
-                        sentence={s}
-                        playButton={
-                          <button type="button" title="播这一句" onClick={(e) => { e.stopPropagation(); playOneSentence(s) }}
-                            style={{ flexShrink: 0, fontSize: 12, lineHeight: 1.2, padding: '3px 8px', alignSelf: 'flex-start', color: '#1d4ed8', background: '#eef4ff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>▶</button>
-                        }
-                        body={<>
+                      return <>
                           {s.speaker && <span style={{ fontSize: 11, color: '#245c9c', marginRight: 6 }}>{s.speaker}</span>}
                           <span style={{ fontSize: 13, lineHeight: 1.7, color: draft !== undefined ? '#8a5a00' : undefined }}>{draft ?? s.text}</span>
                           {draft !== undefined && (
@@ -1126,12 +1108,10 @@ export default function CollabPanel({
                             </div>
                           )}
 
-                        </>}
-                      />
-                      )
-                    })}
-                  </ul>                  )}
 
+                      </>
+                    }}
+                  />                  )}
                   <div style={{ marginTop: 10 }}>
                     <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4 }}>版本历史</div>
                     {materialView.material.history.map((h, i) => (

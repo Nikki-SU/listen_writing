@@ -13,7 +13,8 @@ import { speakerColor, SPEAKER_PALETTE } from './speakerColors'
 import CodingPanel from './coding/CodingPanel'
 import AnalysisPanel from './coding/AnalysisPanel'
 import { CodingContext, useCodingSession, useOptionalCoding } from './coding/CodingContext'
-import SentenceRow from './SentenceRow'
+import { TranscriptAudio, TranscriptList } from './TranscriptBody'
+import { useSentencePlayer } from './useSentencePlayer'
 import './coding/coding.css'
 import {
   ICON_BTN,
@@ -1151,7 +1152,6 @@ function TranscriptPanel({
   const coding = useOptionalCoding()
   const [localSentences, setLocalSentences] = useState<Sentence[]>(sentences)
   const [version, setVersion] = useState(recording.version?.current ?? '')
-  const [activeId, setActiveId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [draftSpeaker, setDraftSpeaker] = useState('')
@@ -1207,12 +1207,9 @@ function TranscriptPanel({
   const audioRef = useRef<HTMLAudioElement>(null)
   // 本轮已被用户接受/忽略的建议：轮询回来时过滤掉，避免「点了接受又弹回来」。
   const decidedRef = useRef<Set<string>>(new Set())
-  // 点句播放的“只播这一句”上限；长按或点整行时清空，改为连播
-  const sentenceStopRef = useRef<number | null>(null)
-  // timeupdate 约 250ms 才触发一次，单句播放可能多播小半句；再用 rAF 逐帧卡停。
-  const sentenceStopRaf = useRef<number | null>(null)
-  const playPressTimer = useRef<number | null>(null)
-  const playLongPressed = useRef(false)
+  // 播放逻辑与协作材料共用同一个 hook（播放器行为只有一份，杜绝两套）。
+  const player = useSentencePlayer(localSentences, audioRef)
+  const { activeId, setActiveId, seek } = player
 
   const llmKey = polishModel || 'qwen3-4b'
   const llmModelInfo = modelState?.llm.find((m) => m.id === llmKey)
@@ -1273,95 +1270,6 @@ function TranscriptPanel({
       cancelled = true
     }
   }, [])
-
-  // 播放时按时间定位当前句，滚动跟随（流式浏览用滚动）
-  function onTimeUpdate() {
-    const audio = audioRef.current
-    if (!audio) return
-    const ms = audio.currentTime * 1000
-    const stopAt = sentenceStopRef.current
-    if (stopAt != null && ms >= stopAt) {
-      sentenceStopRef.current = null
-      audio.pause()
-    }
-    const current = localSentences.find((s) => ms >= s.start_ms && ms < s.end_ms)
-    if (current && current.id !== activeId) {
-      setActiveId(current.id)
-      const el = document.getElementById(`sentence-${current.id}`)
-      el?.scrollIntoView({ block: 'nearest' })
-    }
-  }
-
-  function stopSentenceRaf() {
-    if (sentenceStopRaf.current != null) {
-      cancelAnimationFrame(sentenceStopRaf.current)
-      sentenceStopRaf.current = null
-    }
-  }
-
-  // 离开页面时别让 rAF 循环继续跑
-  useEffect(() => () => stopSentenceRaf(), [])
-
-  function seek(s: Sentence, onlyThis = false) {
-    setActiveId(s.id)
-    const audio = audioRef.current
-    if (!audio) return
-    stopSentenceRaf()
-    const stopMs = onlyThis ? s.end_ms : null
-    sentenceStopRef.current = stopMs
-    audio.currentTime = s.start_ms / 1000
-    void audio
-      .play()
-      .then(() => {
-        // play() 真正开始后再逐帧检查，避免「播放还没起来就判定 paused 而退出」
-        if (stopMs == null || sentenceStopRef.current !== stopMs) return
-        const tick = () => {
-          const el = audioRef.current
-          if (!el || el.paused || sentenceStopRef.current !== stopMs) {
-            sentenceStopRaf.current = null
-            return
-          }
-          if (el.currentTime * 1000 >= stopMs) {
-            el.pause()
-            sentenceStopRef.current = null
-            sentenceStopRaf.current = null
-            return
-          }
-          sentenceStopRaf.current = requestAnimationFrame(tick)
-        }
-        sentenceStopRaf.current = requestAnimationFrame(tick)
-      })
-      .catch(() => {
-        // 浏览器可能因权限/格式拒绝自动播放，用户可手点播放按钮
-      })
-  }
-
-  // 句子前的 ▶：点一下只播这一句；长按从这一句开始连播
-  function playPressStart(s: Sentence) {
-    playLongPressed.current = false
-    if (playPressTimer.current != null) window.clearTimeout(playPressTimer.current)
-    playPressTimer.current = window.setTimeout(() => {
-      playLongPressed.current = true
-      seek(s)
-    }, 450)
-  }
-
-  function playPressEnd(s: Sentence) {
-    if (playPressTimer.current != null) {
-      window.clearTimeout(playPressTimer.current)
-      playPressTimer.current = null
-    }
-    if (!playLongPressed.current) seek(s, true)
-    playLongPressed.current = false
-  }
-
-  function playPressCancel() {
-    if (playPressTimer.current != null) {
-      window.clearTimeout(playPressTimer.current)
-      playPressTimer.current = null
-    }
-    playLongPressed.current = false
-  }
 
   function startEdit(s: Sentence, prefill?: string, origin: 'ai_polish' | null = null) {
     setEditingId(s.id)
@@ -2334,13 +2242,10 @@ function TranscriptPanel({
           </div>
         )}
 
-        <audio
-          ref={audioRef}
-          src={api.audioUrl(projectId, recordingId)}
-          controls
-          preload="metadata"
-          onTimeUpdate={onTimeUpdate}
-          style={{ width: '100%', height: 36, marginBottom: 10 }}
+        <TranscriptAudio
+          audioRef={audioRef}
+          audioUrl={api.audioUrl(projectId, recordingId)}
+          onTimeUpdate={player.onTimeUpdate}
         />
 
         {redactMode && (
@@ -2709,68 +2614,29 @@ function TranscriptPanel({
           </div>
         ) : (
           <>
-        <ul className="scroll-hidden" style={{ listStyle: 'none', margin: 0, padding: 0, overflowY: 'auto', flex: 1, minWidth: 0, minHeight: 0 }}>
-          {localSentences.map((s) => {
-            const active = s.id === activeId
+<TranscriptList
+          sentences={localSentences}
+          activeId={activeId}
+          onPlayPressStart={player.playPressStart}
+          onPlayPressEnd={player.playPressEnd}
+          onPlayPressCancel={player.playPressCancel}
+          onRowClick={(s) => {
+            if (mergeMode) { paintWithBrush(s.id); return }
+            setActiveId(s.id)
+            coding?.selectSentence(s.id)
+          }}
+          rowStyle={(s, active) => {
             const color = mergeMode ? paintColors[s.id] : undefined
-            return (
-              <SentenceRow
-                key={s.id}
-                sentence={s}
-                id={`sentence-${s.id}`}
-                active={active}
-                onClick={() => {
-                  if (mergeMode) {
-                    paintWithBrush(s.id)
-                    return
-                  }
-                  // 点句子只选中，不播放；播放只由左侧播放键触发，避免误触开读。
-                  setActiveId(s.id)
-                  coding?.selectSentence(s.id)
-                }}
-                style={{
-                  background: mergeMode
-                    ? color === 1 ? '#eef4ff' : color === 2 ? '#fff4e6' : '#fff'
-                    : active ? '#eef4ff' : 'transparent',
-                  borderLeft: mergeMode
-                    ? `3px solid ${color === 1 ? '#1a73e8' : color === 2 ? '#f59e0b' : 'transparent'}`
-                    : active ? '3px solid #4285f4' : '3px solid transparent',
-                }}
-                playButton={
-                  <button
-                    type="button"
-                    title="点一下只播这一句；长按从这一句开始连播"
-                    onPointerDown={(e) => {
-                      e.stopPropagation()
-                      playPressStart(s)
-                    }}
-                    onPointerUp={(e) => {
-                      e.stopPropagation()
-                      playPressEnd(s)
-                    }}
-                    onPointerLeave={playPressCancel}
-                    onPointerCancel={playPressCancel}
-                    onContextMenu={(e) => e.preventDefault()}
-                    onClick={(e) => e.stopPropagation()}
-                    style={{
-                      flexShrink: 0,
-                      fontSize: 12,
-                      lineHeight: 1.2,
-                      padding: '3px 8px',
-                      alignSelf: 'flex-start',
-                      color: '#1d4ed8',
-                      background: '#eef4ff',
-                      border: 'none',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                      touchAction: 'manipulation',
-                      userSelect: 'none',
-                    }}
-                  >
-                    ▶
-                  </button>
-                }
-                body={
+            return {
+              background: mergeMode
+                ? color === 1 ? '#eef4ff' : color === 2 ? '#fff4e6' : '#fff'
+                : active ? '#eef4ff' : 'transparent',
+              borderLeft: mergeMode
+                ? `3px solid ${color === 1 ? '#1a73e8' : color === 2 ? '#f59e0b' : 'transparent'}`
+                : active ? '3px solid #4285f4' : '3px solid transparent',
+            }
+          }}
+          renderBody={(s) => (
                   editingId === s.id ? (
                     <div className="transcript-edit" onClick={(e) => e.stopPropagation()}>
                       <textarea
@@ -2881,8 +2747,8 @@ function TranscriptPanel({
                       })()}
                     </div>
                   )
-                }
-                gutter={
+          )}
+          renderGutter={(s) => (
                   coding ? (
                     <span
                       title={`本句编码密度 ${Math.round(coding.coverageOf(s) * 100)}%`}
@@ -2904,12 +2770,9 @@ function TranscriptPanel({
                       }}
                     />
                   ) : undefined
-                }
-              />
-            )
-          })}
-        </ul>
 
+          )}
+        />
         {reviewMode === 'merge' && (
           <aside style={{ flex: '1 1 0', minWidth: 240, borderLeft: '1px solid #eee', paddingLeft: 14, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <h3 style={{ fontSize: 13, margin: '0 0 6px' }}>合并预览（{mergeableGroups.length} 组）</h3>
