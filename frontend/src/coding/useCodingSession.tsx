@@ -211,6 +211,12 @@ export function useCodingSession(
     setActiveCodingId(null)
   }, [])
 
+  /** 点句子正文：只切换选中句，不播放、不清除选区。播放只由播放键触发。 */
+  const selectSentence = useCallback((sentenceId: string) => {
+    setActiveSentenceId(sentenceId)
+    setActiveCodingId(null)
+  }, [])
+
   const selectCoding = useCallback(
     (entry: CodingEntry, scroll?: (sentenceId: string) => void) => {
       setActiveCodingId(entry.id)
@@ -446,6 +452,7 @@ export function useCodingSession(
     readSelection,
     clearSelection,
     selectCoding,
+    selectSentence,
     setActiveSentenceId,
     attachExisting,
     attachNewCode,

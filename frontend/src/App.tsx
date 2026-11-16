@@ -2572,7 +2572,9 @@ function TranscriptPanel({
                     paintWithBrush(s.id)
                     return
                   }
-                  seek(s)
+                  // 点句子只选中，不播放；播放只由左侧播放键触发，避免误触开读。
+                  setActiveId(s.id)
+                  coding?.selectSentence(s.id)
                 }}
                 style={{
                   background: mergeMode
