@@ -691,8 +691,8 @@ export default function App() {
           <main className="workspace-grid">
             {/* 第 1 列：项目区两态——展开列全部项目选项目；折叠只显当前项目+其材料 */}
             <aside className="workspace-card task-rail scroll-hidden">
-              <ProjectCreator onCreate={onCreateProject} />
               <ProjectList
+                projectCreator={<ProjectCreator onCreate={onCreateProject} />}
                 projects={projects}
                 activeId={projectId}
                 onSelect={setProjectId}
@@ -782,44 +782,35 @@ export default function App() {
   )
 }
 
+/** 新建项目：收起时是「项目」标签行里的小 ＋（与条目标签行的图标同款）；展开为内联输入。 */
 function ProjectCreator({ onCreate }: { onCreate: (name: string) => void }) {
   const [name, setName] = useState('')
   const [open, setOpen] = useState(false)
 
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} title="新建项目" aria-label="新建项目" style={{ ...ICON_BTN, width: '100%', height: 30 }}>
-        <PlusIcon />
+      <button className="rail-fold" onClick={() => setOpen(true)} title="新建项目" aria-label="新建项目">
+        <PlusIcon size={12} />
       </button>
     )
   }
   return (
-    <div style={{ display: 'flex', gap: 6 }}>
-      <input
-        autoFocus
-        value={name}
-        placeholder="项目名"
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && name.trim()) {
-            onCreate(name)
-            setName('')
-            setOpen(false)
-          }
-        }}
-        style={{ flex: 1, fontSize: 13, minWidth: 0 }}
-      />
-      <button
-        onClick={() => {
+    <input
+      autoFocus
+      value={name}
+      placeholder="项目名"
+      onChange={(e) => setName(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && name.trim()) {
           onCreate(name)
           setName('')
           setOpen(false)
-        }}
-        style={{ fontSize: 13 }}
-      >
-        确定
-      </button>
-    </div>
+        }
+        if (e.key === 'Escape') { setName(''); setOpen(false) }
+      }}
+      onBlur={() => { if (name.trim()) onCreate(name); setName(''); setOpen(false) }}
+      style={{ flex: 1, minWidth: 0, fontSize: 13 }}
+    />
   )
 }
 
@@ -846,6 +837,7 @@ function ProjectList({
   onUpload,
   onLive,
   fileInputRef,
+  projectCreator,
 }: {
   projects: Project[]
   activeId: string | null
@@ -864,6 +856,7 @@ function ProjectList({
   onUpload: (f: File) => void
   onLive: () => void
   fileInputRef: React.RefObject<HTMLInputElement>
+  projectCreator: React.ReactNode
 }) {
   if (projects.length === 0) {
     return <div style={{ color: '#aaa', fontSize: 13 }}>还没有项目</div>
@@ -887,6 +880,7 @@ function ProjectList({
       <button className="rail-fold" onClick={onToggleExpand} title={expanded ? '折叠项目' : '展开项目'} aria-label={expanded ? '折叠项目' : '展开项目'}>
         {expanded ? '▴' : '▾'}
       </button>
+      {projectCreator}
     </div>
   )
 

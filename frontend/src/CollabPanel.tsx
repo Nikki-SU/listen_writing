@@ -1167,7 +1167,7 @@ export default function CollabPanel({
                       <select
                         value={addProject}
                         onChange={(e) => void onProjectChange(e.target.value)}
-                        style={{ width: '100%', boxSizing: 'border-box', fontSize: 11 }}
+                        style={{ width: '100%', boxSizing: 'border-box', fontSize: 11, borderRadius: 6, padding: '3px 6px' }}
                       >
                         <option value="">选择项目</option>
                         {projects.map((p) => (
@@ -1177,7 +1177,7 @@ export default function CollabPanel({
                       <select
                         value={addRecording}
                         onChange={(e) => setAddRecording(e.target.value)}
-                        style={{ width: '100%', boxSizing: 'border-box', fontSize: 11 }}
+                        style={{ width: '100%', boxSizing: 'border-box', fontSize: 11, borderRadius: 6, padding: '3px 6px' }}
                       >
                         <option value="">选择录音</option>
                         {recordings.map((r) => (
@@ -1187,7 +1187,7 @@ export default function CollabPanel({
                       <button
                         disabled={busy || !addRecording}
                         onClick={() => void onAddMaterial()}
-                        style={{ fontSize: 11, padding: '3px 10px' }}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6 }}
                       >
                         灌入当前版本
                       </button>
@@ -1214,9 +1214,6 @@ export default function CollabPanel({
                           }}
                         >
                           <div style={{ fontSize: 12, fontWeight: 600 }}>{m.name}</div>
-                          <div style={{ fontSize: 10, color: '#8a8f98', marginTop: 2 }}>
-                            版本 {m.version} · 阶段 {m.stage} · {m.sentence_count} 句
-                          </div>
                         </button>
                       ))}
                     </div>
