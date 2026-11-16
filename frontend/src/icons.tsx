@@ -87,6 +87,10 @@ export function MicIcon({ size = 14 }: { size?: number }) {
   return <Glyph size={size} d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3zM5 11a7 7 0 0 0 14 0M12 18v3" />
 }
 
+export function DocIcon({ size = 14 }: { size?: number }) {
+  return <Glyph size={size} d="M6 3h9l4 4v14H6zM15 3v4h4M9 12h7M9 16h7" />
+}
+
 export function GearIcon({ size = 14 }: { size?: number }) {
   return <Glyph size={size} d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.7-1L14.5 3h-5L9 6a7 7 0 0 0-1.7 1L5 6 3 9.5 5 11a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 1.7 1l.5 3h5l.5-3a7 7 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5a7 7 0 0 0 .1-1z" />
 }

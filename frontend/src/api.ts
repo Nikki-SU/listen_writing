@@ -144,6 +144,17 @@ export function audioUrl(projectId: string, recordingId: string): string {
   return `${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/audio`
 }
 
+/** 导入逐字稿 Markdown（姓名(时:分:秒): 正文），建一个无音轨但可编码分析的条目。 */
+export async function importTranscript(
+  projectId: string, name: string, text: string,
+): Promise<{ recording: Recording; sentences: number }> {
+  return json(await fetch(`${BACKEND}/api/projects/${projectId}/recordings/import-transcript`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, text }),
+  }))
+}
+
 export async function updateSentence(
   projectId: string,
   recordingId: string,

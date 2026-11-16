@@ -3180,6 +3180,11 @@ class Handler(BaseHTTPRequestHandler):
             self._live_stop(*m)
             return
 
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/import-transcript$")
+        if m:
+            self._import_transcript(m[0])
+            return
+
         m = _match(path, r"^/api/projects/([^/]+)/recordings$")
         if m:
             self._upload_recording(m[0])
@@ -3270,6 +3275,65 @@ class Handler(BaseHTTPRequestHandler):
             return
         project = storage.create_project(name, data.get("description", ""))
         self._send_json({"project": project}, status=201)
+
+    def _import_transcript(self, project_id: str):
+        """从腾讯会议逐字稿 Markdown（姓名(时:分:秒): 正文）建一个无音频条目。
+
+        没有音轨不影响后续流程：speaker、时间戳、编码、矩阵、脱敏、PR 合并全部照常；
+        只有播放器与音色识别需要音频，UI 会按 audio_path 为空自动降级。
+        """
+        if storage.get_project(project_id) is None:
+            self._send_json({"error": "project not found"}, status=404)
+            return
+        data = self._read_json_body() or {}
+        text = str(data.get("text") or "")
+        if not text.strip():
+            self._send_json({"error": "逐字稿内容为空"}, status=400)
+            return
+        name = str(data.get("name") or "").strip() or f"逐字稿 {time.strftime('%m-%d %H:%M')}"
+
+        import re
+        pattern = re.compile(r"^\s*([^(:（\n]+?)\s*[\(（](\d{1,2}):(\d{2}):(\d{2})[\)）]\s*[:：]\s*(.*?)\s*$")
+        parsed: list[tuple[str, int, str]] = []
+        for line in text.splitlines():
+            m = pattern.match(line)
+            if not m:
+                continue
+            who = m.group(1).strip()
+            ms = (int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4))) * 1000
+            body = m.group(5).strip()
+            if body:
+                parsed.append((who, ms, body))
+        if not parsed:
+            self._send_json({"error": "没识别出逐字稿行，格式应为：姓名(00:00:04): 内容"}, status=400)
+            return
+
+        recording = storage.create_recording(project_id, name, "md")
+        rid = recording["id"]
+        sentences = []
+        for i, (who, start, body) in enumerate(parsed):
+            end = parsed[i + 1][1] if i + 1 < len(parsed) else start
+            sentences.append({
+                "id": storage.new_id(),
+                "recording_id": rid,
+                "index": i,
+                "text": body,
+                "start_ms": start,
+                "end_ms": end,
+                "speaker": who,
+            })
+        storage.save_sentences(project_id, rid, sentences)
+        storage.save_transcript_md(project_id, rid, _sentences_to_markdown(sentences))
+        speakers = list(dict.fromkeys(w for w, _, _ in parsed))
+        storage.update_recording(
+            project_id, rid,
+            source="transcript",
+            audio_path="",
+            duration_sec=parsed[-1][1] / 1000,
+            speakers=speakers,
+            transcribe={"status": "done", "progress": 100, "error": ""},
+        )
+        self._send_json({"recording": storage.get_recording(project_id, rid), "sentences": len(sentences)}, status=201)
 
     def _upload_recording(self, project_id: str):
         if storage.get_project(project_id) is None:

@@ -41,6 +41,8 @@ export type Recording = {
   transcribe: TranscribeStatus
   version?: RecordingVersion
   speakers?: string[]
+  /** audio=录音；transcript=导入的逐字稿（无音轨，播放器降级，其余功能照常）。 */
+  source?: 'audio' | 'transcript'
 }
 
 export type Sentence = {

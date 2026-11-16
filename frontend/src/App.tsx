@@ -18,6 +18,7 @@ import PolishCompare from './PolishCompare'
 import ResegmentPanel from './ResegmentPanel'
 import SpeakerPanel from './SpeakerPanel'
 import MergePanel from './MergePanel'
+import TranscriptImport from './TranscriptImport'
 import { selectionRangeById, renderRedactedText } from './redaction'
 import './coding/coding.css'
 import {
@@ -26,6 +27,7 @@ import {
   GearIcon,
   HistoryIcon,
   MicIcon,
+  DocIcon,
   PlusIcon,
   ShareIcon,
   TrashIcon,
@@ -125,6 +127,8 @@ export default function App() {
   const [shareBusy, setShareBusy] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [liveOpen, setLiveOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const [detailNonce, setDetailNonce] = useState(0)
   const [modelSetupDone, setModelSetupDone] = useState(() => {
@@ -394,6 +398,23 @@ export default function App() {
     setLiveOpen(false)
     if (projectId) void refreshRecordings(projectId)
     setRecordingId(recordingId)
+  }
+
+  async function onImportTranscript(name: string, text: string) {
+    if (!projectId) return
+    setImporting(true)
+    setError('')
+    try {
+      const res = await api.importTranscript(projectId, name, text)
+      setImportOpen(false)
+      setRecordingId(res.recording.id)
+      setWorkspaceMode('transcript')
+      await refreshRecordings(projectId)
+    } catch (e) {
+      setError(`导入逐字稿失败：${String(e).replace(/^Error:\s*/, '')}`)
+    } finally {
+      setImporting(false)
+    }
   }
 
   async function onUpdate() {
@@ -709,6 +730,7 @@ export default function App() {
                 onShareRecording={(r) => void openShare(r)}
                 onUpload={onUpload}
                 onLive={() => setLiveOpen(true)}
+                onImport={() => setImportOpen(true)}
                 fileInputRef={fileInputRef}
               />
             </aside>
@@ -764,6 +786,13 @@ export default function App() {
           projectId={projectId}
           onClose={() => setLiveOpen(false)}
           onFinished={onLiveFinished}
+        />
+      )}
+      {importOpen && projectId && (
+        <TranscriptImport
+          busy={importing}
+          onClose={() => setImportOpen(false)}
+          onImport={(name, text) => { void onImportTranscript(name, text) }}
         />
       )}
       {!modelSetupDone && (
@@ -836,6 +865,7 @@ function ProjectList({
   onShareRecording,
   onUpload,
   onLive,
+  onImport,
   fileInputRef,
   projectCreator,
 }: {
@@ -855,6 +885,7 @@ function ProjectList({
   onShareRecording: (r: Recording) => void
   onUpload: (f: File) => void
   onLive: () => void
+  onImport: () => void
   fileInputRef: React.RefObject<HTMLInputElement>
   projectCreator: React.ReactNode
 }) {
@@ -939,6 +970,7 @@ function ProjectList({
         />
         <button onClick={onLive} title="现场录音（新建条目）" aria-label="现场录音" className="rail-fold"><MicIcon /></button>
         <button onClick={() => fileInputRef.current?.click()} title="上传录音（新建条目）" aria-label="上传录音" className="rail-fold"><UploadIcon /></button>
+        <button onClick={onImport} title="导入逐字稿（腾讯会议 Markdown，无音轨）" aria-label="导入逐字稿" className="rail-fold"><DocIcon /></button>
       </div>
       <div className="project-materials">
         <RecordingList
@@ -2067,11 +2099,17 @@ function TranscriptPanel({
           </div>
         )}
 
-        <TranscriptAudio
-          audioRef={audioRef}
-          audioUrl={api.audioUrl(projectId, recordingId)}
-          onTimeUpdate={player.onTimeUpdate}
-        />
+        {detail?.recording.source === 'transcript' ? (
+          <div style={{ fontSize: 11, color: '#8a8f98', background: '#f7f9fc', borderRadius: 6, padding: '6px 10px', marginBottom: 10 }}>
+            逐字稿条目（无音轨）· 时间戳与发言人保留，可正常编码与分析
+          </div>
+        ) : (
+          <TranscriptAudio
+            audioRef={audioRef}
+            audioUrl={api.audioUrl(projectId, recordingId)}
+            onTimeUpdate={player.onTimeUpdate}
+          />
+        )}
 
         {redactMode && (
           <div style={{ marginBottom: 10, fontSize: 12 }}>
