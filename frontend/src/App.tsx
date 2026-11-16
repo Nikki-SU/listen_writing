@@ -617,7 +617,11 @@ export default function App() {
               key={key}
               className={view === key ? 'on' : ''}
               disabled={health !== 'ok'}
-              onClick={() => setView(key)}
+              onClick={() => {
+                setView(key)
+                // 对比只在协作视图存在；切回个人视图时退回转写，避免模式条没有任何高亮项。
+                if (key === 'workspace' && workspaceMode === 'compare') setWorkspaceMode('transcript')
+              }}
             >
               {label}
             </button>
@@ -640,19 +644,20 @@ export default function App() {
           </nav>
         )}
 
-        {/* 右：当前模式（转写/编码/分析），常驻，不随是否选中录音而出现/消失 */}
+        {/* 右：当前模式（转写/编码/分析[/对比]），常驻，不随是否选中录音而出现/消失。
+            个人视图 3 档无对比；协作视图 4 档含对比。两套共用同一个 workspaceMode。 */}
         <nav className="seg-nav mode-nav" aria-label="工作模式">
           {(
-            [
-              ['transcript', '转写'],
-              ['coding', '编码'],
-              ['analysis', '分析'],
-            ] as const
+            (
+              view === 'collab'
+                ? [['transcript', '转写'], ['coding', '编码'], ['analysis', '分析'], ['compare', '对比']]
+                : [['transcript', '转写'], ['coding', '编码'], ['analysis', '分析']]
+            ) as [typeof workspaceMode, string][]
           ).map(([key, label]) => (
             <button
               key={key}
-              className={view === 'workspace' && workspaceMode === key ? 'on' : ''}
-              disabled={view !== 'workspace' || health !== 'ok'}
+              className={workspaceMode === key ? 'on' : ''}
+              disabled={health !== 'ok'}
               onClick={() => setWorkspaceMode(key)}
             >
               {label}
@@ -675,7 +680,7 @@ export default function App() {
       ) : view === 'collab' ? (
         <div style={{ flex: 1, minHeight: 0, padding: '0 12px 12px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
           <main className="workspace-grid">
-            <CollabPanel projects={projects} embedded gridMode mainView={collabView} onClose={() => setView('workspace')} />
+            <CollabPanel projects={projects} embedded gridMode mainView={collabView} workspaceMode={workspaceMode} onClose={() => setView('workspace')} />
           </main>
         </div>
       ) : (

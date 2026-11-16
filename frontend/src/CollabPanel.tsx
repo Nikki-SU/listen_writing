@@ -81,6 +81,7 @@ export default function CollabPanel({
   embedded = false,
   gridMode = false,
   mainView: mainViewProp,
+  workspaceMode = 'transcript',
 }: {
   projects: Project[]
   onClose: () => void
@@ -88,6 +89,8 @@ export default function CollabPanel({
   /** true 时三栏直接作为父级 workspace-grid 的子元素（span1/span3/span1），与个人页视觉对齐 */
   gridMode?: boolean
   mainView?: 'collab' | 'approve'
+  /** 工作模式由顶栏统一控制（转写/编码/分析/对比），本地不再单开一套 */
+  workspaceMode?: 'transcript' | 'coding' | 'analysis' | 'compare'
 }) {
   const [groups, setGroups] = useState<CollabGroupSummary[]>([])
   const [identity, setIdentity] = useState<{ nick: string; device_code: string }>({ nick: '', device_code: '' })
@@ -152,8 +155,6 @@ export default function CollabPanel({
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   const [materialView, setMaterialView] = useState<CollabMaterialDetail | null>(null)
-  // 材料里除了“转写”还应能直接进入“编码 / 对比”：数据都在群组里，多人可共享。
-  const [materialMode, setMaterialMode] = useState<'transcript' | 'coding' | 'analysis' | 'compare'>('transcript')
   const [editSentence, setEditSentence] = useState<Sentence | null>(null)
   const [editText, setEditText] = useState('')
   const [localEdits, setLocalEdits] = useState<Record<string, string>>({})
@@ -895,7 +896,7 @@ export default function CollabPanel({
               )}
             </div>
 
-            <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #eee', marginBottom: 12 }}>
+            <div style={{ display: mainView === 'collab' ? 'none' : 'flex', gap: 4, borderBottom: '1px solid #eee', marginBottom: 12 }}>
               {visibleTabs.map(([key, label]) => (
                 <button
                   key={key}
@@ -943,33 +944,6 @@ export default function CollabPanel({
                       审查模式 · 禁复制 / 禁下载
                     </span>
                   )}
-                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
-                    {(
-                      [
-                        ['transcript', '转写'],
-                        ['coding', '编码'],
-                        ['analysis', '分析'],
-                        ['compare', '对比'],
-                      ] as const
-                    ).map(([key, label]) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => setMaterialMode(key)}
-                        style={{
-                          fontSize: 12,
-                          padding: '3px 12px',
-                          borderRadius: 4,
-                          cursor: 'pointer',
-                          border: `1px solid ${materialMode === key ? '#8ab4f8' : '#ddd'}`,
-                          background: materialMode === key ? '#eef5ff' : '#fff',
-                          color: materialMode === key ? '#245c9c' : '#666',
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
                 </div>
 
                 {materialView.review_mode && (
@@ -1033,7 +1007,7 @@ export default function CollabPanel({
                     </div>
                   )}
 
-                  {materialMode === 'coding' ? (
+                  {workspaceMode === 'coding' ? (
                     <div style={{ height: 'calc(100vh - 320px)', minHeight: 320, display: 'flex' }}>
                       <GroupCodingPanel
                         groupId={selected.id}
@@ -1048,7 +1022,7 @@ export default function CollabPanel({
                         }
                       />
                     </div>
-                  ) : materialMode === 'analysis' ? (
+                  ) : workspaceMode === 'analysis' ? (
                     <GroupAnalysisPanel
                       groupId={selected.id}
                       materialId={materialView.material.id}
@@ -1062,7 +1036,7 @@ export default function CollabPanel({
                         ).length
                       }
                     />
-                  ) : materialMode === 'compare' ? (
+                  ) : workspaceMode === 'compare' ? (
                     <div className="workspace-grid" style={{ minHeight: 320 }}>
                       <ComparePanel
                         groupId={selected.id}
