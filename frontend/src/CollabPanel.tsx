@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
+import GroupCodingPanel from './coding/GroupCodingPanel'
 import type {
   CollabAccess,
   CollabApproval,
@@ -117,6 +118,8 @@ export default function CollabPanel({
   const [recordings, setRecordings] = useState<Recording[]>([])
 
   const [materialView, setMaterialView] = useState<CollabMaterialDetail | null>(null)
+  // 材料里除了“转写”还应能直接进入“编码”：编码数据存在群组里，多人可共享对比。
+  const [materialMode, setMaterialMode] = useState<'transcript' | 'coding'>('transcript')
   const [editSentence, setEditSentence] = useState<Sentence | null>(null)
   const [editText, setEditText] = useState('')
   const [localEdits, setLocalEdits] = useState<Record<string, string>>({})
@@ -831,6 +834,31 @@ export default function CollabPanel({
                       审查模式 · 禁复制 / 禁下载
                     </span>
                   )}
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                    {(
+                      [
+                        ['transcript', '转写'],
+                        ['coding', '编码'],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setMaterialMode(key)}
+                        style={{
+                          fontSize: 12,
+                          padding: '3px 12px',
+                          borderRadius: 4,
+                          cursor: 'pointer',
+                          border: `1px solid ${materialMode === key ? '#8ab4f8' : '#ddd'}`,
+                          background: materialMode === key ? '#eef5ff' : '#fff',
+                          color: materialMode === key ? '#245c9c' : '#666',
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {materialView.review_mode && (
@@ -894,6 +922,22 @@ export default function CollabPanel({
                     </div>
                   )}
 
+                  {materialMode === 'coding' ? (
+                    <div style={{ height: 'calc(100vh - 320px)', minHeight: 320, display: 'flex' }}>
+                      <GroupCodingPanel
+                        groupId={selected.id}
+                        materialId={materialView.material.id}
+                        sentences={materialView.material.sentences}
+                        nick={identity.nick}
+                        canPlay={Boolean(materialView.can_play && materialView.approval)}
+                        audioSrc={
+                          materialView.can_play && materialView.approval
+                            ? api.groupAudioUrl(selected.id, materialView.material.id, materialView.approval.id)
+                            : ''
+                        }
+                      />
+                    </div>
+                  ) : (
                   <div style={{ border: '1px solid #eee', borderRadius: 8 }}>
                     {materialView.material.sentences.map((s) => {
                       const draft = localEdits[s.id]
@@ -984,6 +1028,7 @@ export default function CollabPanel({
                       )
                     })}
                   </div>
+                  )}
 
                   <div style={{ marginTop: 10 }}>
                     <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4 }}>版本历史</div>

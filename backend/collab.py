@@ -1432,3 +1432,107 @@ def access_log(group_id: str, device_code: str) -> dict:
     group = load_group(group_id)
     _require(group, device_code, "members")
     return {"access": group.get("access", [])}
+
+
+# ---------- 质性编码（共享材料的多人编码） ----------
+#
+# 编码挂在材料上，而不是各部门户的浏览器 localStorage：只有落进群组，
+# 不同成员的编码才能被放在一起比较（PRD 12 的协作编码）。
+# 结构沿用前端 CodingStore 的字段，后端只追加 codebook / codings / resolutions。
+
+
+def _material(group: dict, material_id: str) -> dict:
+    for m in group.get("materials", []):
+        if m.get("id") == material_id:
+            return m
+    raise CollabError("材料不存在", status=404)
+
+
+def _ensure_coding(material: dict) -> dict:
+    material.setdefault("codebook", {"id": f"cb_{material.get('id')}", "name": "主码本", "updated_at": _now()})
+    material.setdefault("codes", [])
+    material.setdefault("codings", [])
+    material.setdefault("resolutions", [])
+    return material
+
+
+def _can_code(group: dict, member: dict, material: dict, material_id: str) -> bool:
+    """能看 = 能编码（用户明确：中心式条件下只要能看材料就能协作编码）。"""
+    if "view" in _caps(group, member):
+        return True
+    return _can(group, member, "view", material_id)
+
+
+def get_material_coding(group_id: str, material_id: str, device_code: str) -> dict:
+    group = load_group(group_id)
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    material = _ensure_coding(_material(group, material_id))
+    if not _can_code(group, member, material, material_id):
+        raise CollabError("当前权限不允许查看这份材料", status=403)
+    return {
+        "material_id": material.get("id"),
+        "codebook": material.get("codebook"),
+        "codes": material.get("codes", []),
+        "codings": material.get("codings", []),
+        "resolutions": material.get("resolutions", []),
+        # 前端据此区分「我」与「别人」：coder_id 就是设备码，nick 用于展示。
+        "me": device_code,
+        "nick": member.get("nick", ""),
+    }
+
+
+def save_material_coding(group_id: str, material_id: str, device_code: str, body: dict) -> dict:
+    """整体覆盖该材料的码本与编码（编码量小，全量写比增量合并简单且不会错位）。"""
+    group = load_group(group_id)
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    material = _ensure_coding(_material(group, material_id))
+    if not _can_code(group, member, material, material_id):
+        raise CollabError("当前权限不允许在这份材料上编码", status=403)
+
+    codes = body.get("codes")
+    codings = body.get("codings")
+    if not isinstance(codes, list) or not isinstance(codings, list):
+        raise CollabError("codes / codings 必须是数组", status=400)
+
+    # 只保留当前设备自己的编码，别人的原样保留：这是多人协作不互相覆盖的前提。
+    mine = str(device_code)
+    others = [c for c in material.get("codings", []) if str(c.get("coder_id")) != mine]
+    incoming = []
+    for c in codings:
+        if not isinstance(c, dict):
+            continue
+        incoming.append({**c, "coder_id": mine, "by": member.get("nick", "")})
+    material["codings"] = others + incoming
+    material["codes"] = codes
+    if body.get("codebook"):
+        material["codebook"] = {**material.get("codebook", {}), **body["codebook"], "updated_at": _now()}
+    if isinstance(body.get("resolutions"), list):
+        material["resolutions"] = body["resolutions"]
+    material["updated_at"] = _now()
+    _log(group, actor=member, action="save_coding", target=material_id, detail=f"{len(incoming)} 条")
+    _save(group)
+    return get_material_coding(group_id, material_id, device_code)
+
+
+def list_material_coders(group_id: str, material_id: str, device_code: str) -> dict:
+    """对比页需要知道“这份材料上有哪些编码者、各自多少条”。"""
+    group = load_group(group_id)
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    material = _ensure_coding(_material(group, material_id))
+    if not _can_code(group, member, material, material_id):
+        raise CollabError("当前权限不允许查看这份材料", status=403)
+    nick_map = {str(m.get("device_code")): m.get("nick", "") for m in group.get("members", [])}
+    coders = {}
+    for c in material.get("codings", []):
+        cid = str(c.get("coder_id") or "")
+        if not cid:
+            continue
+        entry = coders.setdefault(cid, {"coder_id": cid, "nick": nick_map.get(cid, c.get("by", "")), "count": 0})
+        entry["count"] += 1
+    return {"coders": list(coders.values()), "me": device_code}

@@ -3,6 +3,8 @@
 
 import type {
   AppSettings,
+  CodingCode,
+  CodingEntry,
   CollabAccess,
   CollabApproval,
   CollabGroupSummary,
@@ -639,6 +641,43 @@ export async function listGroupMaterials(groupId: string): Promise<CollabMateria
 
 export async function groupMaterial(groupId: string, materialId: string): Promise<CollabMaterialDetail> {
   return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}`))
+}
+
+/** 共享材料的编码库：码本 + 全部成员的编码（按 coder_id 区分）。 */
+export type GroupCoding = {
+  material_id: string
+  codebook: { id: string; name: string; updated_at: string } | null
+  codes: CodingCode[]
+  codings: CodingEntry[]
+  resolutions: unknown[]
+  me: string
+  nick: string
+}
+
+export async function getGroupCoding(groupId: string, materialId: string): Promise<GroupCoding> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding`))
+}
+
+export async function saveGroupCoding(
+  groupId: string,
+  materialId: string,
+  codes: CodingCode[],
+  codings: CodingEntry[],
+): Promise<GroupCoding> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codes, codings }),
+    }),
+  )
+}
+
+export async function listGroupCodingCoders(
+  groupId: string,
+  materialId: string,
+): Promise<{ coders: { coder_id: string; nick: string; count: number }[]; me: string }> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding/coders`))
 }
 
 export async function createProposal(

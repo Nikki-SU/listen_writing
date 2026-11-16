@@ -885,6 +885,8 @@ class Handler(BaseHTTPRequestHandler):
         for pattern, fn in (
             (r"^/api/groups/([^/]+)/materials$", lambda g: collab.list_materials(g, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)/versions/([^/]+)$", lambda g, mid, v: collab.get_material_version(g, mid, v, device)),
+            (r"^/api/groups/([^/]+)/materials/([^/]+)/coding/coders$", lambda g, mid: collab.list_material_coders(g, mid, device)),
+            (r"^/api/groups/([^/]+)/materials/([^/]+)/coding$", lambda g, mid: collab.get_material_coding(g, mid, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)$", lambda g, mid: collab.get_material(g, mid, device)),
             (r"^/api/groups/([^/]+)/members$", lambda g: collab.members(g, device)),
             (r"^/api/groups/([^/]+)/grants$", lambda g: collab.list_grants(g, device)),
@@ -2565,6 +2567,15 @@ class Handler(BaseHTTPRequestHandler):
             project_id = str(data.get("project_id") or "")
             recording_id = str(data.get("recording_id") or "")
             self._collab_call(lambda: collab.add_material(m[0], project_id, recording_id, device))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/coding$")
+        if m:
+            data = self._read_json_body()
+            if data is None:
+                return
+            device = self._collab_device(data)
+            self._collab_call(lambda: collab.save_material_coding(m[0], m[1], device, data))
             return
 
         m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/proposals$")
