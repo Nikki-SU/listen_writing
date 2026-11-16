@@ -27,6 +27,7 @@ import type {
   CollabMember,
   CollabProposal,
   CollabRole,
+  PolishSuggestion,
   PeerSnapshot,
   Project,
   Recording,
@@ -166,12 +167,30 @@ export default function CollabPanel({
   const [localEdits, setLocalEdits] = useState<Record<string, string>>({})
   // 本地分支里勾选提交为 PR 的句子（Git: 从本地分支挑部分 commit 发 PR）。
   const [localSel, setLocalSel] = useState<string[]>([])
+  // 协作材料的 AI 纠错：与个人录音共用同一套 job/建议机制。
+  const [aiJob, setAiJob] = useState<api.AiJob | null>(null)
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiError, setAiError] = useState('')
+  const [aiDecided, setAiDecided] = useState<string[]>([])
   const [localEditing, setLocalEditing] = useState<Sentence | null>(null)
   const [localText, setLocalText] = useState('')
   // 播放逻辑与本地录音共用同一个 hook（播放器行为只有一份，杜绝两套）。
   const player = useSentencePlayer(materialView?.material.sentences ?? [], groupAudioRef)
   // 发言人配色顺序与个人页同源：按句子出场顺序取色，同一个人在两处颜色一致。
   const speakerOrder = useMemo(() => speakerOrderFrom(materialView?.material.sentences ?? []), [materialView?.material.sentences])
+
+  // AI 纠错是后台长任务：运行中每 1.2s 轮询一次，逐批看到建议。
+  useEffect(() => {
+    if (!aiJob || !selected || !materialView) return
+    if (aiJob.status !== 'running') return
+    let cancelled = false
+    const timer = window.setInterval(() => {
+      void api.fetchMaterialPolishJob(selected.id, materialView.material.id)
+        .then((job) => { if (!cancelled) setAiJob(job) })
+        .catch(() => { /* 轮询失败保留上一次结果 */ })
+    }, 1200)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [aiJob?.status, selected?.id, materialView?.material.id])
   const [mergeConflicts, setMergeConflicts] = useState<{
     sentence_id: string
     index: number
@@ -407,6 +426,22 @@ export default function CollabPanel({
       setNotice(`已提交 ${localSel.length} 条改动为 PR，等待审批`)
       await loadGroup(selected.id)
     })
+  }
+
+  async function runMaterialPolish() {
+    if (!selected || !materialView) return
+    await run(async () => {
+      setAiOpen(true)
+      setAiError('')
+      setAiDecided([])
+      setAiJob(await api.polishMaterial(selected.id, materialView.material.id, identity.device_code))
+    })
+  }
+
+  function acceptAiSuggestion(sug: PolishSuggestion) {
+    setLocalEdits((prev) => ({ ...prev, [sug.sentence_id]: sug.after }))
+    setAiDecided((prev) => [...prev, sug.sentence_id])
+    setNotice('已采纳 AI 建议，写入本地草稿；提交后走审批')
   }
 
   function localSentences(): Sentence[] {
@@ -970,6 +1005,16 @@ export default function CollabPanel({
                   <span style={{ fontSize: 11, color: '#8a8f98' }}>
                     版本 {materialView.material.version} · 阶段 {materialView.material.stage} · {materialView.material.sentences.length} 句
                   </span>
+                  {!materialView.review_mode && workspaceMode === 'transcript' && (
+                    <button
+                      onClick={() => void runMaterialPolish()}
+                      disabled={aiJob?.status === 'running'}
+                      title="用本地 AI 逐句检查错别字/语病；只给建议，采纳后写入本地草稿，提交走审批"
+                      style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px', borderRadius: 4, cursor: 'pointer', border: '1px solid #ddd', color: '#245c9c', background: '#fff' }}
+                    >
+                      {aiJob?.status === 'running' ? `AI 检查中 ${aiJob.processed}/${aiJob.total}…` : 'AI 纠错'}
+                    </button>
+                  )}
                   {materialView.review_mode && (
                     <span style={{ fontSize: 11, color: '#8a5a00', background: '#fff4e0', padding: '2px 8px', borderRadius: 4 }}>
                       审查模式 · 禁复制 / 禁下载
@@ -991,6 +1036,37 @@ export default function CollabPanel({
                   {materialView.material.stale_redactions && (
                     <div style={{ fontSize: 11, color: '#b00020', background: '#fdecea', borderRadius: 6, padding: '6px 8px', marginBottom: 8 }}>
                       有句子被修改，原脱敏标记已失效。请在本机重新脱敏并刷新材料后再送审。
+                    </div>
+                  )}
+
+                  {aiOpen && aiJob && (
+                    <div style={{ border: '1px solid #c7dafc', background: '#f8fbff', borderRadius: 8, padding: 8, marginBottom: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: 12, fontWeight: 500, color: '#245c9c' }}>AI 纠错建议</span>
+                        <span style={{ fontSize: 11, color: '#8a8f98' }}>{aiJob.message || `${aiJob.processed}/${aiJob.total} 句`}</span>
+                        <span style={{ flex: 1 }} />
+                        {aiJob.status === 'running' && (
+                          <button onClick={() => void run(async () => { setAiJob(await api.cancelMaterialPolishJob(selected.id, materialView.material.id)) })} style={{ fontSize: 11, padding: '2px 8px' }}>停止</button>
+                        )}
+                        <button onClick={() => { setAiOpen(false) }} style={{ fontSize: 11, padding: '2px 8px' }} title="收起面板">✕</button>
+                      </div>
+                      {aiError && <div style={{ fontSize: 11, color: '#b00020', marginBottom: 6 }}>{aiError}</div>}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto' }}>
+                        {aiJob.suggestions.filter((s) => !aiDecided.includes(s.sentence_id)).length === 0 ? (
+                          <div style={{ fontSize: 12, color: '#8a8f98' }}>{aiJob.status === 'running' ? '正在检查…' : '没有建议，或已全部处理。'}</div>
+                        ) : aiJob.suggestions.filter((s) => !aiDecided.includes(s.sentence_id)).map((sug) => (
+                          <div key={sug.sentence_id} style={{ borderBottom: '1px solid #eef2f8', paddingBottom: 6 }}>
+                            <div style={{ fontSize: 11, color: '#8a8f98' }}>第 {sug.index + 1} 句</div>
+                            <div style={{ fontSize: 12, color: '#b00020', textDecoration: 'line-through' }}>{sug.before}</div>
+                            <div style={{ fontSize: 12, color: '#1e7e34' }}>{sug.after}</div>
+                            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                              <button onClick={() => acceptAiSuggestion(sug)} style={{ fontSize: 11, padding: '2px 10px' }}>采纳</button>
+                              <button onClick={() => setAiDecided((prev) => [...prev, sug.sentence_id])} style={{ fontSize: 11, padding: '2px 10px' }}>忽略</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#8a8f98', marginTop: 6 }}>采纳后写入本地草稿；提交合并请到下方「本地分支」或「审批」。</div>
                     </div>
                   )}
 

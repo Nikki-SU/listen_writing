@@ -1013,6 +1013,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(_ai_job_get(_ai_job_key(m[0], m[1], "polish")))
             return
 
+        # 协作材料的 AI 纠错：复用同一套 job 轮询机制，只是 key 前缀不同。
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/polish$")
+        if m:
+            self._send_json(_ai_job_get(f"polish:group/{m[0]}/{m[1]}"))
+            return
+
         # 断句整理同理：轮询拿「已整理多少片段 + 当前合并结果」。
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/resegment$")
         if m:
@@ -2115,6 +2121,87 @@ class Handler(BaseHTTPRequestHandler):
         threading.Thread(target=run, daemon=True).start()
         self._send_json(_ai_job_get(key), status=202)
 
+    def _polish_material(self, group_id: str, material_id: str):
+        """协作材料的 AI 语义纠错：复用本地同一套 llm.polish + job 机制，只换句子来源。
+
+        句子来自共享材料（需 view 权限且非审查只读）；建议只返回，采纳由前端写入本地草稿，
+        提交合并仍走 PR 审批——AI 建议不直接改主分支。
+        """
+        data = self._read_json_body()
+        if data is None:
+            return
+        device = self._collab_device(data)
+        try:
+            detail = collab.get_material(group_id, material_id, device)
+        except collab.CollabError as e:
+            self._send_json({"error": str(e)}, status=e.status)
+            return
+        sentences = detail.get("sentences") or []
+        items = [s for s in sentences if str(s.get("text") or "").strip()]
+        if not items:
+            self._send_json({"error": "没有可校对的句子"}, status=409)
+            return
+        model_key = str(data.get("model") or storage.get_settings().get("llm_model") or llm.DEFAULT_LLM_MODEL)
+        if model_key not in llm.LLM_MODELS:
+            self._send_json({"error": f"未知的 AI 模型：{model_key}"}, status=400)
+            return
+        if not llm.runtime_available():
+            self._send_json({"error": llm.RUNTIME_MISSING_MSG}, status=503)
+            return
+        if llm.model_file(model_key) is None:
+            self._send_json({
+                "error": f"AI 模型「{llm.LLM_MODELS[model_key]['label']}」尚未下载，请先在设置里下载",
+                "need_download": {"kind": "llm", "key": model_key},
+            }, status=409)
+            return
+
+        key = f"polish:group/{group_id}/{material_id}"
+        with _ai_jobs_lock:
+            if _ai_jobs_running(key):
+                self._send_json(_ai_job_get(key), status=202)
+                return
+        total = len(items)
+        job = {
+            "status": "running", "processed": 0, "total": total,
+            "message": "正在加载模型…", "model": model_key, "error": "",
+            "suggestions": [], "cancel": False, "decided": set(),
+        }
+        with _ai_jobs_lock:
+            _ai_jobs[key] = job
+
+        def on_status(message: str) -> None:
+            with _ai_jobs_lock:
+                job["message"] = message
+
+        def on_batch(found: list[dict], processed: int) -> None:
+            with _ai_jobs_lock:
+                job["suggestions"] = list(found)
+                job["processed"] = processed
+                job["message"] = f"已检查 {processed}/{total} 句，发现 {len(found)} 条建议"
+
+        def run() -> None:
+            try:
+                result = llm.polish(items, model_key, on_status, on_batch,
+                                    should_stop=lambda: job.get("cancel", False))
+            except llm.Cancelled:
+                with _ai_jobs_lock:
+                    job["status"] = "cancelled"
+                    job["message"] = f"已停止，保留 {len(job.get('suggestions') or [])} 条建议"
+                return
+            except Exception as e:  # noqa: BLE001
+                with _ai_jobs_lock:
+                    job["status"] = "error"
+                    job["error"] = f"AI 纠错失败：{e}"
+                return
+            with _ai_jobs_lock:
+                job["suggestions"] = list(result)
+                job["status"] = "done"
+                job["processed"] = total
+                job["message"] = f"完成，共 {len(result)} 条建议"
+
+        threading.Thread(target=run, daemon=True).start()
+        self._send_json(_ai_job_get(key), status=202)
+
     def _resegment_recording(self, project_id: str, recording_id: str):
         """AI 整理断句：把按停顿切碎的片段合并成人类可读的句子。
 
@@ -2822,6 +2909,17 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/polish$")
         if m:
             self._polish_recording(*m)
+            return
+
+        # 协作材料 AI 纠错（更具体的 cancel 先匹配）。
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/polish/cancel$")
+        if m:
+            self._send_json(_ai_job_cancel(f"polish:group/{m[0]}/{m[1]}"))
+            return
+
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/polish$")
+        if m:
+            self._polish_material(*m)
             return
 
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/resegment$")

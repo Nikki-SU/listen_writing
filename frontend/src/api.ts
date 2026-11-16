@@ -212,6 +212,33 @@ export async function cancelPolishJob(projectId: string, recordingId: string): P
   )
 }
 
+/** 协作材料的 AI 纠错：与个人录音共用同一套 job/建议机制，采纳写入本地草稿、提交走 PR。 */
+export async function polishMaterial(
+  groupId: string, materialId: string, deviceCode: string,
+): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/polish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_code: deviceCode }),
+    }),
+  )
+}
+
+export async function fetchMaterialPolishJob(groupId: string, materialId: string): Promise<AiJob> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/polish`))
+}
+
+export async function cancelMaterialPolishJob(groupId: string, materialId: string): Promise<AiJob> {
+  return json(
+    await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/polish/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_code: '' }),
+    }),
+  )
+}
+
 /** 告诉后端「这条建议已处理」：轮询时不再把它塞回来，任务跑完也不会重现。 */
 export async function dismissPolishSuggestion(
   projectId: string,
