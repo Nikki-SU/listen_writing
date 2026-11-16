@@ -680,6 +680,29 @@ export async function listGroupCodingCoders(
   return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding/coders`))
 }
 
+export type CodingCompareItem = { sentence_id: string; code_id: string; quote: string }
+export type CodingCompare = {
+  material_id: string
+  a: { coder_id: string; nick: string }
+  b: { coder_id: string; nick: string }
+  stats: { both: number; only_a: number; only_b: number; total: number; agreement: number; jaccard: number }
+  both: CodingCompareItem[]
+  only_a: CodingCompareItem[]
+  only_b: CodingCompareItem[]
+}
+
+export async function compareGroupCoding(
+  groupId: string,
+  materialId: string,
+  other: string,
+): Promise<CodingCompare> {
+  return json(
+    await fetch(
+      `${BACKEND}/api/groups/${groupId}/materials/${materialId}/coding/compare?other=${encodeURIComponent(other)}`,
+    ),
+  )
+}
+
 export async function createProposal(
   groupId: string,
   materialId: string,

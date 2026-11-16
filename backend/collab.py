@@ -1536,3 +1536,69 @@ def list_material_coders(group_id: str, material_id: str, device_code: str) -> d
         entry = coders.setdefault(cid, {"coder_id": cid, "nick": nick_map.get(cid, c.get("by", "")), "count": 0})
         entry["count"] += 1
     return {"coders": list(coders.values()), "me": device_code}
+
+
+def material_coding_compare(group_id: str, material_id: str, device_code: str, other: str) -> dict:
+    """两位编码者在同一材料上的一致性对比（NVivo Coding Comparison 的简化版）。
+
+    以「句子 × 码」为单位判定：两人都编 = 一致；只有一方编 = 分歧。
+    单位为句子而非字符，与 NVivo 的 sentence unit 一致（中文分词差异大，字符级不可靠）。
+    """
+    group = load_group(group_id)
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    material = _ensure_coding(_material(group, material_id))
+    if not _can_code(group, member, material, material_id):
+        raise CollabError("当前权限不允许查看这份材料", status=403)
+
+    nick_map = {str(m.get("device_code")): m.get("nick", "") for m in group.get("members", [])}
+    a_id = str(device_code)
+    b_id = str(other)
+
+    def units_for(coder: str) -> dict[tuple[str, str], dict]:
+        out = {}
+        for c in material.get("codings", []):
+            if str(c.get("coder_id") or "") != coder:
+                continue
+            for sp in c.get("spans") or []:
+                key = (str(sp.get("sentence_id") or ""), str(c.get("code_id") or ""))
+                if key[0]:
+                    out[key] = c
+        return out
+
+    a_units = units_for(a_id)
+    b_units = units_for(b_id)
+
+    both, only_a, only_b = [], [], []
+    for key, entry in a_units.items():
+        if key in b_units:
+            both.append({"sentence_id": key[0], "code_id": key[1], "quote": entry.get("quote", "")})
+        else:
+            only_a.append({"sentence_id": key[0], "code_id": key[1], "quote": entry.get("quote", "")})
+    for key, entry in b_units.items():
+        if key not in a_units:
+            only_b.append({"sentence_id": key[0], "code_id": key[1], "quote": entry.get("quote", "")})
+
+    total = len(both) + len(only_a) + len(only_b)
+    agreement = (len(both) / total) if total else 0.0
+    # 观察一致度之外，再给一个「两人都编过的内容里的一致比例」——比总一致率更能说明问题。
+    union = len(a_units) + len(b_units) - len(both)
+    jaccard = (len(both) / union) if union else 0.0
+
+    return {
+        "material_id": material.get("id"),
+        "a": {"coder_id": a_id, "nick": nick_map.get(a_id, member.get("nick", ""))},
+        "b": {"coder_id": b_id, "nick": nick_map.get(b_id, "")},
+        "stats": {
+            "both": len(both),
+            "only_a": len(only_a),
+            "only_b": len(only_b),
+            "total": total,
+            "agreement": round(agreement, 4),
+            "jaccard": round(jaccard, 4),
+        },
+        "both": both[:200],
+        "only_a": only_a[:200],
+        "only_b": only_b[:200],
+    }

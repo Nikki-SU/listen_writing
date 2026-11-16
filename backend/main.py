@@ -886,6 +886,7 @@ class Handler(BaseHTTPRequestHandler):
             (r"^/api/groups/([^/]+)/materials$", lambda g: collab.list_materials(g, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)/versions/([^/]+)$", lambda g, mid, v: collab.get_material_version(g, mid, v, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)/coding/coders$", lambda g, mid: collab.list_material_coders(g, mid, device)),
+            (r"^/api/groups/([^/]+)/materials/([^/]+)/coding/compare$", lambda g, mid: collab.material_coding_compare(g, mid, device, str(parse_qs(urlparse(self.path).query).get('other', [''])[0]))),
             (r"^/api/groups/([^/]+)/materials/([^/]+)/coding$", lambda g, mid: collab.get_material_coding(g, mid, device)),
             (r"^/api/groups/([^/]+)/materials/([^/]+)$", lambda g, mid: collab.get_material(g, mid, device)),
             (r"^/api/groups/([^/]+)/members$", lambda g: collab.members(g, device)),

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as api from './api'
 import GroupCodingPanel from './coding/GroupCodingPanel'
+import ComparePanel from './coding/ComparePanel'
 import type {
   CollabAccess,
   CollabApproval,
@@ -118,8 +119,8 @@ export default function CollabPanel({
   const [recordings, setRecordings] = useState<Recording[]>([])
 
   const [materialView, setMaterialView] = useState<CollabMaterialDetail | null>(null)
-  // 材料里除了“转写”还应能直接进入“编码”：编码数据存在群组里，多人可共享对比。
-  const [materialMode, setMaterialMode] = useState<'transcript' | 'coding'>('transcript')
+  // 材料里除了“转写”还应能直接进入“编码 / 对比”：数据都在群组里，多人可共享。
+  const [materialMode, setMaterialMode] = useState<'transcript' | 'coding' | 'compare'>('transcript')
   const [editSentence, setEditSentence] = useState<Sentence | null>(null)
   const [editText, setEditText] = useState('')
   const [localEdits, setLocalEdits] = useState<Record<string, string>>({})
@@ -839,6 +840,7 @@ export default function CollabPanel({
                       [
                         ['transcript', '转写'],
                         ['coding', '编码'],
+                        ['compare', '对比'],
                       ] as const
                     ).map(([key, label]) => (
                       <button
@@ -935,6 +937,14 @@ export default function CollabPanel({
                             ? api.groupAudioUrl(selected.id, materialView.material.id, materialView.approval.id)
                             : ''
                         }
+                      />
+                    </div>
+                  ) : materialMode === 'compare' ? (
+                    <div style={{ display: 'flex', gap: 12, minHeight: 320 }}>
+                      <ComparePanel
+                        groupId={selected.id}
+                        materialId={materialView.material.id}
+                        sentences={materialView.material.sentences}
                       />
                     </div>
                   ) : (
