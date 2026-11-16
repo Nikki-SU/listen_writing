@@ -3292,22 +3292,24 @@ class Handler(BaseHTTPRequestHandler):
         if not text.strip():
             self._send_json({"error": "逐字稿内容为空"}, status=400)
             return
-        name = str(data.get("name") or "").strip() or title or f"逐字稿 {time.strftime('%m-%d %H:%M')}"
-
         import re
         timed = re.compile(r"^\s*([^(:（\n]+?)\s*[\(（](\d{1,2}):(\d{2}):(\d{2})[\)）]\s*[:：]\s*(.*?)\s*$")
         untimed = re.compile(r"^\s*([^:：\n]{1,24}?)\s*[:：]\s*(.*?)\s*$")
 
-        # 首行若是题目（Markdown # 标题，或不是任何转写行），用作条目名；否则用导入时间。
+        # 首行判题目：Markdown # 标题，或「短且无句末标点」的孤立行才算题目。
+        # 长的孤立行（Word 粘来的无格式正文）不当题目，作为 speaker 为空的一句收进正文，不丢内容。
         lines = text.splitlines()
         first = next((ln for ln in lines if ln.strip()), '')
         title = ''
         if first.strip():
-            if first.lstrip().startswith('#'):
-                title = first.lstrip().lstrip('#').strip()
-            elif not timed.match(first) and not untimed.match(first):
-                title = first.strip()[:80]
-        if title:
+            s = first.strip()
+            if s.startswith('#'):
+                title = s.lstrip('#').strip()
+            elif not timed.match(first) and not untimed.match(first) and len(s) <= 30 and not s.endswith(('。', '？', '！', '.', '?', '!')):
+                title = s
+        manual = str(data.get("name") or "").strip()
+        name = manual or title or f"逐字稿 {time.strftime('%m-%d %H:%M')}"
+        if title and not manual:
             lines = [ln for ln in lines if ln is not first]  # 题目行不进正文
 
         parsed: list[tuple[str, int | None, str]] = []
@@ -3321,17 +3323,25 @@ class Handler(BaseHTTPRequestHandler):
                     parsed.append((who, ms, body))
                 continue
             m = untimed.match(line)
-            if m:
-                who, body = m.group(1).strip(), m.group(2).strip()
-                if who and body:
-                    parsed.append((who, None, body))
+            if m and m.group(1).strip() and m.group(2).strip():
+                parsed.append((m.group(1).strip(), None, m.group(2).strip()))
+                continue
+            # 既无时间戳也无「名字:」的孤立行：作为无发言人正文收下，不丢内容。
+            if line.strip():
+                parsed.append(('', None, line.strip()))
         if not parsed:
             self._send_json({"error": "没识别出逐字稿行，格式应为：姓名(00:00:04): 内容 或 访谈者：内容"}, status=400)
             return
 
-        has_real_time = parsed[0][1] is not None
-        # 无时间戳的稿子按行序给占位时间，只为句子有序（无音轨，时间不参与播放）。
-        if not has_real_time:
+        has_real_time = any(ms is not None for _, ms, _ in parsed)
+        if has_real_time:
+            # 混合稿：孤立行用下一条真实时间（没有则用 0），保持顺序与跳转可用。
+            for i, (who, ms, body) in enumerate(parsed):
+                if ms is None:
+                    nxt = next((parsed[j][1] for j in range(i + 1, len(parsed)) if parsed[j][1] is not None), None)
+                    parsed[i] = (who, nxt if nxt is not None else 0, body)
+        else:
+            # 全无时间戳：按行序给占位时间，只为句子有序（无音轨，时间不参与播放）。
             parsed = [(who, i * 1000, body) for i, (who, _, body) in enumerate(parsed)]
 
         recording = storage.create_recording(project_id, name, "md")
