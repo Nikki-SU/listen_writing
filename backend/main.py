@@ -27,6 +27,11 @@ import leaf
 import llm
 import peers
 import storage
+import kb
+import kb_docs
+import kb_search
+import kb_chat
+import mineru
 from models import APP_VERSION
 from transcriber import ASR_MODELS, asr_options, transcriber_for
 
@@ -720,6 +725,14 @@ class Handler(BaseHTTPRequestHandler):
         except collab.CollabError as e:
             self._send_json({"error": str(e)}, status=e.status)
 
+    def _kb_call(self, fn):
+        try:
+            self._send_json(fn())
+        except kb.KbError as e:
+            self._send_json({"error": str(e)}, status=e.status)
+        except KeyError as e:
+            self._send_json({"error": str(e)}, status=404)
+
     def _join_and_announce(self, code: str, device: str, nick: str, role: str) -> dict:
         """本机加入群组后，把成员身份告知群主节点，跨机才看得到这个成员。"""
         result = collab.join_group(code, device, nick, role)
@@ -1030,6 +1043,65 @@ class Handler(BaseHTTPRequestHandler):
         m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/resegment$")
         if m:
             self._send_json(_ai_job_get(_ai_job_key(m[0], m[1], "resegment")))
+            return
+
+        # ---- 知识库 ----
+        if path == "/api/kb/libraries":
+            self._kb_call(lambda: {"libraries": kb.list_libraries()})
+            return
+        m = _match(path, r"^/api/kb/libraries/([^/]+)$")
+        if m:
+            self._kb_call(lambda: kb.get_library(m[0]))
+            return
+        m = _match(path, r"^/api/kb/libraries/([^/]+)/docs$")
+        if m:
+            def _docs():
+                kb.get_library(m[0])
+                d = kb.kb_dir(m[0]) / "docs"
+                out = []
+                if d.exists():
+                    for sub in d.iterdir():
+                        if not sub.is_dir():
+                            continue
+                        meta = storage._read_json(kb.doc_meta_path(m[0], sub.name))
+                        if meta:
+                            out.append(meta)
+                return {"docs": sorted(out, key=lambda x: x.get("created_at", ""), reverse=True)}
+            self._kb_call(_docs)
+            return
+        m = _match(path, r"^/api/kb/libraries/([^/]+)/docs/([^/]+)/markdown$")
+        if m:
+            def _md():
+                p = kb.doc_markdown_path(m[0], m[1])
+                if not p.exists():
+                    raise kb.KbError("文档不存在", 404)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(p.read_bytes())))
+                self.end_headers()
+                self.wfile.write(p.read_bytes())
+                return None
+            # markdown 走纯文本响应，不用 _send_json
+            try:
+                _md()
+            except kb.KbError as e:
+                self._send_json({"error": str(e)}, status=e.status)
+            return
+        m = _match(path, r"^/api/projects/([^/]+)/kb-refs$")
+        if m:
+            self._kb_call(lambda: {"kb_refs": kb.list_project_refs(m[0])})
+            return
+        m = _match(path, r"^/api/projects/([^/]+)/chats$")
+        if m:
+            self._kb_call(lambda: {"chats": kb_chat.list_chats(m[0])})
+            return
+        m = _match(path, r"^/api/projects/([^/]+)/chats/([^/]+)$")
+        if m:
+            self._kb_call(lambda: kb_chat.get_chat(m[0], m[1]))
+            return
+        if path == "/api/kb/mineru/status":
+            self._send_json(mineru.probe())
             return
 
         self._send_json({"error": "not found"}, status=404)
@@ -3258,6 +3330,50 @@ class Handler(BaseHTTPRequestHandler):
             self._upload_recording(m[0])
             return
 
+        # ---- 知识库 ----
+        if path == "/api/kb/libraries":
+            data = self._read_json_body() or {}
+            self._kb_call(lambda: kb.create_library(
+                str(data.get("name") or ""), str(data.get("embedding_model") or "")))
+            return
+        m = _match(path, r"^/api/kb/libraries/([^/]+)/update$")
+        if m:
+            data = self._read_json_body() or {}
+            self._kb_call(lambda: kb.update_library(m[0], data))
+            return
+        m = _match(path, r"^/api/kb/libraries/([^/]+)/docs$")
+        if m:
+            self._kb_add_document(m[0])
+            return
+        m = _match(path, r"^/api/projects/([^/]+)/kb-refs$")
+        if m:
+            data = self._read_json_body() or {}
+            self._kb_call(lambda: kb.add_project_ref(m[0], str(data.get("kb_id") or "")))
+            return
+        if path == "/api/kb/search":
+            data = self._read_json_body() or {}
+            ids = data.get("library_ids") or []
+            if not isinstance(ids, list):
+                ids = []
+            self._kb_call(lambda: {"hits": kb_search.search(
+                str(data.get("query") or ""), [str(x) for x in ids], int(data.get("top_k") or 8))})
+            return
+        m = _match(path, r"^/api/projects/([^/]+)/chats$")
+        if m:
+            data = self._read_json_body() or {}
+            self._kb_call(lambda: kb_chat.create_chat(m[0], str(data.get("title") or "")))
+            return
+        m = _match(path, r"^/api/projects/([^/]+)/chats/([^/]+)/messages$")
+        if m:
+            data = self._read_json_body() or {}
+            msgs = data.get("messages") or []
+            self._kb_call(lambda: kb_chat.append_messages(m[0], m[1], msgs if isinstance(msgs, list) else []))
+            return
+        m = _match(path, r"^/api/projects/([^/]+)/chats/([^/]+)/ask$")
+        if m:
+            self._kb_ask(m[0], m[1])
+            return
+
         self._send_json({"error": "not found"}, status=404)
 
     def do_DELETE(self):
@@ -3338,6 +3454,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(e)}, status=e.status)
                 return
             self._send_json({"status": "deleted"})
+            return
+
+        # ---- 知识库 ----
+        m = _match(path, r"^/api/kb/libraries/([^/]+)$")
+        if m:
+            force = (parse_qs(urlparse(self.path).query).get("force") or ["0"])[0] in ("1", "true")
+            self._kb_call(lambda: kb.delete_library(m[0], force))
+            return
+        m = _match(path, r"^/api/kb/libraries/([^/]+)/docs/([^/]+)$")
+        if m:
+            def _del_doc():
+                import shutil
+                kb.get_library(m[0])
+                shutil.rmtree(kb.doc_dir(m[0], m[1]), ignore_errors=True)
+                return {"status": "deleted", "id": m[1]}
+            self._kb_call(_del_doc)
+            return
+        m = _match(path, r"^/api/projects/([^/]+)/kb-refs/([^/]+)$")
+        if m:
+            self._kb_call(lambda: kb.remove_project_ref(m[0], m[1]))
+            return
+        m = _match(path, r"^/api/projects/([^/]+)/chats/([^/]+)$")
+        if m:
+            self._kb_call(lambda: kb_chat.delete_chat(m[0], m[1]))
             return
 
         self._send_json({"error": "not found"}, status=404)
@@ -3450,6 +3590,70 @@ class Handler(BaseHTTPRequestHandler):
             transcribe={"status": "done", "progress": 100, "error": ""},
         )
         self._send_json({"recording": storage.get_recording(project_id, rid), "sentences": len(sentences)}, status=201)
+
+    def _kb_add_document(self, kb_id: str):
+        """文档入库：前端把文件内容以 base64 或纯文本传来，后端转 Markdown + 分块落盘。"""
+        import base64
+        data = self._read_json_body() or {}
+        name = str(data.get("name") or "未命名文档")
+        try:
+            kb.get_library(kb_id)
+            if data.get("content_base64"):
+                raw = base64.b64decode(str(data["content_base64"]))
+            elif data.get("text") is not None:
+                raw = str(data["text"]).encode("utf-8")
+            else:
+                raise kb.KbError("缺少文档内容")
+            markdown, how = kb_docs.extract_markdown(name, raw)
+            doc_id = storage.new_id()
+            d = kb.doc_dir(kb_id, doc_id)
+            d.mkdir(parents=True, exist_ok=True)
+            # 原文留档（markdown 之外的原始字节）
+            (d / ("source" + ("." + name.rsplit('.', 1)[-1] if '.' in name else ""))).write_bytes(raw)
+            storage._atomic_write_text(kb.doc_markdown_path(kb_id, doc_id), markdown)
+            chunks = kb.save_chunks(kb_id, doc_id, kb.chunk_text(markdown))
+            meta = {
+                "id": doc_id, "name": name, "kb_id": kb_id,
+                "conversion": how, "chunk_count": len(chunks),
+                "char_count": len(markdown), "status": "ready",
+                "created_at": storage.now_iso(),
+            }
+            storage._write_json(kb.doc_meta_path(kb_id, doc_id), meta)
+            self._send_json(meta, status=201)
+        except kb.KbError as e:
+            self._send_json({"error": str(e)}, status=e.status)
+
+    def _kb_ask(self, project_id: str, chat_id: str):
+        """证据优先问答：材料片段与知识库块由前端按权限装配传入，后端只做检索+生成+回查。"""
+        data = self._read_json_body() or {}
+        question = str(data.get("question") or "").strip()
+        if not question:
+            self._send_json({"error": "问题不能为空"}, status=400)
+            return
+        try:
+            kb_chat.get_chat(project_id, chat_id)
+            # 检索范围：显式给的 library_ids；否则用当前项目引用的库
+            ids = data.get("library_ids")
+            if not isinstance(ids, list) or not ids:
+                ids = kb.list_project_refs(project_id)
+            # 全库开关
+            if data.get("all_libraries"):
+                ids = [lib["id"] for lib in kb.list_libraries()]
+            hits = kb_search.search(question, [str(x) for x in ids], int(data.get("top_k") or 8))
+            mat = data.get("material_snippets") or []
+            history = data.get("history") or []
+            only = bool(data.get("only_evidence"))
+            result = kb_chat.ask(
+                project_id, question,
+                history if isinstance(history, list) else [],
+                mat if isinstance(mat, list) else [], hits, only,
+                str(data.get("model_key") or storage.get_settings().get("llm_model", "qwen3-4b")),
+            )
+            self._send_json(result)
+        except KeyError as e:
+            self._send_json({"error": str(e)}, status=404)
+        except Exception as e:  # noqa: BLE001 - 推理失败要给前端明确错误
+            self._send_json({"error": f"回答失败：{e}"}, status=500)
 
     def _upload_recording(self, project_id: str):
         if storage.get_project(project_id) is None:

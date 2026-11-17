@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api'
 import BootstrapGuide from './BootstrapGuide'
 import CollabPanel from './CollabPanel'
+import KnowledgePage from './KnowledgePage'
 import LiveRecorder from './LiveRecorder'
 import ModelSetup from './ModelSetup'
 import SettingsPanel from './SettingsPanel'
@@ -111,7 +112,7 @@ export default function App() {
   const [needRefresh, setNeedRefresh] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
   // 共享任务不是弹层里的“小入口”：它和「我的录音」并列，是同一层级的常驻工作区。
-  const [view, setView] = useState<'workspace' | 'collab'>('workspace')
+  const [view, setView] = useState<'workspace' | 'collab' | 'knowledge'>('workspace')
   // 共享任务顶栏的协作/审批切换（与工作空间、模式同在顶栏）
   const [collabView, setCollabView] = useState<'collab' | 'approve'>('collab')
   // 选中录音后的四个工作状态：转写 / 编码 / 分析 / 对比。
@@ -624,6 +625,7 @@ export default function App() {
             [
               ['workspace', '我的录音'],
               ['collab', '共享任务'],
+              ['knowledge', '知识库'],
             ] as const
           ).map(([key, label]) => (
             <button
@@ -690,6 +692,13 @@ export default function App() {
 
       {health === 'down' && !restarting ? (
         <BootstrapGuide onRetry={() => void boot()} />
+      ) : view === 'knowledge' ? (
+        <KnowledgePage
+          projects={projects}
+          projectId={projectId}
+          onProjectChange={setProjectId}
+          recordings={recordings}
+        />
       ) : view === 'collab' ? (
         <div style={{ flex: 1, minHeight: 0, padding: '0 12px 12px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
           <main className="workspace-grid">

@@ -40,7 +40,8 @@ import type {
 // 方便在远程预览环境里验证界面，不改变桌面端的默认行为。
 const BACKEND = import.meta.env.VITE_BACKEND ?? 'http://127.0.0.1:7850'
 
-async function json<T>(res: Response): Promise<T> {
+async function json<T>(res: Response | Promise<Response>): Promise<T> {
+  res = await res
   if (!res.ok) {
     let msg = `HTTP ${res.status}`
     try {
@@ -1315,4 +1316,127 @@ export async function stopLive(
       { method: 'POST' },
     ),
   )
+}
+
+// ==================== 知识库 + 证据优先对话 ====================
+
+export type KbLibrary = {
+  id: string
+  name: string
+  embedding_model: string
+  created_at: string
+  updated_at: string
+  doc_count?: number
+  chunk_count?: number
+  ref_count?: number
+}
+
+export type KbDocument = {
+  id: string
+  name: string
+  kb_id: string
+  conversion: string
+  chunk_count: number
+  char_count: number
+  status: string
+  created_at: string
+}
+
+export type KbHit = {
+  kind: 'kb'
+  chunk_id: string
+  doc_id: string
+  doc_name: string
+  kb_id: string
+  kb_name: string
+  text: string
+  score: number
+}
+
+export type ChatRef = {
+  tag: string
+  kind: 'material' | 'kb'
+  text: string
+  doc_name?: string
+  title?: string
+  [key: string]: unknown
+}
+
+export type ChatMessage = {
+  role: 'user' | 'assistant'
+  text: string
+  at?: string
+  refs?: ChatRef[]
+  context_chars?: number
+}
+
+export type Chat = {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  messages: ChatMessage[]
+}
+
+export type AskResult = {
+  answer: string
+  citations: ChatRef[]
+  invalid_citations: string[]
+  fabricated_quotes: string[]
+  had_evidence: boolean
+  context_chars: number
+  context: string
+}
+
+export const kbApi = {
+  listLibraries: () => json<{ libraries: KbLibrary[] }>(fetch(`${BACKEND}/api/kb/libraries`)),
+  createLibrary: (name: string, embedding_model = '') => json<KbLibrary>(fetch(`${BACKEND}/api/kb/libraries`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, embedding_model }),
+  })),
+  updateLibrary: (id: string, patch: Partial<Pick<KbLibrary, 'name' | 'embedding_model'>>) => json<KbLibrary>(fetch(`${BACKEND}/api/kb/libraries/${id}/update`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+  })),
+  deleteLibrary: (id: string, force = false) => json<{ status: string }>(fetch(`${BACKEND}/api/kb/libraries/${id}${force ? '?force=1' : ''}`, { method: 'DELETE' })),
+  listDocs: (id: string) => json<{ docs: KbDocument[] }>(fetch(`${BACKEND}/api/kb/libraries/${id}/docs`)),
+  addDocument: (id: string, name: string, text?: string, contentBase64?: string) => json<KbDocument>(fetch(`${BACKEND}/api/kb/libraries/${id}/docs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, text, content_base64: contentBase64 }),
+  })),
+  deleteDocument: (id: string, docId: string) => json<{ status: string }>(fetch(`${BACKEND}/api/kb/libraries/${id}/docs/${docId}`, { method: 'DELETE' })),
+  markdownUrl: (id: string, docId: string) => `${BACKEND}/api/kb/libraries/${id}/docs/${docId}/markdown`,
+  listRefs: (projectId: string) => json<{ kb_refs: string[] }>(fetch(`${BACKEND}/api/projects/${projectId}/kb-refs`)),
+  addRef: (projectId: string, kbId: string) => json<{ kb_refs: string[] }>(fetch(`${BACKEND}/api/projects/${projectId}/kb-refs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kb_id: kbId }),
+  })),
+  removeRef: (projectId: string, kbId: string) => json<{ kb_refs: string[] }>(fetch(`${BACKEND}/api/projects/${projectId}/kb-refs/${kbId}`, { method: 'DELETE' })),
+  search: (query: string, libraryIds: string[], topK = 8) => json<{ hits: KbHit[] }>(fetch(`${BACKEND}/api/kb/search`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, library_ids: libraryIds, top_k: topK }),
+  })),
+  mineruStatus: () => json<{ available: boolean; installed: boolean; ram_gb: number; disk_free_gb: number; profile_suggestion: string; timing_note: string }>(fetch(`${BACKEND}/api/kb/mineru/status`)),
+}
+
+export const chatApi = {
+  listChats: (projectId: string) => json<{ chats: Chat[] }>(fetch(`${BACKEND}/api/projects/${projectId}/chats`)),
+  createChat: (projectId: string, title = '') => json<Chat>(fetch(`${BACKEND}/api/projects/${projectId}/chats`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }),
+  })),
+  getChat: (projectId: string, chatId: string) => json<Chat>(fetch(`${BACKEND}/api/projects/${projectId}/chats/${chatId}`)),
+  deleteChat: (projectId: string, chatId: string) => json<{ status: string }>(fetch(`${BACKEND}/api/projects/${projectId}/chats/${chatId}`, { method: 'DELETE' })),
+  appendMessages: (projectId: string, chatId: string, messages: ChatMessage[]) => json<Chat>(fetch(`${BACKEND}/api/projects/${projectId}/chats/${chatId}/messages`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages }),
+  })),
+  ask: (projectId: string, chatId: string, payload: {
+    question: string
+    history: ChatMessage[]
+    material_snippets: { text: string; doc_name?: string }[]
+    library_ids?: string[]
+    all_libraries?: boolean
+    only_evidence?: boolean
+    top_k?: number
+    model_key?: string
+  }) => json<AskResult>(fetch(`${BACKEND}/api/projects/${projectId}/chats/${chatId}/ask`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })),
 }
