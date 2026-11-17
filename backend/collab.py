@@ -2308,3 +2308,24 @@ def save_material_cases(group_id: str, material_id: str, device_code: str, body:
     _log(group, member, "save_cases", material_id, f"{len(cases)} 个案例")
     _save(group)
     return _coding_payload(group, material, member)
+
+
+def rename_material(group_id: str, material_id: str, name: str, device_code: str) -> dict:
+    """材料改名：灌入者或群主可改（与撤回同口径；名字是元数据，不走 PR）。"""
+    group = load_group(group_id)
+    member = _require(group, device_code, "view")
+    material = next((m for m in group.get("materials", []) if m.get("id") == material_id), None)
+    if material is None:
+        raise CollabError("材料不存在", status=404)
+    is_owner = member.get("role") == "owner" or _can_approve_codebook(group, member)
+    is_source = material.get("source_device") == device_code
+    if not is_owner and not is_source:
+        raise CollabError("只能改自己灌入的材料名（群主可改任意）", status=403)
+    name = name.strip()
+    if not name:
+        raise CollabError("名称不能为空", status=400)
+    material["name"] = name
+    material["updated_at"] = _now()
+    _log(group, member, "rename_material", material_id, name)
+    _save(group)
+    return {"status": "ok", "name": name}

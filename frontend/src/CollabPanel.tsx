@@ -8,6 +8,7 @@ import PolishCompare from './PolishCompare'
 import ResegmentPanel from './ResegmentPanel'
 import SpeakerPanel from './SpeakerPanel'
 import MergePanel from './MergePanel'
+import TranscriptImport from './TranscriptImport'
 import { selectionRangeById, renderRedactedText } from './redaction'
 import {
   DownloadIcon,
@@ -96,6 +97,7 @@ export default function CollabPanel({
   gridMode = false,
   mainView: mainViewProp,
   workspaceMode = 'transcript',
+  onJumpToTranscript,
 }: {
   projects: Project[]
   onClose: () => void
@@ -105,6 +107,8 @@ export default function CollabPanel({
   mainView?: 'collab' | 'approve'
   /** 工作模式由顶栏统一控制（转写/编码/分析/对比），本地不再单开一套 */
   workspaceMode?: 'transcript' | 'coding' | 'analysis' | 'compare'
+  /** 从分析面板跳回转写页定位句子 */
+  onJumpToTranscript?: (sentenceId: string) => void
 }) {
   const [groups, setGroups] = useState<CollabGroupSummary[]>([])
   const [identity, setIdentity] = useState<{ nick: string; device_code: string }>({ nick: '', device_code: '' })
@@ -798,6 +802,32 @@ export default function CollabPanel({
     })
   }
 
+  const [importOpen, setImportOpen] = useState(false)
+  const [importing, setImporting] = useState(false)
+
+  async function onImportTranscript(name: string, text: string) {
+    if (!selected || !addProject) return
+    setImporting(true)
+    await run(async () => {
+      const res = await api.importTranscript(addProject, name, text)
+      await api.addGroupMaterial(selected.id, addProject, res.recording.id)
+      setImportOpen(false)
+      setNotice('逐字稿已导入并灌入当前群组')
+      await loadGroup(selected.id)
+    })
+    setImporting(false)
+  }
+
+  async function onRenameMaterial(materialId: string, oldName: string) {
+    if (!selected) return
+    const name = window.prompt('材料新名称：', oldName)?.trim()
+    if (!name || name === oldName) return
+    await run(async () => {
+      await api.renameGroupMaterial(selected.id, materialId, identity.device_code, name)
+      await loadGroup(selected.id)
+    })
+  }
+
   async function onProjectChange(pid: string) {
     setAddProject(pid)
     setAddRecording('')
@@ -1211,6 +1241,14 @@ export default function CollabPanel({
                       >
                         灌入当前版本
                       </button>
+                      <button
+                        disabled={busy || !addProject}
+                        onClick={() => setImportOpen(true)}
+                        title={addProject ? '导入腾讯会议逐字稿并灌入（需先选项目）' : '请先选择项目'}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6 }}
+                      >
+                        导入逐字稿并灌入
+                      </button>
                       <span style={{ fontSize: 10, color: '#8a8f98' }}>
                         材料是快照；之后原录音再改不会自动同步。
                       </span>
@@ -1230,7 +1268,10 @@ export default function CollabPanel({
                         }}>
                           <span onClick={() => void openMaterial(m.id)} style={{ flex: 1, fontSize: 12, fontWeight: 600, cursor: 'pointer', minWidth: 0 }}>{m.name}</span>
                           {m.can_remove && (
-                            <button onClick={() => void onRemoveMaterial(m.id, m.name)} title="撤回这份材料（相关提案一并清掉）" style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, color: '#b00020', border: '1px solid #f0c9cc', background: '#fff', cursor: 'pointer' }}>×</button>
+                            <>
+                              <button onClick={(e) => { e.stopPropagation(); void onRenameMaterial(m.id, m.name) }} title="材料改名" style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, color: '#5b6472', border: '1px solid #e3e6ea', background: '#fff', cursor: 'pointer' }}>✎</button>
+                              <button onClick={() => void onRemoveMaterial(m.id, m.name)} title="撤回这份材料（相关提案一并清掉）" style={{ fontSize: 11, padding: '1px 6px', borderRadius: 4, color: '#b00020', border: '1px solid #f0c9cc', background: '#fff', cursor: 'pointer' }}>×</button>
+                            </>
                           )}
                         </div>
                       ))}
@@ -1324,6 +1365,10 @@ export default function CollabPanel({
                   </span>
                   {!materialView.review_mode && workspaceMode === 'transcript' && (
                     <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                      <button onClick={() => api.downloadMaterialExport(materialView.material.name, localSentences(), 'md')}
+                        title="导出为 Markdown" style={{ fontSize: 11, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', border: '1px solid #ddd', background: '#fff' }}>MD</button>
+                      <button onClick={() => api.downloadMaterialExport(materialView.material.name, localSentences(), 'json')}
+                        title="导出为 JSON" style={{ fontSize: 11, padding: '3px 8px', borderRadius: 4, cursor: 'pointer', border: '1px solid #ddd', background: '#fff' }}>JSON</button>
                       <button
                         onClick={() => void runMaterialPolish()}
                         disabled={aiJob?.status === 'running'}
@@ -1506,6 +1551,7 @@ export default function CollabPanel({
                       materialId={materialView.material.id}
                       sentences={materialView.material.sentences}
                       deviceCode={identity.device_code}
+                      onJump={(sentenceId) => onJumpToTranscript?.(sentenceId)}
                       materialVersion={materialView.material.version}
                       pendingMerges={
                         proposals.filter(
@@ -2357,6 +2403,10 @@ renderBody={(s) => {
             </div>
           </div>
         </div>
+      )}
+      {importOpen && (
+        <TranscriptImport busy={importing} onClose={() => setImportOpen(false)}
+          onImport={(name, text) => { void onImportTranscript(name, text) }} />
       )}
     </div>
   )

@@ -12,7 +12,7 @@ import StatsPanel from '../ide/StatsPanel'
  * 数据源从本机 store 换成后端 GroupCoding；左栏「群组/材料导航」由外层 CollabPanel 提供。
  */
 export default function GroupAnalysisPanel({
-  groupId, materialId, sentences, materialVersion, pendingMerges, deviceCode,
+  groupId, materialId, sentences, materialVersion,   pendingMerges, deviceCode, onJump,
 }: {
   groupId: string
   materialId: string
@@ -20,14 +20,16 @@ export default function GroupAnalysisPanel({
   materialVersion: string
   pendingMerges: number
   deviceCode: string
+  onJump?: (sentenceId: string) => void
 }) {
+  const jump = (sentenceId: string) => onJump?.(sentenceId)
   const data = useGroupAnalysisData(groupId, materialId, sentences, deviceCode)
 
   const panels: PanelDef[] = [
     { key: 'matrix', label: '矩阵查询', render: () => <MatrixQueryPanel data={data} /> },
-    { key: 'framework', label: '框架矩阵', render: () => <FrameworkMatrixPanel data={data} /> },
-    { key: 'search', label: '检索', render: () => <SearchPanel data={data} /> },
-    { key: 'evidence', label: '证据', render: () => <EvidencePanel data={data} /> },
+    { key: 'framework', label: '框架矩阵', render: () => <FrameworkMatrixPanel data={data} onJump={(_, sid) => jump(sid)} /> },
+    { key: 'search', label: '检索', render: () => <SearchPanel data={data} onJump={(_, sid) => jump(sid)} /> },
+    { key: 'evidence', label: '证据', render: () => <EvidencePanel data={data} onJump={(_, sid) => jump(sid)} /> },
     { key: 'stats', label: '编码统计', render: () => <StatsPanel groupId={groupId} materialId={materialId} sentences={sentences} mode={data.mode} /> },
     { key: 'text', label: '文本展示', render: () => <TextPanel data={data} /> },
     { key: 'coding', label: '辅助编码', render: () => <CodingListPanel data={data} /> },

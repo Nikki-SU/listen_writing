@@ -2948,6 +2948,14 @@ class Handler(BaseHTTPRequestHandler):
             self._collab_call(lambda: collab.save_material_coding(m[0], m[1], device, data))
             return
 
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/rename$")
+        if m:
+            data = self._read_json_body() or {}
+            device = self._collab_device(data)
+            name = str(data.get("name") or "")
+            self._collab_call(lambda: collab.rename_material(m[0], m[1], name, device))
+            return
+
         m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/cases$")
         if m:
             data = self._read_json_body()

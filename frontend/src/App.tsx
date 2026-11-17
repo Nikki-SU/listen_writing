@@ -693,7 +693,14 @@ export default function App() {
       ) : view === 'collab' ? (
         <div style={{ flex: 1, minHeight: 0, padding: '0 12px 12px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
           <main className="workspace-grid">
-            <CollabPanel projects={projects} embedded gridMode mainView={collabView} workspaceMode={workspaceMode} onClose={() => setView('workspace')} />
+            <CollabPanel projects={projects} embedded gridMode mainView={collabView} workspaceMode={workspaceMode}
+              onJumpToTranscript={(sentenceId) => {
+                setWorkspaceMode('transcript')
+                window.setTimeout(() => {
+                  document.getElementById(`sentence-${sentenceId}`)?.scrollIntoView({ block: 'center' })
+                }, 300)
+              }}
+              onClose={() => setView('workspace')} />
           </main>
         </div>
       ) : (

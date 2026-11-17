@@ -174,7 +174,7 @@ export function useGroupAnalysisData(groupId: string, materialId: string, senten
     codes, topCodes, attributes: attributeLabels, myCodings,
     caseValue: (docId: string, label: string) => caseByDoc(docId)?.attributes.find((a) => a.label === label)?.value ?? '',
     docTitle: (_docId: string) => caseByDoc(materialId)?.case_name?.trim() || '本材料',
-    recordingOf: (_docId: string) => undefined,
+    recordingOf: (_docId: string) => materialId,
     sentenceTime, caseColumns, attributeColumns,
     countInColumn, cooccurrence, evidenceForCell, evidenceForPair,
     searchCodings, wordFrequency, frameworkRows, firstQuoteFor,

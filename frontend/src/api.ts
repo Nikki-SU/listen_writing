@@ -541,6 +541,31 @@ export async function downloadExport(
   return res.blob()
 }
 
+/** 协作材料导出：前端本地拼 md/json 下载，不改材料、走不到后端（审查模式由调用方禁用）。 */
+export function downloadMaterialExport(
+  name: string, sentences: Sentence[], format: 'md' | 'json',
+): void {
+  let content: string
+  let mime: string
+  if (format === 'md') {
+    content = ['# ' + name, ''].concat(sentences.map((s) => {
+      const t = Math.floor(s.start_ms / 1000)
+      const ts = `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
+      return `[${ts}] **${s.speaker || ''}** ${s.text}`
+    })).join('\n')
+    mime = 'text/markdown'
+  } else {
+    content = JSON.stringify({ name, sentences }, null, 2)
+    mime = 'application/json'
+  }
+  const url = URL.createObjectURL(new Blob([content], { type: mime }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${name}.${format}`
+  a.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 export async function fetchSettings(): Promise<SettingsPayload> {
   return json<SettingsPayload>(await fetch(`${BACKEND}/api/settings`))
 }
@@ -1008,6 +1033,17 @@ export async function saveGroupCodingResolution(
       body: JSON.stringify({ sentence_id: sentenceId, chosen }),
     }),
   )
+}
+
+/** 材料改名（灌入者或群主）。 */
+export async function renameGroupMaterial(
+  groupId: string, materialId: string, deviceCode: string, name: string,
+): Promise<{ status: string }> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, device_code: deviceCode }),
+  }))
 }
 
 /** 保存协作材料的案例属性（我的）与属性集（群组共用）。 */
