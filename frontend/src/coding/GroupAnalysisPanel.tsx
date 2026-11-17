@@ -12,15 +12,16 @@ import StatsPanel from '../ide/StatsPanel'
  * 数据源从本机 store 换成后端 GroupCoding；左栏「群组/材料导航」由外层 CollabPanel 提供。
  */
 export default function GroupAnalysisPanel({
-  groupId, materialId, sentences, materialVersion, pendingMerges,
+  groupId, materialId, sentences, materialVersion, pendingMerges, deviceCode,
 }: {
   groupId: string
   materialId: string
   sentences: Sentence[]
   materialVersion: string
   pendingMerges: number
+  deviceCode: string
 }) {
-  const data = useGroupAnalysisData(groupId, materialId, sentences)
+  const data = useGroupAnalysisData(groupId, materialId, sentences, deviceCode)
 
   const panels: PanelDef[] = [
     { key: 'matrix', label: '矩阵查询', render: () => <MatrixQueryPanel data={data} /> },
@@ -30,7 +31,10 @@ export default function GroupAnalysisPanel({
     { key: 'stats', label: '编码统计', render: () => <StatsPanel groupId={groupId} materialId={materialId} sentences={sentences} mode={data.mode} /> },
     { key: 'text', label: '文本展示', render: () => <TextPanel data={data} /> },
     { key: 'coding', label: '辅助编码', render: () => <CodingListPanel data={data} /> },
-    { key: 'props', label: '条目属性', render: () => <CasePropsPanel data={data} /> },
+    { key: 'props', label: '条目属性', render: () => <CasePropsPanel data={data} edit={{
+      attributeSets: data.attributeSets, applySet: data.applySet, upsertSet: data.upsertSet,
+      deleteSet: data.deleteSet, caseAttributes: data.caseAttributes, updateCaseAttrs: data.updateCaseAttrs,
+    }} /> },
     { key: 'ai', label: 'AI 助手', render: () => <AiPanel /> },
     { key: 'artifacts', label: '产物', render: () => <ArtifactsPanel /> },
   ]

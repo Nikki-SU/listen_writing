@@ -1,14 +1,41 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { CodingCode, CodingEntry, Sentence } from '../types'
+import type { AttributeSet, CodingCase, CodingCode, CodingEntry, Sentence } from '../types'
 import * as api from '../api'
+import { applyAttributeSet as applySetToCases } from '../coding/store'
 
 /**
  * 协作分析数据源：把后端 GroupCoding 适配成与个人版 AnalysisData 相同的接口，
  * 让七个 IDE 面板两边共用。个人模式=我标的；共享模式=共享码本口径。
  */
-export function useGroupAnalysisData(groupId: string, materialId: string, sentences: Sentence[]) {
+export function useGroupAnalysisData(groupId: string, materialId: string, sentences: Sentence[], deviceCode: string) {
   const [data, setData] = useState<api.GroupCoding | null>(null)
   const [mode, setMode] = useState<'personal' | 'shared'>('personal')
+
+  const cases = data?.cases ?? []
+  const attributeSets = data?.attribute_sets ?? []
+  function persistCases(nextCases: CodingCase[], nextSets: AttributeSet[]) {
+    setData((prev) => (prev ? { ...prev, cases: nextCases, attribute_sets: nextSets } : prev))
+    void api.saveGroupCases(groupId, materialId, deviceCode, nextCases, nextSets).then((res) => {
+      setData(res)
+    }).catch(() => undefined)
+  }
+  function updateCaseAttrs(docId: string, attrs: { id: string; label: string; value: string }[]) {
+    persistCases(cases.map((c) => (c.document_id === docId ? { ...c, attributes: attrs } : c)), attributeSets)
+  }
+  function applySet(docId: string, setId: string) {
+    // 借用个人 store 的套用逻辑：用一个临时 store 算出加了字段的 cases。
+    const tmp = { schema: 1 as const, project_id: groupId, codebook: { id: '', name: '', updated_at: '' },
+      documents: [], attribute_sets: attributeSets, cases, codes, codings: myCodings, resolutions: [] }
+    const next = applySetToCases(tmp, docId, setId)
+    persistCases(next.cases, attributeSets)
+  }
+  function upsertSet(set: AttributeSet) {
+    const exists = attributeSets.some((s) => s.id === set.id)
+    persistCases(cases, exists ? attributeSets.map((s) => (s.id === set.id ? set : s)) : [...attributeSets, set])
+  }
+  function deleteSet(setId: string) {
+    persistCases(cases, attributeSets.filter((s) => s.id !== setId))
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -139,10 +166,14 @@ export function useGroupAnalysisData(groupId: string, materialId: string, senten
     return list.length ? { entry: list[0], count: list.length } : null
   }
 
+  const caseAttrs = cases.find((c) => c.document_id === materialId)?.attributes ?? []
+  const attributeLabels = Array.from(new Set(cases.flatMap((c) => c.attributes.map((a) => a.label.trim())).filter(Boolean)))
+  const caseByDoc = (docId: string) => cases.find((c) => c.document_id === docId)
+
   return {
-    codes, topCodes, attributes: [] as string[], myCodings,
-    caseValue: (_docId: string, _label: string) => '',
-    docTitle: (_docId: string) => '本材料',
+    codes, topCodes, attributes: attributeLabels, myCodings,
+    caseValue: (docId: string, label: string) => caseByDoc(docId)?.attributes.find((a) => a.label === label)?.value ?? '',
+    docTitle: (_docId: string) => caseByDoc(materialId)?.case_name?.trim() || '本材料',
     recordingOf: (_docId: string) => undefined,
     sentenceTime, caseColumns, attributeColumns,
     countInColumn, cooccurrence, evidenceForCell, evidenceForPair,
@@ -150,5 +181,9 @@ export function useGroupAnalysisData(groupId: string, materialId: string, senten
     codeById: codeByIdLocal,
     currentDocId: materialId,
     sentences, mode, setMode, loading: !data,
+    // 属性集编辑（协作）：走独立 cases 接口保存（各设备存自己的，不改码本）。
+    attributeSets, applySet, upsertSet, deleteSet,
+    caseAttributes: (docId: string) => caseByDoc(docId)?.attributes ?? caseAttrs,
+    updateCaseAttrs,
   }
 }

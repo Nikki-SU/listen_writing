@@ -3,6 +3,8 @@
 
 import type {
   AppSettings,
+  AttributeSet,
+  CodingCase,
   CodingCode,
   CodingEntry,
   CodingStore,
@@ -897,6 +899,9 @@ export type GroupCoding = {
   /** 全量码表（个人 + 共享 + 旧版），供对比页按 id 找码。 */
   codes: CodingCode[]
   codings: CodingEntry[]
+  /** 我的案例属性（个人维度，各设备独立）；属性集群组共用。 */
+  cases: CodingCase[]
+  attribute_sets: AttributeSet[]
   resolutions: unknown[]
   proposals: CodebookProposal[]
   can_approve: boolean
@@ -1003,6 +1008,18 @@ export async function saveGroupCodingResolution(
       body: JSON.stringify({ sentence_id: sentenceId, chosen }),
     }),
   )
+}
+
+/** 保存协作材料的案例属性（我的）与属性集（群组共用）。 */
+export async function saveGroupCases(
+  groupId: string, materialId: string, deviceCode: string,
+  cases: CodingCase[], attributeSets: AttributeSet[],
+): Promise<GroupCoding> {
+  return json(await fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/cases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cases, attribute_sets: attributeSets, device_code: deviceCode }),
+  }))
 }
 
 /** 提交「删除这一句」提案，等有审批权者合并后生效。 */

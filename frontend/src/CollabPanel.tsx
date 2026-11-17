@@ -1505,6 +1505,7 @@ export default function CollabPanel({
                       groupId={selected.id}
                       materialId={materialView.material.id}
                       sentences={materialView.material.sentences}
+                      deviceCode={identity.device_code}
                       materialVersion={materialView.material.version}
                       pendingMerges={
                         proposals.filter(

@@ -1649,6 +1649,8 @@ def _ensure_coding(material: dict) -> dict:
     material.setdefault("resolutions_by", {})
     material.setdefault("resolutions", [])
     material.setdefault("personal_codebooks", {})
+    material.setdefault("personal_cases", {})
+    material.setdefault("attribute_sets", [])
     material.setdefault("shared_codebook", None)
     material.setdefault("codebook_proposals", [])
     if material.get("codes"):
@@ -1839,6 +1841,8 @@ def _coding_payload(group: dict, material: dict, member: dict) -> dict:
         "legacy_codebook": material.get("legacy_codebook"),
         "codes": list(union.values()),
         "codings": codings,
+        "cases": (material.get("personal_cases") or {}).get(me, []),
+        "attribute_sets": material.get("attribute_sets", []),
         "resolutions": material.get("resolutions", []),
         "proposals": proposals,
         "can_approve": _can_approve_codebook(group, member),
@@ -1895,6 +1899,15 @@ def save_material_coding(group_id: str, material_id: str, device_code: str, body
     material["codings"] = others + incoming
     # 跨机同步按这个时间戳判断「谁的编码更新」：整份材料覆盖时不能丢别人的编码。
     material.setdefault("coding_saved_at", {})[mine] = _now()
+    # 案例属性按设备分开存（同码本口径：各标各的，不互相覆盖）；属性集群组共用。
+    if isinstance(body.get("cases"), list):
+        material.setdefault("personal_cases", {})[mine] = [
+            c for c in body["cases"] if isinstance(c, dict)
+        ]
+    if isinstance(body.get("attribute_sets"), list):
+        material["attribute_sets"] = [
+            s for s in body["attribute_sets"] if isinstance(s, dict)
+        ]
     if isinstance(body.get("resolutions"), list):
         material["resolutions"] = body["resolutions"]
     material["updated_at"] = _now()
@@ -2272,3 +2285,26 @@ def remove_material(group_id: str, material_id: str, device_code: str) -> dict:
     _log(group, member, "remove_material", material_id, material.get("name", ""))
     _save(group)
     return {"status": "deleted", "material_id": material_id}
+
+
+def save_material_cases(group_id: str, material_id: str, device_code: str, body: dict) -> dict:
+    """只存案例属性（我的）与属性集（群组共用），不动码本/编码。
+    属性字段是描述性元数据、不是分析结论，按个人码本同口径各存各的，不走审批。"""
+    group = load_group(group_id)
+    member = _member(group, device_code)
+    if member is None:
+        raise CollabError("你还没有加入这个群组", status=403)
+    material = _ensure_coding(_material(group, material_id))
+    if not _can_code(group, member, material, material_id):
+        raise CollabError("当前权限不允许在这份材料上编辑属性", status=403)
+    cases = body.get("cases")
+    sets = body.get("attribute_sets")
+    if not isinstance(cases, list) or not isinstance(sets, list):
+        raise CollabError("cases / attribute_sets 必须是数组", status=400)
+    mine = str(device_code)
+    material.setdefault("personal_cases", {})[mine] = [c for c in cases if isinstance(c, dict)]
+    material["attribute_sets"] = [s for s in sets if isinstance(s, dict)]
+    material["updated_at"] = _now()
+    _log(group, member, "save_cases", material_id, f"{len(cases)} 个案例")
+    _save(group)
+    return _coding_payload(group, material, member)

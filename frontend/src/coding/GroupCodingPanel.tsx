@@ -92,6 +92,8 @@ export default function GroupCodingPanel({
   const [selection, setSelection] = useState<{ spans: CodingSpan[]; quote: string } | null>(null)
   const [activeCodingId, setActiveCodingId] = useState<string | null>(null)
   const [activeCodeId, setActiveCodeId] = useState<string | null>(null)
+  const [multiSelect, setMultiSelect] = useState(false)
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set())
   const [codeQuery, setCodeQuery] = useState('')
   const [newCodeName, setNewCodeName] = useState('')
   const [viewer, setViewer] = useState('mine')
@@ -395,6 +397,30 @@ export default function GroupCodingPanel({
     persist(nextCodes, nextCodings)
   }
 
+  function deleteMyCodes(ids: string[]) {
+    if (!editable || !ids.length) return
+    const idSet = new Set(ids)
+    const nextCodes = codes
+      .filter((c) => !idSet.has(c.id))
+      .map((c) => (c.parent_id && idSet.has(c.parent_id) ? { ...c, parent_id: null } : c))
+    const nextCodings = codings.filter((c) => !(c.coder_id === me && idSet.has(c.code_id)))
+    setCodes(nextCodes)
+    setCodings(nextCodings)
+    if (activeCodeId && idSet.has(activeCodeId)) setActiveCodeId(null)
+    persist(nextCodes, nextCodings)
+  }
+
+  function jumpToCode(codeId: string) {
+    const sub = subtree(codes, codeId)
+    const hit = codings.find((c) => c.coder_id === me && sub.has(c.code_id)) || codings.find((c) => sub.has(c.code_id))
+    const sid = hit?.spans?.[0]?.sentence_id
+    if (!sid) return
+    setTab('reading')
+    window.setTimeout(() => {
+      listRef.current?.querySelector(`[data-sentence-id="${sid}"]`)?.scrollIntoView({ block: 'center' })
+    }, 50)
+  }
+
   function moveMyCode(codeId: string, parentId: string | null) {
     if (!editable) return
     const code = codes.find((c) => c.id === codeId)
@@ -503,13 +529,21 @@ export default function GroupCodingPanel({
             key={code.id}
             type="button"
             className={`coding-tree-row${activeCodeId === code.id ? ' active' : ''}`}
-            style={{ paddingLeft: 8 + depth * 16 }}
+            style={{ paddingLeft: 8 + depth * 16, ...(multiSelect && selectedCodes.has(code.id) ? { background: '#eef4ff' } : {}) }}
             draggable={editable}
             title={editable ? '单击查看，双击删除，拖到别的码上改变层级' : '别人的码，只读'}
-            onClick={() => setActiveCodeId(code.id)}
+            onClick={() => {
+              if (multiSelect) {
+                setSelectedCodes((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(code.id)) next.delete(code.id); else next.add(code.id)
+                  return next
+                })
+              } else setActiveCodeId(code.id)
+            }}
             onDoubleClick={(e) => {
               e.preventDefault()
-              deleteMyCode(code.id)
+              if (!multiSelect) deleteMyCode(code.id)
             }}
             onDragStart={() => {
               dragRef.current = code.id
@@ -751,6 +785,31 @@ export default function GroupCodingPanel({
                 ) : (
                   <div className="coding-hint">{viewName}：只读。各人码本独立，只有本人能改。</div>
                 )}
+                {editable && (
+                  <div className="coding-bulk-bar">
+                    <button type="button" className={`coding-ghost-btn${multiSelect ? ' on' : ''}`}
+                      onClick={() => { setMultiSelect((v) => !v); setSelectedCodes(new Set()) }}
+                      title="多选模式：一次勾选多个码批量删除">
+                      {multiSelect ? '退出多选' : '多选删除'}
+                    </button>
+                    {multiSelect && (
+                      <>
+                        <button type="button" className="coding-ghost-btn" onClick={() => setSelectedCodes(new Set(viewCodes.filter((c) => c.status === 'active').map((c) => c.id)))}>全选</button>
+                        <span className="coding-bulk-count">已选 {selectedCodes.size}</span>
+                        <button type="button" className="coding-danger-btn" disabled={!selectedCodes.size}
+                          onClick={() => {
+                            const affected = codings.filter((c) => c.coder_id === me && selectedCodes.has(c.code_id)).length
+                            if (!window.confirm(`删除 ${selectedCodes.size} 个码、${affected} 条编码？`)) return
+                            deleteMyCodes(Array.from(selectedCodes))
+                            setSelectedCodes(new Set())
+                            setMultiSelect(false)
+                          }}>
+                          删除 {selectedCodes.size} 个码
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
                 <div
                   className="coding-tree scroll-hidden"
                   onDragOver={(e) => {
@@ -787,9 +846,24 @@ export default function GroupCodingPanel({
                       onBlur={() => editable && persist(codes, codings)}
                       style={{ width: '100%', boxSizing: 'border-box', minHeight: 54, fontSize: 12, lineHeight: 1.6, padding: '5px 8px', border: '1px solid #e3e6ea', borderRadius: 6, resize: 'vertical' }}
                     />
+                    {editable && (
+                      <>
+                        <div className="coding-label">移动到…</div>
+                        <select value={activeCode.parent_id || ''} onChange={(e) => moveMyCode(activeCode.id, e.target.value || null)}
+                          className="coding-move-select" style={{ fontSize: 11, width: '100%', marginBottom: 6 }}>
+                          <option value="">顶层</option>
+                          {viewCodes.filter((c) => c.id !== activeCode.id && c.status === 'active' && !subtree(viewCodes, activeCode.id).has(c.id)).map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                        <div className="coding-actions" style={{ marginBottom: 6 }}>
+                          <button type="button" className="coding-primary-btn" onClick={() => jumpToCode(activeCode.id)}>在正文中定位</button>
+                        </div>
+                      </>
+                    )}
                     {editable ? (
                       <div className="coding-hint">
-                        双击码名可删除；把码拖到另一个码上可改变层级；同级按编码数量自动排序。
+                        双击码名可删除；把码拖到另一个码上或用「移动到…」改变层级；同级按编码数量自动排序。
                       </div>
                     ) : (
                       <div className="coding-hint">这是 {viewName}，别人的码只读，不会与你的编码混在一起。</div>

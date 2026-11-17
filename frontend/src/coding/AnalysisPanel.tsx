@@ -1,5 +1,6 @@
 import type { Recording, RecordingDetail } from '../types'
 import IdeWorkspace, { type PanelDef } from '../ide/IdeWorkspace'
+import CodingStatsPanel from '../ide/CodingStatsPanel'
 import { useAnalysisData } from '../ide/useAnalysisData'
 import {
   MatrixQueryPanel, FrameworkMatrixPanel, SearchPanel, EvidencePanel, TextPanel, CasePropsPanel,
@@ -39,6 +40,7 @@ export default function AnalysisPanel({
     }} /> },
     { key: 'coding', label: '辅助编码', render: () => <CodingListPanel data={data} /> },
     { key: 'ai', label: 'AI 助手', render: () => <AiPanel /> },
+    { key: 'stats', label: '编码统计', render: () => <CodingStatsPanel data={data} /> },
     { key: 'artifacts', label: '产物', render: () => <ArtifactsPanel /> },
   ]
 
