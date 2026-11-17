@@ -106,9 +106,67 @@ def _looks_like_speaker(s: str) -> bool:
     return True
 
 
+def _repair_wrapped_lines(lines: list[str]) -> list[str]:
+    """修复 PDF/OCR 折行把「姓名(时间):」从中间劈开的情况。
+
+    MinerU 输出的 markdown 常把一行的物理宽度当硬换行，于是
+        「访员(00:00:02): 正文」
+    可能被切成
+        「访员(00:00」
+        「02): 正文」
+    或
+        「访员(00:00:02):」
+        「正文」
+    这里把这类残行接回去：只要当前行像「未闭合的转写行头」，就与下一行拼接。
+    """
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        ln = lines[i]
+        if not ln.strip():
+            out.append(ln)
+            i += 1
+            continue
+        s = _clean(ln)
+        # 未闭合的括号/方括号 → 与下一行拼接，最多拼 3 次防止死循环
+        joined = ln
+        tries = 0
+        while tries < 3 and i + 1 < n and _has_open_paren(joined):
+            nxt = lines[i + 1].strip()
+            # PDF 折行常常把时间戳从「冒号」处劈开：前一行以数字结尾、后一行以数字开头，
+            # 直接相连会丢分隔，这里补回被吞掉的那个冒号。
+            if joined.rstrip()[-1:].isdigit() and nxt[:1].isdigit():
+                joined = joined.rstrip() + ":" + nxt
+            else:
+                joined = joined.rstrip() + nxt
+            i += 1
+            tries += 1
+        # 「姓名(时间):」后无正文 → 把下一行正文接上（避免时间头单独成句）
+        if tries == 0 and i + 1 < n:
+            cs = _clean(joined)
+            if _ends_with_sep_only(cs):
+                nxt = lines[i + 1].strip()
+                if nxt and _split_inline(_clean(nxt)) is None and _is_time_only(_clean(nxt)) is None:
+                    joined = joined.rstrip() + nxt
+                    i += 1
+        out.append(joined)
+        i += 1
+    return out
+
+
+def _has_open_paren(s: str) -> bool:
+    return s.count("(") > s.count(")") or s.count("（") > s.count("）") or s.count("[") > s.count("]")
+
+
+def _ends_with_sep_only(s: str) -> bool:
+    """行是否以「冒号」结尾且冒号前是完整的时间戳结构（说明正文被挤到下一行）。"""
+    return bool(re.match(r"^.{1,30}[\(（\[]?\s*\d{1,2}:\d{2}(?::\d{2})?[\)）\]]?\s*[:：]\s*$", s))
+
+
 def parse_transcript(text: str) -> tuple[str, list[tuple[str, int | None, str]], list[str]]:
     """返回 (题目, [(who, ms, body)], 发言人列表)。"""
-    raw_lines = text.splitlines()
+    raw_lines = _repair_wrapped_lines(text.splitlines())
     first = next((ln for ln in raw_lines if ln.strip()), "")
     title = ""
     cleaned_first = _clean(first)
