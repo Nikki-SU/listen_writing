@@ -266,6 +266,19 @@ def load_sentences(project_id: str, recording_id: str) -> list[dict]:
                 "end_ms": int(row["end_ms"]),
                 "speaker": row["speaker"],
             })
+    # 一次性修复：旧版逐字稿导入把「姓名(时:分:秒):」按折行劈开过，
+     # 留下 speaker 带未闭合括号、或正文以 "02):" 开头的怪句。
+     # 读到就就地修好并写回，用户不必重新导入。只在确实有病句时才写盘。
+    try:
+        import transcript_parse
+        repaired, changed = transcript_parse.repair_broken_sentences(sentences)
+        if changed:
+            for i, s in enumerate(repaired):
+                s["index"] = i
+            save_sentences(project_id, recording_id, repaired)
+            return repaired
+    except Exception:  # noqa: BLE001 - 修复失败不影响正常读取
+        pass
     return sentences
 
 
@@ -460,6 +473,21 @@ def commit_version(
 def save_transcript_md(project_id: str, recording_id: str, text: str) -> None:
     path = recording_dir(project_id, recording_id) / "transcript.md"
     _atomic_write_text(path, text)
+
+
+def save_source_text(project_id: str, recording_id: str, text: str) -> None:
+    """逐字稿导入时的原始文本。
+
+    必须留档：解析规则以后可能再修（例如 PDF 折行），有原文才能重放，
+    不必让用户重新导一遍文件。
+    """
+    path = recording_dir(project_id, recording_id) / "source.txt"
+    _atomic_write_text(path, text)
+
+
+def load_source_text(project_id: str, recording_id: str) -> str | None:
+    path = recording_dir(project_id, recording_id) / "source.txt"
+    return path.read_text(encoding="utf-8") if path.is_file() else None
 
 
 # ---------- 版本引用（JSON） ----------

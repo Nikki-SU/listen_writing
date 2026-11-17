@@ -3332,6 +3332,11 @@ class Handler(BaseHTTPRequestHandler):
             self._import_transcript(m[0])
             return
 
+        m = _match(path, r"^/api/projects/([^/]+)/recordings/([^/]+)/reparse$")
+        if m:
+            self._reparse_transcript(m[0], m[1])
+            return
+
         m = _match(path, r"^/api/projects/([^/]+)/recordings$")
         if m:
             self._upload_recording(m[0])
@@ -3584,6 +3589,7 @@ class Handler(BaseHTTPRequestHandler):
                 "speaker": who,
             })
         storage.save_sentences(project_id, rid, sentences)
+        storage.save_source_text(project_id, rid, text)  # 留原文：解析规则以后可重放，不必让用户重导
         storage.save_transcript_md(project_id, rid, _sentences_to_markdown(sentences))
         speakers = speakers_found
         storage.update_recording(
@@ -3600,6 +3606,71 @@ class Handler(BaseHTTPRequestHandler):
             "sentences": len(sentences),
             "speakers": speakers,
         }, status=201)
+
+    def _reparse_transcript(self, project_id: str, recording_id: str):
+        """按最新解析规则重新解析已导入的逐字稿。
+
+        优先用留档的原文重放（最准确）；没有原文的老条目则做句子级修复。
+        目的：解析规则修好了，不能让用户重新导一遍文件。
+        """
+        import transcript_parse
+        rec = storage.get_recording(project_id, recording_id)
+        if rec is None:
+            self._send_json({"error": "recording not found"}, status=404)
+            return
+        if str(rec.get("source") or "") != "transcript":
+            self._send_json({"error": "只有逐字稿条目可以重新解析"}, status=400)
+            return
+        src = storage.load_source_text(project_id, recording_id)
+        old = storage.load_sentences(project_id, recording_id)
+        if src:
+            title, parsed, speakers_found = transcript_parse.parse_transcript(src)
+            if not parsed:
+                self._send_json({"error": "原文重新解析后没有句子"}, status=400)
+                return
+            has_time = any(ms is not None for _, ms, _ in parsed)
+            if has_time:
+                for i, (who, ms, body) in enumerate(parsed):
+                    if ms is None:
+                        nxt = next((parsed[j][1] for j in range(i + 1, len(parsed)) if parsed[j][1] is not None), None)
+                        parsed[i] = (who, nxt if nxt is not None else 0, body)
+            else:
+                parsed = [(who, i * 1000, body) for i, (who, _, body) in enumerate(parsed)]
+            sentences = []
+            for i, (who, start, body) in enumerate(parsed):
+                end = parsed[i + 1][1] if i + 1 < len(parsed) else start
+                sentences.append({
+                    "id": storage.new_id(), "recording_id": recording_id, "index": i,
+                    "text": body, "start_ms": start, "end_ms": end, "speaker": who,
+                })
+            storage.save_sentences(project_id, recording_id, sentences)
+            storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(sentences))
+            storage.update_recording(
+                project_id, recording_id,
+                duration_sec=(parsed[-1][1] or 0) / 1000,
+                timestamps_real=has_time,
+                speakers=speakers_found,
+            )
+            self._send_json({
+                "mode": "reparse", "sentences": len(sentences), "speakers": speakers_found,
+            }, status=200)
+            return
+        # 没有原文：做句子级修复（删残片、拼回被劈开的发言人/时间）
+        repaired, changed = transcript_parse.repair_broken_sentences(old)
+        if not changed:
+            self._send_json({"mode": "noop", "sentences": len(old),
+                             "note": "这个条目没有留原文，且句子未发现可修复的问题"}, status=200)
+            return
+        for i, s in enumerate(repaired):
+            s["index"] = i
+        storage.save_sentences(project_id, recording_id, repaired)
+        storage.save_transcript_md(project_id, recording_id, _sentences_to_markdown(repaired))
+        storage.update_recording(
+            project_id, recording_id,
+            speakers=list(dict.fromkeys(s.get("speaker") for s in repaired if s.get("speaker"))),
+        )
+        self._send_json({"mode": "repaired", "sentences": len(repaired),
+                         "before": len(old), "fixed": changed}, status=200)
 
     def _kb_add_document(self, kb_id: str):
         """文档入库：前端把文件内容以 base64 或纯文本传来，后端转 Markdown + 分块落盘。"""

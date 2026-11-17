@@ -1195,6 +1195,20 @@ function TranscriptPanel({
   const [newSpeakerName, setNewSpeakerName] = useState('')
   // 重新跑说话人聚类（历史录音没有自动分人时也能补上，不需要重新转写）。
   const [detectingSpeakers, setDetectingSpeakers] = useState(false)
+
+  // 按最新解析规则重新解析已导入的逐字稿（有原文则重放，无原文则修复被劈开的残句）。
+  async function reparseRecording() {
+    try {
+      const res = await api.reparseTranscript(projectId, recordingId)
+      if (res.mode === 'noop') {
+        onError(res.note || '没有可修复的内容')
+        return
+      }
+      onRetry()
+    } catch (e) {
+      onError(`重新解析失败：${String(e).replace(/^Error:\s*/, '')}`)
+    }
+  }
   // 多句合并：点句子自行涂色分组（涂色且连续为一组），最后一次性合并所有组（ASR 常按逗号切碎）。
   const [mergeMode, setMergeMode] = useState(false)
   // 间隔上色合并：顶部选择画笔颜色（蓝 / 白 / 橙），点句子涂色；蓝、橙各代表一组，白色不参与合并，同色且连续才成组。
@@ -1894,6 +1908,15 @@ function TranscriptPanel({
             </span>
           )}
           {/* 编码模式不给编辑入口，正文自然只读，不需要写“正文只读”声明 */}
+          {recording.source === 'transcript' && (
+            <button
+              onClick={() => void reparseRecording()}
+              title="按最新规则重新解析这份逐字稿（不用重新导入文件）"
+              style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid #d5dae2', background: '#fff', cursor: 'pointer', color: '#245c9c' }}
+            >
+              重新解析
+            </button>
+          )}
           <button
             onClick={() => void saveExport(projectId, recordingId, 'md', version || undefined, onError)}
             title="导出为 Markdown"

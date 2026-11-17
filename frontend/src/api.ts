@@ -1059,6 +1059,13 @@ export async function saveGroupCases(
   }))
 }
 
+/** 按最新解析规则重新解析已导入的逐字稿（不必重新导文件）。 */
+export async function reparseTranscript(
+  projectId: string, recordingId: string,
+): Promise<{ mode: string; sentences: number; speakers?: string[]; fixed?: number; note?: string }> {
+  return json(await fetch(`${BACKEND}/api/projects/${projectId}/recordings/${recordingId}/reparse`, { method: 'POST' }))
+}
+
 /** 提交「删除这一句」提案，等有审批权者合并后生效。 */
 export async function createDeleteProposal(
   groupId: string, materialId: string, sentenceId: string,

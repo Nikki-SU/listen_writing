@@ -239,3 +239,62 @@ def parse_transcript(text: str) -> tuple[str, list[tuple[str, int | None, str]],
 
     speakers = list(dict.fromkeys(w for w, _, _ in parsed if w))
     return title, parsed, speakers
+
+
+def repair_broken_sentences(sentences: list[dict]) -> tuple[list[dict], int]:
+    """修复旧版本导入产生的「被折行劈开」的句子，不要求用户重新导入。
+
+    旧 bug 的产物长这样：
+      {speaker: "访员", text: "02):"}          ← 时间的「秒」和冒号被从上一行挤下来
+      {speaker: "访员", text: "OK, OK, ..."}   ← 真正的正文
+    或 speaker 本身带着未闭合括号："访员(00:00"。
+
+    识别与修复：
+    1) text 完全匹配「数字):」这种纯残片 → 丢弃，并把秒数补回上一句的 end_ms；
+    2) speaker 含未闭合括号 → 与后一句拼成完整 speaker+时间，剥出真正正文；
+    3) 残片紧跟在上一句时，把残片里的秒数补进上一句的时间。
+    返回 (修复后的句子, 修了几处)。
+    """
+    fixed: list[dict] = []
+    repairs = 0
+    for s in sentences:
+        sp = (s.get("speaker") or "").strip()
+        txt = (s.get("text") or "")
+
+        # 情形1：整句就是「02):」这类纯残片（时间被折行挤下来的尾巴）
+        m = re.match(r"^(\d{1,2})\s*[\]\)）]?\s*[:：]\s*$", txt.strip())
+        if m:
+            if fixed:
+                # 这个「秒」属于上一句：补回上一句结束时间
+                sec = int(m.group(1))
+                prev = fixed[-1]
+                base = int(prev.get("start_ms") or 0)
+                cand = base // 60000 * 60000 + sec * 1000
+                if cand >= base:
+                    prev["end_ms"] = max(int(prev.get("end_ms") or 0), cand)
+            repairs += 1
+            continue
+
+        # 情形2：speaker 带未闭合括号（"访员(00:00" / "访员(00"）
+        if sp.count("(") > sp.count(")") or sp.count("（") > sp.count("）"):
+            # 从后一句正文里找「秒):」拼回来
+            m2 = re.match(r"^(\d{1,2})\s*[\]\)）]\s*[:：]\s*(.*)$", txt.strip())
+            if m2:
+                # speaker 可能已以冒号结尾（"访员(00:00"），避免拼出双冒号
+                base = sp.rstrip()
+                sep = "" if base.endswith((":", "：")) else ":"
+                sp = base + sep + m2.group(1) + ")"
+                txt = m2.group(2)
+                s = {**s, "speaker": sp, "text": txt}
+                repairs += 1
+        fixed.append(s)
+    # 二次清洗：speaker 若仍带残留括号/时间，剥成纯名字
+    out = []
+    for s in fixed:
+        sp = s.get("speaker") or ""
+        clean = re.sub(r"[\(（\[].*$", "", sp).strip()
+        if clean != sp and not (s.get("text") or "").startswith(tuple("0123456789")):
+            s = {**s, "speaker": clean}
+            repairs += 1
+        out.append(s)
+    return out, repairs
