@@ -31,6 +31,7 @@ import kb
 import kb_docs
 import kb_search
 import kb_chat
+import kb_embed
 import mineru
 from models import APP_VERSION
 from transcriber import ASR_MODELS, asr_options, transcriber_for
@@ -1102,6 +1103,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/kb/mineru/status":
             self._send_json(mineru.probe())
+            return
+        # 群组材料作为个人对话上下文（按成员权限/脱敏，只返回数据不落群组）
+        m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/chat-context$")
+        if m:
+            device = self._collab_device()
+            self._collab_call(lambda: collab.material_chat_context(m[0], m[1], device))
             return
 
         self._send_json({"error": "not found"}, status=404)
@@ -3355,8 +3362,8 @@ class Handler(BaseHTTPRequestHandler):
             ids = data.get("library_ids") or []
             if not isinstance(ids, list):
                 ids = []
-            self._kb_call(lambda: {"hits": kb_search.search(
-                str(data.get("query") or ""), [str(x) for x in ids], int(data.get("top_k") or 8))})
+            self._kb_call(lambda: kb_search.search(
+                str(data.get("query") or ""), [str(x) for x in ids], int(data.get("top_k") or 8)))
             return
         m = _match(path, r"^/api/projects/([^/]+)/chats$")
         if m:
@@ -3369,9 +3376,37 @@ class Handler(BaseHTTPRequestHandler):
             msgs = data.get("messages") or []
             self._kb_call(lambda: kb_chat.append_messages(m[0], m[1], msgs if isinstance(msgs, list) else []))
             return
+        m = _match(path, r"^/api/projects/([^/]+)/chats/([^/]+)/ask/stream$")
+        if m:
+            self._kb_ask_stream(m[0], m[1])
+            return
         m = _match(path, r"^/api/projects/([^/]+)/chats/([^/]+)/ask$")
         if m:
             self._kb_ask(m[0], m[1])
+            return
+
+        # 向量模型：状态 / 下载 / 建索引
+        if path == "/api/kb/embed/status":
+            self._send_json(kb_embed.status())
+            return
+        m = _match(path, r"^/api/kb/embed/ensure$")
+        if m:
+            data = self._read_json_body() or {}
+            key = str(data.get("model_key") or kb_embed.DEFAULT_EMBED_MODEL)
+            try:
+                p = kb_embed.ensure_model(key)
+                self._send_json({"status": "ready", "path": str(p)})
+            except Exception as e:  # noqa: BLE001
+                self._send_json({"error": str(e)}, status=500)
+            return
+        m = _match(path, r"^/api/kb/libraries/([^/]+)/index$")
+        if m:
+            data = self._read_json_body() or {}
+            key = str(data.get("model_key") or kb_embed.DEFAULT_EMBED_MODEL)
+            try:
+                self._send_json(kb_search.build_index(m[0], key))
+            except Exception as e:  # noqa: BLE001
+                self._send_json({"error": str(e)}, status=500)
             return
 
         self._send_json({"error": "not found"}, status=404)
@@ -3639,7 +3674,8 @@ class Handler(BaseHTTPRequestHandler):
             # 全库开关
             if data.get("all_libraries"):
                 ids = [lib["id"] for lib in kb.list_libraries()]
-            hits = kb_search.search(question, [str(x) for x in ids], int(data.get("top_k") or 8))
+            sr = kb_search.search(question, [str(x) for x in ids], int(data.get("top_k") or 8))
+            hits = sr["hits"]
             mat = data.get("material_snippets") or []
             history = data.get("history") or []
             only = bool(data.get("only_evidence"))
@@ -3649,11 +3685,80 @@ class Handler(BaseHTTPRequestHandler):
                 mat if isinstance(mat, list) else [], hits, only,
                 str(data.get("model_key") or storage.get_settings().get("llm_model", "qwen3-4b")),
             )
+            result["channels"] = sr.get("channels", [])
+            result["note"] = sr.get("note", "")
             self._send_json(result)
         except KeyError as e:
             self._send_json({"error": str(e)}, status=404)
         except Exception as e:  # noqa: BLE001 - 推理失败要给前端明确错误
             self._send_json({"error": f"回答失败：{e}"}, status=500)
+
+    def _kb_ask_stream(self, project_id: str, chat_id: str):
+        """SSE 流式问答：POST 直接返回 text/event-stream，前端用 fetch+ReadableStream 读。
+
+        事件：sources(检索完成/引用清单) → delta(文本增量) → done(校验结果) / error。
+        取消：客户端 AbortController.abort() 断开 socket，写事件抛异常即停（检查 should_stop）。
+        """
+        data = self._read_json_body() or {}
+        question = str(data.get("question") or "").strip()
+        if not question:
+            self._send_json({"error": "问题不能为空"}, status=400)
+            return
+        cancelled = {"v": False}
+        try:
+            kb_chat.get_chat(project_id, chat_id)
+            ids = data.get("library_ids")
+            if not isinstance(ids, list) or not ids:
+                ids = kb.list_project_refs(project_id)
+            if data.get("all_libraries"):
+                ids = [lib["id"] for lib in kb.list_libraries()]
+            sr = kb_search.search(question, [str(x) for x in ids], int(data.get("top_k") or 8))
+            hits = sr["hits"]
+            mat = data.get("material_snippets") or []
+            history = data.get("history") or []
+            messages, refs, context = kb_chat.build_messages(
+                question, history if isinstance(history, list) else [],
+                mat if isinstance(mat, list) else [], hits, bool(data.get("only_evidence")),
+            )
+            model_key = str(data.get("model_key") or storage.get_settings().get("llm_model", "qwen3-4b"))
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.end_headers()
+
+            def emit(ev: dict) -> bool:
+                try:
+                    self.wfile.write(("data: " + json.dumps(ev, ensure_ascii=False) + "\n\n").encode("utf-8"))
+                    self.wfile.flush()
+                    return True
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    cancelled["v"] = True
+                    return False
+
+            emit({"type": "sources", "citations": refs, "note": sr.get("note", ""), "context_chars": len(context)})
+            for chunk in kb_chat.stream_answer(messages, refs, model_key, should_stop=lambda: cancelled["v"]):
+                if cancelled["v"]:
+                    break
+                if "__done__" in chunk:
+                    emit({"type": "done", **{k: v for k, v in chunk.items() if k != "__done__"}})
+                else:
+                    emit({"type": "delta", "text": chunk.get("delta", "")})
+                    if chunk.get("cancelled"):
+                        emit({"type": "cancelled"})
+        except KeyError as e:
+            try:
+                self._send_json({"error": str(e)}, status=404)
+            except Exception:
+                pass
+        except Exception as e:  # noqa: BLE001
+            try:
+                self._send_json({"error": f"回答失败：{e}"}, status=500)
+            except Exception:
+                pass
 
     def _upload_recording(self, project_id: str):
         if storage.get_project(project_id) is None:

@@ -110,6 +110,7 @@ def system_prompt(only_evidence: bool) -> str:
         "2. 没有依据支撑的部分，可以用常识补充，但必须明确写出「（材料/库中未找到直接依据）」。\n"
         "3. 引用号只能使用上下文里给出的编号，不要编造编号。\n"
         "4. 引号里的话必须是依据里逐字出现的内容，否则不要用引号。\n"
+        "不要输出思考过程，直接给答案。/no_think\n"
     )
     if only_evidence:
         base += "5. 严格只依据给定上下文回答；如果没有相关依据，直接回答「材料中未找到相关依据」。\n"
@@ -146,6 +147,24 @@ def verify_citations(answer: str, refs: list[dict]) -> dict:
     }
 
 
+def build_messages(
+    question: str, history: list[dict], material_snippets: list[dict],
+    kb_hits: list[dict], only_evidence: bool,
+) -> tuple[list[dict], list[dict], str]:
+    """复用：装配 system/history/user 消息，返回 (messages, refs, context)。"""
+    context, refs = build_sources(material_snippets, kb_hits)
+    messages = [{"role": "system", "content": system_prompt(only_evidence)}]
+    for h in history:
+        if h.get("role") in ("user", "assistant"):
+            messages.append({"role": h["role"], "content": str(h.get("text", ""))[:2000]})
+    user_content = (
+        (f"以下是可用依据（引用号在方括号里）：\n{context}\n\n" if context else "（没有检索到可用依据）\n\n")
+        + "问题：" + question
+    )
+    messages.append({"role": "user", "content": user_content})
+    return messages, refs, context
+
+
 def ask(
     project_id: str,
     question: str,
@@ -159,20 +178,7 @@ def ask(
     """证据优先作答：装配上下文 → llm 生成 → 引文回查。返回答案、引用、校验报告、上下文摘要。"""
     import llm
 
-    context, refs = build_sources(material_snippets, kb_hits)
-    messages = [
-        {"role": "system", "content": system_prompt(only_evidence)},
-    ]
-    # 最近若干轮历史（定稿默认 6 轮，由调用方裁剪）
-    for h in history:
-        if h.get("role") in ("user", "assistant"):
-            messages.append({"role": h["role"], "content": str(h.get("text", ""))[:2000]})
-    user_content = (
-        (f"以下是可用依据（引用号在方括号里）：\n{context}\n\n" if context else "（没有检索到可用依据）\n\n")
-        + "问题：" + question
-    )
-    messages.append({"role": "user", "content": user_content})
-
+    messages, refs, context = build_messages(question, history, material_snippets, kb_hits, only_evidence)
     engine = llm._engine(model_key)
     raw = llm._complete(engine, messages, should_stop=should_stop, temperature=0.3)
     answer = llm.split_think(raw)
@@ -185,4 +191,41 @@ def ask(
         "had_evidence": bool(context),
         "context_chars": len(context),
         "context": context,
+    }
+
+
+def stream_answer(
+    messages: list[dict], refs: list[dict], model_key: str,
+    should_stop=None,
+):
+    """流式生成：逐 chunk yield 文本增量；结束时 yield 一条 {'__done__': ...}。
+
+    与 ask() 共用 build_messages 装配的 messages/refs，保证流式与非流式答案一致。
+    """
+    import llm
+    engine = llm._engine(model_key)
+    parts: list[str] = []
+    try:
+        for piece in engine.create_chat_completion(messages=messages, stream=True, temperature=0.3):
+            if should_stop and should_stop():
+                raise llm.Cancelled()
+            try:
+                delta = piece["choices"][0].get("delta") or {}
+            except (KeyError, IndexError, TypeError):
+                continue
+            text = delta.get("content") or ""
+            if text:
+                parts.append(text)
+                yield {"delta": text}
+    except llm.Cancelled:
+        yield {"delta": "", "cancelled": True}
+        return
+    answer = llm.split_think("".join(parts))
+    check = verify_citations(answer, refs)
+    yield {
+        "__done__": True,
+        "answer": check["answer"],
+        "citations": refs,
+        "invalid_citations": check["invalid_citations"],
+        "fabricated_quotes": check["fabricated_quotes"],
     }

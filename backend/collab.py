@@ -2329,3 +2329,40 @@ def rename_material(group_id: str, material_id: str, name: str, device_code: str
     _log(group, member, "rename_material", material_id, name)
     _save(group)
     return {"status": "ok", "name": name}
+
+
+def material_chat_context(group_id: str, material_id: str, device_code: str) -> dict:
+    """供个人证据对话使用的群组材料上下文。
+
+    只取该成员有权看到的内容：复用 get_material 的权限判断与脱敏（审查者拿到阶段≥2
+    脱敏稿）。回答与会话只落本人本机——这里只返回数据，不写 group.json、不新增群组 AI 接口。
+    """
+    view = get_material(group_id, material_id, device_code)
+    material = view["material"]
+    sentences = material.get("sentences", [])
+    snippets = [
+        {
+            "sentence_id": s.get("id", ""),
+            "text": s.get("text", ""),
+            "speaker": s.get("speaker", ""),
+        }
+        for s in sentences if s.get("text")
+    ]
+    # 默认只带「我的」码本/编码；别人的不进上下文。
+    mine_device = str(device_code)
+    my_codings = [
+        c for c in material.get("codings", [])
+        if str(c.get("coder_id")) == mine_device
+    ]
+    my_book = (material.get("personal_codebooks") or {}).get(mine_device, {})
+    return {
+        "group_id": group_id,
+        "material_id": material_id,
+        "material_name": material.get("name", ""),
+        "material_version": material.get("version", ""),
+        "review_mode": view.get("review_mode", False),
+        "sentences": snippets,
+        "my_codings": my_codings,
+        "my_codebook": my_book.get("codes", []),
+        "note": "审查模式：仅阶段≥2脱敏稿" if view.get("review_mode") else "",
+    }

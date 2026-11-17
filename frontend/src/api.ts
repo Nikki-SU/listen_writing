@@ -1386,6 +1386,20 @@ export type AskResult = {
   had_evidence: boolean
   context_chars: number
   context: string
+  channels?: string[]
+  note?: string
+}
+
+export type MaterialChatContext = {
+  group_id: string
+  material_id: string
+  material_name: string
+  material_version: string
+  review_mode: boolean
+  sentences: { sentence_id: string; text: string; speaker: string }[]
+  my_codings: unknown[]
+  my_codebook: unknown[]
+  note: string
 }
 
 export const kbApi = {
@@ -1415,6 +1429,15 @@ export const kbApi = {
     body: JSON.stringify({ query, library_ids: libraryIds, top_k: topK }),
   })),
   mineruStatus: () => json<{ available: boolean; installed: boolean; ram_gb: number; disk_free_gb: number; profile_suggestion: string; timing_note: string }>(fetch(`${BACKEND}/api/kb/mineru/status`)),
+  embedStatus: () => json<{ models: { key: string; label: string; ready: boolean }[]; max_loaded: number; loaded: string[] }>(fetch(`${BACKEND}/api/kb/embed/status`)),
+  ensureEmbed: (modelKey: string) => json<{ status: string; path?: string }>(fetch(`${BACKEND}/api/kb/embed/ensure`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_key: modelKey }),
+  })),
+  buildIndex: (kbId: string, modelKey: string) => json<{ built: number; model: string }>(fetch(`${BACKEND}/api/kb/libraries/${kbId}/index`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_key: modelKey }),
+  })),
+  groupMaterialContext: (groupId: string, materialId: string, deviceCode: string) =>
+    json<MaterialChatContext>(fetch(`${BACKEND}/api/groups/${groupId}/materials/${materialId}/chat-context?device_code=${encodeURIComponent(deviceCode)}`)),
 }
 
 export const chatApi = {
@@ -1427,16 +1450,64 @@ export const chatApi = {
   appendMessages: (projectId: string, chatId: string, messages: ChatMessage[]) => json<Chat>(fetch(`${BACKEND}/api/projects/${projectId}/chats/${chatId}/messages`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages }),
   })),
-  ask: (projectId: string, chatId: string, payload: {
-    question: string
-    history: ChatMessage[]
-    material_snippets: { text: string; doc_name?: string }[]
-    library_ids?: string[]
-    all_libraries?: boolean
-    only_evidence?: boolean
-    top_k?: number
-    model_key?: string
-  }) => json<AskResult>(fetch(`${BACKEND}/api/projects/${projectId}/chats/${chatId}/ask`, {
+  ask: (projectId: string, chatId: string, payload: ChatAskPayload) => json<AskResult>(fetch(`${BACKEND}/api/projects/${projectId}/chats/${chatId}/ask`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   })),
+  /** SSE 流式问答：onEvent 逐事件回调；返回 abort 函数用于取消。 */
+  askStream: async (
+    projectId: string, chatId: string, payload: ChatAskPayload,
+    onEvent: (ev: StreamEvent) => void,
+  ): Promise<{ abort: () => void }> => {
+    const ctrl = new AbortController()
+    const res = await fetch(`${BACKEND}/api/projects/${projectId}/chats/${chatId}/ask/stream`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload), signal: ctrl.signal,
+    })
+    if (!res.ok || !res.body) {
+      let msg = `HTTP ${res.status}`
+      try { msg = (await res.json()).error || msg } catch { /* ignore */ }
+      throw new Error(msg)
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    void (async () => {
+      try {
+        while (true) {
+          const { value, done } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          let idx: number
+          while ((idx = buf.indexOf('\n\n')) >= 0) {
+            const raw = buf.slice(0, idx)
+            buf = buf.slice(idx + 2)
+            const line = raw.split('\n').find((l) => l.startsWith('data: '))
+            if (!line) continue
+            try { onEvent(JSON.parse(line.slice(6)) as StreamEvent) } catch { /* 忽略坏事件 */ }
+          }
+        }
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') onEvent({ type: 'error', error: String(e) })
+      }
+    })()
+    return { abort: () => ctrl.abort() }
+  },
 }
+
+export type ChatAskPayload = {
+  question: string
+  history: ChatMessage[]
+  material_snippets: { text: string; doc_name?: string; sentence_id?: string; material_version?: string }[]
+  library_ids?: string[]
+  all_libraries?: boolean
+  only_evidence?: boolean
+  top_k?: number
+  model_key?: string
+}
+
+export type StreamEvent =
+  | { type: 'sources'; citations: ChatRef[]; note: string; context_chars: number }
+  | { type: 'delta'; text: string }
+  | { type: 'done'; answer: string; citations: ChatRef[]; invalid_citations: string[]; fabricated_quotes: string[] }
+  | { type: 'cancelled' }
+  | { type: 'error'; error: string }

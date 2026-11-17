@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { kbApi, chatApi, type KbLibrary, type KbDocument, type Chat, type ChatMessage, type AskResult } from './api'
+import { kbApi, chatApi, listGroups, listGroupMaterials, type KbLibrary, type KbDocument, type Chat, type ChatMessage, type StreamEvent, type MaterialChatContext } from './api'
 import type { Recording } from './types'
 
 /** 极简 Markdown 渲染：标题/粗体/行内代码/引用号标签/换行。够对话回答用，零依赖。 */
@@ -38,6 +38,16 @@ export default function KnowledgePage({
   const [materialRec, setMaterialRec] = useState('')
   const [notice, setNotice] = useState('')
   const [preview, setPreview] = useState<{ kb: string; doc: KbDocument } | null>(null)
+  // 群组材料上下文 / 流式 / 向量
+  const [groups, setGroups] = useState<{ id: string; name: string }[]>([])
+  const [groupId, setGroupId] = useState('')
+  const [groupMaterials, setGroupMaterials] = useState<{ id: string; name: string }[]>([])
+  const [groupIdentity, setGroupIdentity] = useState('')
+  const [materialVersion, setMaterialVersion] = useState('')
+  const [streamDraft, setStreamDraft] = useState('')
+  const [streamRefs, setStreamRefs] = useState<MaterialChatContext | null>(null)
+  const abortRef = useRef<{ abort: () => void } | null>(null)
+  const [embedStatus, setEmbedStatus] = useState<{ models: { key: string; label: string; ready: boolean }[]; max_loaded: number } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const uploadTarget = useRef<string>('')
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -61,7 +71,15 @@ export default function KnowledgePage({
   }
   useEffect(() => { void reloadLibs() }, [])
   useEffect(() => { void reloadRefs(); void reloadChats(); setActiveChat(null) }, [projectId])
-  useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }) }, [activeChat, asking])
+  useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }) }, [activeChat, asking, streamDraft])
+  useEffect(() => {
+    void listGroups().then((r) => { setGroups(r.groups || []); setGroupIdentity(r.identity?.device_code || '') }).catch(() => undefined)
+    void kbApi.embedStatus().then(setEmbedStatus).catch(() => undefined)
+  }, [])
+  useEffect(() => {
+    if (!groupId) { setGroupMaterials([]); return }
+    void listGroupMaterials(groupId).then((ms) => setGroupMaterials(ms.map((m) => ({ id: m.id, name: m.name })))).catch(() => setGroupMaterials([]))
+  }, [groupId])
 
   async function createLib() {
     if (!newLib.trim()) return
@@ -100,6 +118,20 @@ export default function KnowledgePage({
     setMaterial((prev) => (prev ? prev + '\n\n' : '') + `材料：${rec.name}`)
     setMaterialRec('')
   }
+  async function pickGroupMaterial(materialId: string) {
+    if (!groupId || !materialId) return
+    try {
+      const ctx = await kbApi.groupMaterialContext(groupId, materialId, groupIdentity)
+      setStreamRefs(ctx)
+      setMaterialVersion(ctx.material_version)
+      // 把该成员有权看到的句子拼进材料上下文（审查模式已是脱敏稿）。
+      const text = ctx.sentences.map((s) => (s.speaker ? `${s.speaker}：${s.text}` : s.text)).join('\n')
+      setMaterial((prev) => (prev ? prev + '\n\n' : '') + `【群组材料《${ctx.material_name}》 v${ctx.material_version}${ctx.review_mode ? ' · 脱敏稿' : ''}】\n${text}`)
+      setNotice(ctx.review_mode ? '已带入群组材料的脱敏稿（审查模式）' : `已带入群组材料 v${ctx.material_version}`)
+    } catch (e) {
+      setNotice(`带入群组材料失败：${String(e).replace(/^Error:\s*/, '')}`)
+    }
+  }
   async function newChat() {
     if (!projectId) { setNotice('请先选择一个项目'); return }
     const c = await chatApi.createChat(projectId)
@@ -116,34 +148,59 @@ export default function KnowledgePage({
     const question = input.trim()
     setInput('')
     setAsking(true)
+    setStreamDraft('')
     const userMsg: ChatMessage = { role: 'user', text: question }
     setActiveChat({ ...activeChat, messages: [...activeChat.messages, userMsg] })
+    let answer = ''
+    let citations: ChatMessage['refs'] = []
+    let ctxChars = 0
     try {
-      const result: AskResult = await chatApi.ask(projectId, activeChat.id, {
+      const snippets = material.trim() ? [{
+        text: material.trim(), doc_name: '材料上下文',
+        sentence_id: streamRefs?.sentences?.[0]?.sentence_id,
+        material_version: materialVersion || undefined,
+      }] : []
+      const handle = await chatApi.askStream(projectId, activeChat.id, {
         question,
         history: activeChat.messages.slice(-12),
-        material_snippets: material.trim() ? [{ text: material.trim(), doc_name: '材料上下文' }] : [],
+        material_snippets: snippets,
         library_ids: refs,
         all_libraries: allLibs,
         only_evidence: onlyEvidence,
+      }, (ev: StreamEvent) => {
+        if (ev.type === 'sources') { citations = ev.citations; ctxChars = ev.context_chars; setNotice(ev.note) }
+        else if (ev.type === 'delta') { answer += ev.text; setStreamDraft(answer) }
+        else if (ev.type === 'done') {
+          answer = ev.answer
+          citations = ev.citations
+          const assistant: ChatMessage = { role: 'assistant', text: answer, refs: citations, context_chars: ctxChars }
+          void (async () => {
+            await chatApi.appendMessages(projectId, activeChat.id, [userMsg, assistant])
+            await reloadChats()
+            const fresh = await chatApi.getChat(projectId, activeChat.id)
+            setActiveChat(fresh)
+            if (ev.fabricated_quotes.length || ev.invalid_citations.length) {
+              setNotice(`引文校验：剔除 ${ev.invalid_citations.length} 个无效引用，标注 ${ev.fabricated_quotes.length} 处存疑引文`)
+            }
+          })()
+        } else if (ev.type === 'cancelled') { setNotice('已停止生成') }
+        else if (ev.type === 'error') { setNotice(`回答失败：${ev.error}`) }
       })
-      const assistant: ChatMessage = {
-        role: 'assistant', text: result.answer,
-        refs: result.citations, context_chars: result.context_chars,
-      }
-      await chatApi.appendMessages(projectId, activeChat.id, [userMsg, assistant])
-      const fresh = await chatApi.getChat(projectId, activeChat.id)
-      setActiveChat(fresh)
-      await reloadChats()
-      if (result.fabricated_quotes.length || result.invalid_citations.length) {
-        setNotice(`引文校验：剔除 ${result.invalid_citations.length} 个无效引用，标注 ${result.fabricated_quotes.length} 处存疑引文`)
-      }
+      abortRef.current = handle
     } catch (e) {
       setNotice(`回答失败：${String(e).replace(/^Error:\s*/, '')}`)
       setActiveChat((prev) => prev ? { ...prev, messages: prev.messages.slice(0, -1) } : prev)
     } finally {
+      abortRef.current = null
       setAsking(false)
+      setStreamDraft('')
     }
+  }
+
+  function stop() {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setNotice('正在停止…')
   }
 
   const card: React.CSSProperties = { border: '1px solid #e8ebf0', borderRadius: 12, background: '#fff', padding: 14, boxSizing: 'border-box' }
@@ -155,6 +212,19 @@ export default function KnowledgePage({
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>知识库</div>
         <div style={{ fontSize: 11, color: '#8a8f98', lineHeight: 1.6, marginBottom: 10 }}>
           库只有一份，项目只引用它。新增文档后，所有引用该库的项目立即可用。
+        </div>
+        <div style={{ border: '1px solid #eef0f2', borderRadius: 8, padding: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>检索方式</div>
+          <div style={{ fontSize: 10, color: '#8a8f98', marginBottom: 6 }}>
+            BM25 词法始终可用 · 向量模型同时最多装 {embedStatus?.max_loaded ?? '—'} 个
+          </div>
+          {embedStatus?.models.map((m) => (
+            <div key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, marginBottom: 4 }}>
+              <span style={{ flex: 1 }}>{m.label}</span>
+              <span style={{ color: m.ready ? '#1e7e34' : '#8a8f98' }}>{m.ready ? '就绪' : '未下载'}</span>
+              {!m.ready && <button onClick={() => void kbApi.ensureEmbed(m.key).then(() => kbApi.embedStatus().then(setEmbedStatus)).catch((e) => setNotice(String(e)))} style={{ ...btn, fontSize: 10 }}>下载</button>}
+            </div>
+          ))}
         </div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
           <input value={newLib} onChange={(e) => setNewLib(e.target.value)} placeholder="新建知识库名称" style={{ flex: 1, fontSize: 12, padding: '5px 8px', borderRadius: 6, border: '1px solid #d5dae2' }} />
@@ -182,7 +252,12 @@ export default function KnowledgePage({
                 </span>
               ))}
             </div>
-            <button onClick={() => { uploadTarget.current = lib.id; fileRef.current?.click() }} style={{ ...btn, fontSize: 11 }}>导入文档（md/txt/docx/pdf）</button>
+            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+              <button onClick={() => { uploadTarget.current = lib.id; fileRef.current?.click() }} style={{ ...btn, fontSize: 11 }}>导入文档（md/txt/docx/pdf）</button>
+              <button disabled={!embedStatus?.models.some((m) => m.ready) || !(docs[lib.id] || []).length}
+                onClick={() => void kbApi.buildIndex(lib.id, 'bge-small-zh').then((r) => setNotice(`已建 ${r.built} 个向量块`)).catch((e) => setNotice(String(e)))}
+                title="为该库分块建向量索引（需先下载向量模型）" style={{ ...btn, fontSize: 11 }}>建向量索引</button>
+            </div>
           </div>
         ))}
         <input ref={fileRef} type="file" accept=".md,.markdown,.txt,.docx,.pdf" hidden
@@ -211,13 +286,27 @@ export default function KnowledgePage({
           <label><input type="checkbox" checked={allLibs} onChange={(e) => setAllLibs(e.target.checked)} /> 全库检索</label>
         </div>
         <div style={{ border: '1px solid #eef0f2', borderRadius: 8, padding: 8, marginBottom: 8 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>材料上下文（可选）</div>
+          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+            材料上下文（可选）
+            {materialVersion && <span style={{ color: '#8a5a00', fontWeight: 400, marginLeft: 6 }}>基于 v{materialVersion}</span>}
+          </div>
           <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
             <select value={materialRec} onChange={(e) => { setMaterialRec(e.target.value); if (e.target.value) void pickMaterial(e.target.value) }} style={{ fontSize: 11, flex: 1 }}>
               <option value="">从项目条目添加…</option>
               {recordings.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+            <select value={groupId} onChange={(e) => { setGroupId(e.target.value); setMaterialRec('') }} style={{ fontSize: 11, flex: 1 }}>
+              <option value="">选择群组…</option>
+              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+            <select value="" onChange={(e) => { if (e.target.value) void pickGroupMaterial(e.target.value) }} style={{ fontSize: 11, flex: 1 }} disabled={!groupId}>
+              <option value="">从群组材料带入…</option>
+              {groupMaterials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </div>
+          {streamRefs?.review_mode && <div style={{ fontSize: 10, color: '#b06a00', marginBottom: 4 }}>审查模式：仅带入阶段≥2脱敏稿</div>}
           <textarea value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="粘贴要作为依据的材料片段（访谈稿/编码等）"
             style={{ width: '100%', boxSizing: 'border-box', fontSize: 11, minHeight: 44, padding: 6, borderRadius: 6, border: '1px solid #e8ebf0', resize: 'vertical' }} />
         </div>
@@ -236,13 +325,21 @@ export default function KnowledgePage({
               )}
             </div>
           ))}
-          {asking && <div style={{ fontSize: 12, color: '#8a8f98' }}>正在检索与生成…</div>}
+          {streamDraft && <div style={{ marginBottom: 12, padding: 8, borderRadius: 8, background: '#f7f9fc' }}>
+            <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4 }}>助手 · 生成中…</div>
+            <div style={{ fontSize: 13 }}>{renderMd(streamDraft)}</div>
+          </div>}
+          {asking && !streamDraft && <div style={{ fontSize: 12, color: '#8a8f98' }}>正在检索与生成…</div>}
           <div ref={bottomRef} />
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void send() }}
             placeholder="问点什么（会先找依据再作答）" style={{ flex: 1, fontSize: 12, padding: '6px 8px', borderRadius: 6, border: '1px solid #d5dae2' }} />
-          <button onClick={() => void send()} disabled={asking || !activeChat || !input.trim()} style={{ ...btn, background: '#245c9c', color: '#fff', border: 'none' }}>发送</button>
+          {asking ? (
+            <button onClick={stop} style={{ ...btn, background: '#b00020', color: '#fff', border: 'none' }}>停止</button>
+          ) : (
+            <button onClick={() => void send()} disabled={!activeChat || !input.trim()} style={{ ...btn, background: '#245c9c', color: '#fff', border: 'none' }}>发送</button>
+          )}
         </div>
         {notice && <div onClick={() => setNotice('')} style={{ fontSize: 11, color: '#8a5a00', background: '#fff4e0', borderRadius: 6, padding: '5px 8px', marginTop: 8, cursor: 'pointer' }}>{notice}</div>}
       </div>
