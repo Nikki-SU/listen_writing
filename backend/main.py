@@ -3546,43 +3546,14 @@ class Handler(BaseHTTPRequestHandler):
         if not text.strip():
             self._send_json({"error": "逐字稿内容为空"}, status=400)
             return
-        import re
-        timed = re.compile(r"^\s*([^(:（\n]+?)\s*[\(（](\d{1,2}):(\d{2}):(\d{2})[\)）]\s*[:：]\s*(.*?)\s*$")
-        untimed = re.compile(r"^\s*([^:：\n]{1,24}?)\s*[:：]\s*(.*?)\s*$")
+        import transcript_parse
 
-        # 首行判题目：Markdown # 标题，或任何「孤立行」——既没时间戳、也没「名字:内容」。
-        # 逐字稿的题目就是这种长相，一律当题目，不进正文（不再按长短/标点猜）。
-        lines = text.splitlines()
-        first = next((ln for ln in lines if ln.strip()), '')
-        title = ''
-        if first.strip():
-            s = first.strip()
-            if s.startswith('#'):
-                title = s.lstrip('#').strip()
-            elif not timed.match(first) and not untimed.match(first):
-                title = s
+        # 逐字稿解析：支持「姓名(时:分:秒): 正文」「访谈者：正文」，以及腾讯会议导出的
+        # markdown 分行格式（时间一行、发言人一行、正文一行，含 ** 加粗）。
+        title, parsed, speakers_found = transcript_parse.parse_transcript(text)
         manual = str(data.get("name") or "").strip()
         name = manual or title or f"逐字稿 {time.strftime('%m-%d %H:%M')}"
-        if title and not manual:
-            lines = [ln for ln in lines if ln is not first]  # 题目行不进正文
 
-        parsed: list[tuple[str, int | None, str]] = []
-        for line in lines:
-            m = timed.match(line)
-            if m:
-                who = m.group(1).strip()
-                ms = (int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4))) * 1000
-                body = m.group(5).strip()
-                if body:
-                    parsed.append((who, ms, body))
-                continue
-            m = untimed.match(line)
-            if m and m.group(1).strip() and m.group(2).strip():
-                parsed.append((m.group(1).strip(), None, m.group(2).strip()))
-                continue
-            # 既无时间戳也无「名字:」的孤立行：作为无发言人正文收下，不丢内容。
-            if line.strip():
-                parsed.append(('', None, line.strip()))
         if not parsed:
             self._send_json({"error": "没识别出逐字稿行，格式应为：姓名(00:00:04): 内容 或 访谈者：内容"}, status=400)
             return
@@ -3614,7 +3585,7 @@ class Handler(BaseHTTPRequestHandler):
             })
         storage.save_sentences(project_id, rid, sentences)
         storage.save_transcript_md(project_id, rid, _sentences_to_markdown(sentences))
-        speakers = list(dict.fromkeys(w for w, _, _ in parsed))
+        speakers = speakers_found
         storage.update_recording(
             project_id, rid,
             source="transcript",
@@ -3624,7 +3595,11 @@ class Handler(BaseHTTPRequestHandler):
             speakers=speakers,
             transcribe={"status": "done", "progress": 100, "error": ""},
         )
-        self._send_json({"recording": storage.get_recording(project_id, rid), "sentences": len(sentences)}, status=201)
+        self._send_json({
+            "recording": storage.get_recording(project_id, rid),
+            "sentences": len(sentences),
+            "speakers": speakers,
+        }, status=201)
 
     def _kb_add_document(self, kb_id: str):
         """文档入库：前端把文件内容以 base64 或纯文本传来，后端转 Markdown + 分块落盘。"""

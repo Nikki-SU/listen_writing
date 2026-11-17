@@ -30,7 +30,7 @@ const files = []
 // 后端模块清单：main 依赖 storage / transcriber / diarize / llm / collab / peers / leaf / models，
 // 转写引擎还依赖 audio.py。知识库依赖 kb / kb_docs / kb_search / kb_chat / kb_embed / mineru。
 // 少嵌一个就会在用户机器上 ImportError（引导部署实测过），加文件必须同步这里。
-for (const f of ['main.py', 'models.py', 'storage.py', 'transcriber.py', 'audio.py', 'diarize.py', 'llm.py', 'collab.py', 'peers.py', 'leaf.py', 'preload.py', 'kb.py', 'kb_docs.py', 'kb_search.py', 'kb_chat.py', 'kb_embed.py', 'mineru.py']) {
+for (const f of ['main.py', 'models.py', 'storage.py', 'transcriber.py', 'audio.py', 'diarize.py', 'llm.py', 'collab.py', 'peers.py', 'leaf.py', 'preload.py', 'kb.py', 'kb_docs.py', 'kb_search.py', 'kb_chat.py', 'kb_embed.py', 'mineru.py', 'transcript_parse.py']) {
   files.push({ path: `backend/${f}`, content: normalize(f, readFileSync(join(repoDir, 'backend', f), 'utf8')) })
 }
 // requirements.txt 写到用户文件夹根目录，启动器在根目录执行 pip install -r requirements.txt

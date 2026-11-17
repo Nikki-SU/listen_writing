@@ -36,7 +36,7 @@ export default function TranscriptImport({
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="条目名（留空自动生成）"
           style={{ fontSize: 13, padding: '6px 8px', borderRadius: 6, border: '1px solid #d5dae2', marginBottom: 8 }} />
         <textarea value={text} onChange={(e) => setText(e.target.value)} autoFocus
-          placeholder={'发言人A(00:00:04): 他说已经开始转写了。\n发言人B(00:00:07): 现在已经开始转写了……'}
+          placeholder={'发言人A(00:00:04): 第一句话。\n发言人B(00:00:07): 第二句话。'}
           style={{ flex: 1, minHeight: 220, resize: 'vertical', fontSize: 12, lineHeight: 1.7, padding: 10, border: '1px solid #d5dae2', borderRadius: 8, boxSizing: 'border-box', fontFamily: 'monospace' }} />
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
           <button onClick={onClose} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6 }}>取消</button>
