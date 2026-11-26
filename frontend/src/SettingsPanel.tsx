@@ -118,14 +118,16 @@ export default function SettingsPanel({
     })
   }
 
-  function installMineru(resume: boolean) {
+  function installMineru(resume: boolean, force = false) {
     const size = mineru?.disk_required_gb ? `约 ${mineru.disk_required_gb}GB` : '数 GB'
-    const tip = resume
-      ? '继续安装会跳过已完成步骤，并从上次中断处续传已下载的包。继续？'
-      : `安装 PDF 转换组件需要下载${size}（依赖 + 模型），且转换在 CPU 上较慢。继续安装？`
+    const tip = force
+      ? '重新安装会删除 MinerU 的独立运行环境并重装依赖（已下载的模型会保留），不会影响主程序或系统环境。继续？'
+      : resume
+        ? '继续安装会跳过已完成步骤，并从上次中断处续传已下载的包。继续？'
+        : `安装 PDF 转换组件需要下载${size}（依赖 + 模型），且转换在 CPU 上较慢。继续安装？`
     if (!window.confirm(tip)) return
     setComponentError('')
-    void api.kbApi.mineruInstall().then(() => refreshComponents())
+    void api.kbApi.mineruInstall(force).then(() => refreshComponents())
       .catch((e) => setComponentError(`安装启动失败：${String(e).replace(/^Error:\s*/, '')}`))
   }
 
@@ -309,7 +311,7 @@ export default function SettingsPanel({
                   <span style={{ fontSize: 13, fontWeight: 600 }}>PDF 转换组件（MinerU）</span>
                   {mineru?.available && (
                     <span style={{ fontSize: 11, color: '#1e7e34', background: '#e9f7ee', borderRadius: 4, padding: '1px 6px' }}>
-                      已就绪{mineru.version ? ` v${mineru.version}` : ''}
+                      已安装{mineru.version ? ` v${mineru.version}` : ''}
                     </span>
                   )}
                   {mineru?.install.running && (
@@ -329,6 +331,13 @@ export default function SettingsPanel({
                             : '未安装'}
                     </span>
                   )}
+                  {/* 与 AI 模型行一致：右侧常驻一个动作按钮（安装 / 重新安装） */}
+                  <span style={{ flex: 1 }} />
+                  {mineru?.available && (
+                    <button onClick={() => installMineru(true, true)} style={{ fontSize: 11, padding: '2px 8px' }}>
+                      重新安装
+                    </button>
+                  )}
                 </div>
                 {mineru && (
                   <div style={{ fontSize: 12, color: '#6b7280' }}>
@@ -345,6 +354,12 @@ export default function SettingsPanel({
                       <button onClick={() => cancelMineru(false)} style={{ fontSize: 11, padding: '2px 8px', color: '#b00020' }}>停止（保留进度）</button>
                     </div>
                   </>
+                )}
+                {mineru?.available && (
+                  <div style={{ fontSize: 11, color: '#1e7e34', lineHeight: 1.7 }}>
+                    安装完成{mineru.install.finished_at ? ` · ${mineru.install.finished_at.replace('T', ' ').slice(0, 16)}` : ''} · 模型 {((mineru.install.models_bytes || 0) / 1024 ** 2).toFixed(0)}MB
+                    <span style={{ color: '#9aa0a6' }}>　{mineru.timing_note}</span>
+                  </div>
                 )}
                 {mineru && !mineru.available && !mineru.install.running && (
                   <>
@@ -375,9 +390,6 @@ export default function SettingsPanel({
                       </div>
                     )}
                   </>
-                )}
-                {mineru?.available && (
-                  <div style={{ fontSize: 11, color: '#9aa0a6' }}>{mineru.timing_note}</div>
                 )}
               </div>
 

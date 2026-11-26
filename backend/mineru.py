@@ -273,7 +273,10 @@ def _run(cmd: list[str], *, stage: str, progress: int, message: str,
 
 
 def _local_cache_env() -> dict:
-    """所有第三方缓存都塞进项目文件夹，卸载时随文件夹一起消失。"""
+    """所有第三方缓存都塞进项目文件夹，卸载时随文件夹一起消失。
+
+    原则：不改系统环境、不写用户主目录、不碰全局 pip/npm；只在子进程里设环境变量。
+    """
     env = dict(os.environ)
     cache = MODELS_DIR / "cache"
     env["PIP_CACHE_DIR"] = str(PROJECT_ROOT / ".runtime" / "pip-cache")
@@ -283,6 +286,12 @@ def _local_cache_env() -> dict:
     env["MPLCONFIGDIR"] = str(cache / "matplotlib")
     env["TORCH_HOME"] = str(cache / "torch")
     env["XDG_CACHE_HOME"] = str(cache)
+    # XDG_CONFIG_HOME / XDG_DATA_HOME 也指到项目内：避免库往 ~/.config 写 token 或配置。
+    env["XDG_CONFIG_HOME"] = str(cache / "config")
+    env["XDG_DATA_HOME"] = str(cache / "data")
+    # 不加载用户 site-packages：独立运行环境只认自己的依赖，避免和系统 Python 互相污染。
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PIP_NO_INPUT"] = "1"
     return env
 
 
@@ -338,7 +347,8 @@ def _install_worker() -> None:
             _set_state(status="running", stage="venv", progress=2,
                        message="正在创建独立运行环境（不会动主程序依赖）…", error="")
             rc = _run([sys.executable, "-m", "venv", "--clear", str(RUNTIME_DIR)],
-                      stage="venv", progress=5, message="正在创建独立运行环境…")
+                      stage="venv", progress=5, message="正在创建独立运行环境…",
+                      env=_local_cache_env())
             if rc != 0 or not py.exists():
                 raise RuntimeError("创建独立运行环境失败（便携 Python 可能缺少 venv 组件）。")
             rebuilt = True
@@ -440,14 +450,23 @@ def _install_worker() -> None:
         _install_cancel.clear()
 
 
-def start_install() -> dict:
+def start_install(force: bool = False) -> dict:
     """后台安装 / 继续安装；重复调用不会起第二个任务。
 
     上次在安装途中关掉后端时，状态会停在 running；这里先判定为「已中断」，
     保留 done_stages 与已下载文件，本次直接从断点继续。
+    `force=True` 表示「重新安装」：删除独立运行环境并清空步骤（模型保留），
+    不会影响主程序依赖与系统环境。
     """
     with _install_lock:
         info = install_info()
+        # 正在安装时不接受「重新安装」：避免删掉正在使用的运行环境。
+        if force and not info["running"]:
+            shutil.rmtree(RUNTIME_DIR, ignore_errors=True)
+            (MODELS_DIR / MODELS_MARKER).unlink(missing_ok=True)
+            _set_state(status="not_installed", stage="", progress=0, done_stages=[],
+                       error="", message="准备重新安装（模型会保留）", auto_install=True)
+            info = install_info()
         if info["running"]:
             # 进程重启后状态文件可能停在 running（没有活线程）：超过 2 分钟视为中断。
             try:
@@ -463,8 +482,10 @@ def start_install() -> dict:
             else:
                 return info
         if probe()["available"]:
+            # 已装好：补一个完成时间，界面才能显示「安装完成 · 时间」。
             _set_state(status="done", stage="done", progress=100,
-                       message="PDF 转换组件已就绪", error="")
+                       message="PDF 转换组件已就绪", error="",
+                       finished_at=_state().get("finished_at") or storage.now_iso())
             return install_info()
         _install_cancel.clear()
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)

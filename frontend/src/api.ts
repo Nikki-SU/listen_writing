@@ -1468,7 +1468,10 @@ export const kbApi = {
     body: JSON.stringify({ query, library_ids: libraryIds, top_k: topK }),
   })),
   mineruStatus: () => json<MineruStatus>(fetch(`${BACKEND}/api/kb/mineru/status`)),
-  mineruInstall: () => json<MineruStatus['install']>(fetch(`${BACKEND}/api/kb/mineru/install`, { method: 'POST' }),),
+  mineruInstall: (force = false) => json<MineruStatus['install']>(fetch(`${BACKEND}/api/kb/mineru/install`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force }),
+  })),
   mineruCancel: () => json<MineruStatus['install']>(fetch(`${BACKEND}/api/kb/mineru/install/cancel`, { method: 'POST' })),
   embedStatus: () => json<{ models: { key: string; label: string; ready: boolean }[]; max_loaded: number; loaded: string[] }>(fetch(`${BACKEND}/api/kb/embed/status`)),
   ensureEmbed: (modelKey: string) => json<{ status: string; path?: string }>(fetch(`${BACKEND}/api/kb/embed/ensure`, {

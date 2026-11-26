@@ -297,6 +297,7 @@ Project
 - 库是**个人全局库**；项目只在 `project.json` 里存 `kb_refs: [kb_id…]`，不复制文档、不建第二份索引。
 - 文档入库：`md/txt` 直读，`docx` 内置解析（版式不保证），`pdf` 走 MinerU 子进程。
 - MinerU **固定 2.x**（当前 `2.7.6`，4.x 是另一套 CLI），装在 `.runtime/mineru/` 独立 venv，主后端不 import torch。
+- 隔离原则：独立 venv + 所有缓存（pip / HF / ModelScope / torch / ultralytics / matplotlib / XDG）重定向到应用目录；这些环境变量**只对子进程生效**，不修改系统环境、不写用户主目录。卸载删文件夹即可，无需清理全局环境。
 
 | 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
 |---|---|---|---|---|---|
@@ -304,7 +305,7 @@ Project
 | KB-2 | 后端 | `POST /api/kb/libraries` | `{"name","embedding_model?"}` | 库对象 | 新建库 |
 | KB-3 | 后端 | `POST /api/kb/libraries/{id}/docs` | `{"name","text?"}` 或 `{"name","content_base64"}` | 文档 meta | PDF 在请求线程内同步转换；MinerU 未装返回 422 |
 | KB-4 | 后端 | `GET /api/kb/mineru/status` | 无 | `MineruStatus`（含 `install` 进度） | 设备/内存/磁盘/建议档位/安装状态；`install` 含 `done_stages / resumable / models_bytes / models_required_bytes` |
-| KB-5 | 后端 | `POST /api/kb/mineru/install` | 无 | `MineruInstallState`（202） | 后台安装；重复调用不会起第二个任务。上次中断会标记 `interrupted` 并**断点续传**：跳过已完成的 venv/torch/MinerU、保留 pip 缓存与模型分片 |
+| KB-5 | 后端 | `POST /api/kb/mineru/install` | `{"force"?: false}`（可省略） | `MineruInstallState`（202） | 后台安装；重复调用不会起第二个任务。上次中断会标记 `interrupted` 并**断点续传**：跳过已完成的 venv/torch/MinerU、保留 pip 缓存与模型分片。`force=true` 为「重新安装」：删除 `.runtime/mineru/` 独立运行环境并清空步骤，**已下载模型保留**，不动主程序依赖与系统环境 |
 | KB-6 | 后端 | `POST /api/kb/mineru/install/cancel` | 无 | `MineruInstallState` | 运行中：停止子进程、保留已下载部分（下次可续传）；未运行：清除 `done_stages` 与模型标记，并设置 `auto_install=false`，下次启动不再自动安装 |
 | KB-7 | 后端 | `POST /api/kb/embed/ensure` | `{"model_key"}` | `{"status","path?"}` | 下载本地 Embedding（bge-small-zh，95MB） |
 | KB-8 | 后端 | `POST /api/kb/libraries/{id}/index` | `{"model_key"}` | `{"built","model"}` | 建向量索引；BM25 始终可用 |

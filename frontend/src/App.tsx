@@ -797,7 +797,38 @@ export default function App() {
               )
             ) : (
               <section className="workspace-card" style={{ gridColumn: 'span 4', display: 'grid', placeItems: 'center' }}>
-                <div style={{ color: '#aaa', fontSize: 14 }}>选择一条录音查看转写结果</div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, maxWidth: 460, textAlign: 'center' }}>
+                  {projects.length === 0 ? (
+                    <>
+                      <div style={{ color: '#8a8f98', fontSize: 14, lineHeight: 1.8 }}>
+                        还没有项目。先新建一个项目，再往里添加录音或逐字稿。
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 13, color: '#5b6472' }}>新建项目</span>
+                        <ProjectCreator onCreate={onCreateProject} />
+                      </div>
+                    </>
+                  ) : recordings.length === 0 ? (
+                    <>
+                      <div style={{ color: '#8a8f98', fontSize: 14, lineHeight: 1.8 }}>
+                        这个项目还没有条目。可以上传录音、直接实时录音，或导入已有的逐字稿。
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                        <button onClick={() => fileInputRef.current?.click()} style={{ fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #d5dae2', background: '#fff', cursor: 'pointer' }}>
+                          上传录音
+                        </button>
+                        <button onClick={() => setLiveOpen(true)} style={{ fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #d5dae2', background: '#fff', cursor: 'pointer' }}>
+                          实时录音
+                        </button>
+                        <button onClick={() => setImportOpen(true)} style={{ fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #d5dae2', background: '#fff', cursor: 'pointer' }}>
+                          导入逐字稿
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ color: '#aaa', fontSize: 14 }}>选择一条录音查看转写结果</div>
+                  )}
+                </div>
               </section>
             )}
           </main>
@@ -914,7 +945,18 @@ function ProjectList({
   projectCreator: React.ReactNode
 }) {
   if (projects.length === 0) {
-    return <div style={{ color: '#aaa', fontSize: 13 }}>还没有项目</div>
+    // 空状态必须保留「新建项目」入口：否则新用户第一次打开就无路可走。
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="rail-head">
+          <span className="rail-head-label">项目</span>
+          {projectCreator}
+        </div>
+        <div style={{ color: '#8a8f98', fontSize: 13, lineHeight: 1.7 }}>
+          还没有项目。点上面的 ＋ 新建一个，再上传录音或导入逐字稿。
+        </div>
+      </div>
+    )
   }
 
   const deleteBtn = (p: Project) => (

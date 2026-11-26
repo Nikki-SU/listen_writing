@@ -70,6 +70,11 @@ Terminal=true
 所有程序、运行时、模型和 data 都在**这一个文件夹**里；pip / HuggingFace / MinerU 的缓存也已改到
 `.runtime/` 与 `data/models/`，不会在用户主目录留缓存。
 
+PDF 转换组件（MinerU）也完全隔离：它有自己独立的 Python 运行环境（`.runtime/mineru/`），
+安装依赖时 pip / torch / 模型缓存全部指向应用目录；程序**只在启动子进程时临时设置这些环境变量**，
+不会修改系统环境变量，也不会往 `~/.cache`、`~/.config` 写东西。所以它不是「开发环境」，
+既不会污染你的电脑，卸载时删掉这个文件夹就干净了。
+
 - **Windows**：运行文件夹里的 `uninstall-windows.bat`
   - 选 `1`：只删程序，保留 `data/`；
   - 选 `2`：彻底卸载——删整个文件夹、桌面/开机启动快捷方式，并打开浏览器的 `?uninstall=1` 清理本站 localStorage / IndexedDB。

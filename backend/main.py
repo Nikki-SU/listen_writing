@@ -3345,7 +3345,11 @@ class Handler(BaseHTTPRequestHandler):
         # ---- 知识库 ----
         # PDF 转换组件（MinerU）安装：后台任务，前端轮询 /api/kb/mineru/status。
         if path == "/api/kb/mineru/install":
-            self._send_json(mineru.start_install(), status=202)
+            # body 可省略；{"force": true} 表示重新安装（删除独立 venv，模型保留）。
+            data = self._read_json_body()
+            if data is None:
+                return
+            self._send_json(mineru.start_install(force=bool(data.get("force"))), status=202)
             return
         if path == "/api/kb/mineru/install/cancel":
             self._send_json(mineru.cancel_install())
