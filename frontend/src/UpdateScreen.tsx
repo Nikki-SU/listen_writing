@@ -7,8 +7,8 @@ export type UpdatePhase = 'available' | 'updating' | 'restarting' | 'manual' | '
 // 稍后会自动收起成顶部一条提示，继续用旧版本。
 const COPY: Record<UpdatePhase, { title: string; body: string }> = {
   available: {
-    title: '有新版本可用',
-    body: '页面已经是新版，但电脑上正在运行的本地程序还是旧版。更新后再使用，避免新旧不一致。只更新程序文件，不会动你的录音。',
+    title: '有新版本可用（含本地程序）',
+    body: '页面已经是新版，但电脑上正在运行的本地程序还是旧版。更新后会写入程序文件并自动重启本地后端（通常十几秒；首次下载模型会更久）。只更新程序文件，不会动你的录音。',
   },
   updating: {
     title: '正在更新本地文件',
@@ -113,7 +113,7 @@ export default function UpdateScreen({
             )}
             {phase === 'available' && (
               <button onClick={onUpdate} style={{ fontSize: 13, padding: '7px 16px' }}>
-                立即更新（{BOOTSTRAP_FILES.length} 个文件）
+                立即更新并重启（{BOOTSTRAP_FILES.length} 个文件）
               </button>
             )}
             {phase === 'error' && (

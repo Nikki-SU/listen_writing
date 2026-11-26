@@ -110,6 +110,8 @@ export default function App() {
   const [updDismissed, setUpdDismissed] = useState(false)
   // 仅前端更新：只提示刷新页面，不写本地文件、不重启后端（用户明确要求）。
   const [needRefresh, setNeedRefresh] = useState(false)
+  // 在线版本是否同时包含本地程序（后端）改动：决定刷新提示是「刷新即可」还是「刷新后再更新并重启」。
+  const [refreshHasBackend, setRefreshHasBackend] = useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
   // 共享任务不是弹层里的“小入口”：它和「我的录音」并列，是同一层级的常驻工作区。
   const [view, setView] = useState<'workspace' | 'collab' | 'knowledge'>('workspace')
@@ -171,9 +173,11 @@ export default function App() {
       try {
         const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' })
         if (!res.ok) return
-        const v = (await res.json()) as { frontend?: number }
+        const v = (await res.json()) as { frontend?: number; backend?: number }
         if (alive && typeof v.frontend === 'number' && v.frontend > BUNDLE_VERSION.frontend) {
           setNeedRefresh(true)
+          // 部署包的 backend 段比本页内置的新 → 这次发布带了本地程序改动，刷新后仍需更新并重启。
+          setRefreshHasBackend(typeof v.backend === 'number' && v.backend > BUNDLE_VERSION.backend)
         }
       } catch {
         // 探测失败就安静跳过，不打扰用户
@@ -566,10 +570,10 @@ export default function App() {
           }}
         >
           <span style={{ flex: 1, lineHeight: 1.6 }}>
-            有新版本可用：页面已更新，本地程序还是旧版。只更新程序文件，不会动你的录音。
+            <strong>含本地程序更新：</strong>页面已是新版，本地程序还是旧版。更新后会重启本地后端（自动，通常十几秒；首次下载模型会更久），不会动你的录音。
           </span>
           <button onClick={onUpdate} style={{ fontSize: 13, padding: '4px 12px', flexShrink: 0 }}>
-            更新本地文件
+            更新本地文件并重启
           </button>
         </div>
       )}
@@ -577,8 +581,12 @@ export default function App() {
       {/* 仅前端更新：不写本地文件、不重启后端，只提示刷新页面 */}
       {needRefresh && upd === 'idle' && (
         <div className="refresh-hint" role="status">
-          <span>界面已更新，刷新后生效。本地程序无需重启。</span>
-          <button type="button" onClick={() => window.location.reload()}>刷新</button>
+          <span>
+            {refreshHasBackend
+              ? '新版本包含本地程序改动：先刷新页面，再按提示更新本地文件，后端会自动重启。'
+              : '界面已更新：刷新即可，本地程序无需重启。'}
+          </span>
+          <button type="button" onClick={() => window.location.reload()}>刷新页面</button>
           <button type="button" className="refresh-hint-close" onClick={() => setNeedRefresh(false)} title="稍后再说" aria-label="关闭">×</button>
         </div>
       )}
