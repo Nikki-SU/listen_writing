@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,14 +83,12 @@ def _profile_suggestion() -> str:
 
 
 def _device() -> str:
-    """默认 CPU；用户或大内存机器可在设置里显式改成 cuda。"""
+    """默认 CPU。CUDA 需要另装 GPU 版 torch，当前不自动开，避免「有显卡但 torch 是 CPU 版」的假加速。"""
     try:
         configured = storage.get_settings().get("mineru_device")
     except Exception:
         configured = None
-    if configured in ("cpu", "cuda"):
-        return configured
-    return "cuda" if _has_cuda() and _ram_gb() >= 30 else "cpu"
+    return configured if configured in ("cpu", "cuda") else "cpu"
 
 
 # ---------------- 状态 ----------------
@@ -379,6 +378,32 @@ def cancel_install() -> dict:
         except OSError:
             pass
     return install_info()
+
+
+def ensure_installed(on_status=None, poll: float = 2.0) -> dict:
+    """供 preload 使用：首次启动时同步等待安装完成；已安装立即返回。
+
+    失败不抛异常（返回最终 state），由调用方决定是否继续启动后端。
+    """
+    if probe()["available"]:
+        return install_info()
+    if _disk_free_gb() < MIN_FREE_GB:
+        _set_state(status="failed", stage="failed", progress=0,
+                   message=f"磁盘剩余 {_disk_free_gb():.1f}GB，PDF 转换组件至少需要 {MIN_FREE_GB:.0f}GB",
+                   error="disk_low", finished_at=storage.now_iso())
+        return install_info()
+    info = start_install()
+    last = ""
+    while info.get("running"):
+        line = f"[组件] {info.get('stage') or '准备'} {info.get('progress') or 0}% {info.get('message') or ''}".strip()
+        if on_status and line != last:
+            on_status(line)
+            last = line
+        time.sleep(poll)
+        info = install_info()
+    if on_status:
+        on_status(f"[组件] MinerU 安装结束：{info.get('status')} {info.get('error') or ''}".strip())
+    return info
 
 
 # ---------------- 转换 --------------

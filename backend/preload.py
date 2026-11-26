@@ -1,16 +1,22 @@
-"""首次部署的模型预下载：由启动器调用，一次性把转写 + AI 模型都备齐。
+"""首次部署的组件预下载：由启动器调用，一次性把「本机配置允许的东西」都备齐。
 
-设计（用户明确："首启引导就该按配置装齐所有模型，别到处弹'模型没下载'"）：
-- 先探测本机内存，按档位选一个跑得动的 ASR + 一个 LLM，写回设置（界面显示的档位与实际装的一致）。
-- 启动窗口里下载完两个模型并显示进度，用户不需要理解任何概念，也不需要再手动下载。
-- 已在本机的跳过；失败不阻塞启动，首次使用时后端会给出明确提示。
+用户明确："下载这个配置允许的所有的东西，第一次的时候让他们自动地去下"。
+所以这里不只下转写/LLM 模型，还包括：
+- 实时录音用的 SenseVoice 轻量模型；
+- 知识库检索用的 Embedding 模型（95MB）；
+- PDF 入库用的 MinerU（按内存/磁盘/GPU 选 CPU pipeline 档），装不上不阻塞启动。
+
+已在本机的全部跳过；失败只打印警告，后端照常启动，界面会给出可重试的入口。
 """
 
 import ctypes
+import os
 import subprocess
 import sys
 
+import kb_embed
 import llm
+import mineru
 import storage
 from transcriber import transcriber_for
 
@@ -91,6 +97,40 @@ def ensure_llm(key: str) -> None:
         print(f"[模型] AI 模型下载失败（不影响转写）：{e}")
 
 
+def ensure_embedding() -> None:
+    key = kb_embed.DEFAULT_EMBED_MODEL
+    spec = kb_embed.EMBED_MODELS.get(key, {})
+    if kb_embed.model_file(key) is not None:
+        print(f"[模型] 向量模型已在本地：{spec.get('label', key)}")
+        return
+    print(f"[模型] 下载向量模型：{spec.get('label', key)}（约 {spec.get('expected', 0)/1e6:.0f}MB）")
+    try:
+        kb_embed.ensure_model(key, on_status=lambda msg: print(f"[模型] {msg}"))
+        print("[模型] 向量模型就绪。")
+    except Exception as e:  # noqa: BLE001 - 失败只降级 BM25
+        print(f"[模型] 向量模型下载失败（知识库先用 BM25 词法检索）：{e}")
+
+
+def ensure_mineru() -> None:
+    if os.environ.get("LISTEN_WRITING_SKIP_MINERU") == "1":
+        print("[组件] 已按环境变量跳过 MinerU 安装。")
+        return
+    info = mineru.probe()
+    if info.get("available"):
+        print(f"[组件] PDF 转换组件已就绪：MinerU {info.get('version') or ''}".strip())
+        return
+    if float(info.get("disk_free_gb") or 0) < mineru.MIN_FREE_GB:
+        print(f"[组件] 磁盘剩余不足 {mineru.MIN_FREE_GB:.0f}GB，跳过 MinerU；"
+              "以后可在知识库页手动安装。")
+        return
+    print("[组件] 首次安装 PDF 转换组件（MinerU + torch + 模型，约 5–8GB，耗时较长）…")
+    final = mineru.ensure_installed(on_status=lambda msg: print(msg))
+    if final.get("status") == "done":
+        print("[组件] PDF 转换组件就绪。")
+    else:
+        print(f"[组件] MinerU 安装失败（PDF 暂不可用，仍可导入 md/txt/docx）：{final.get('error') or final.get('message')}")
+
+
 def main() -> int:
     gb = total_ram_gb()
     print(f"[模型] 检测到本机内存约 {gb:.1f}GB，按此选择模型档位。")
@@ -100,8 +140,16 @@ def main() -> int:
     llm_key = settings.get("llm_model") or pick_llm(gb)
     storage.update_settings({"asr_model": asr, "llm_model": llm_key})
     print(f"[模型] 转写档位：{asr} · AI 档位：{llm_key}")
+    if not llm.runtime_available():
+        print("[模型] 本地 AI 运行时（llama-cpp-python）未安装：AI 对话/纠错不可用；"
+              "不影响转写与 PDF。可重新运行启动器重试安装。")
+    print("[模型] 首次会下载：转写模型、实时录音模型、AI 模型、向量模型，以及 PDF 转换组件。")
     ensure_asr(asr)
+    if asr != "sensevoice-small":
+        ensure_asr("sensevoice-small")
     ensure_llm(llm_key)
+    ensure_embedding()
+    ensure_mineru()
     return 0
 
 

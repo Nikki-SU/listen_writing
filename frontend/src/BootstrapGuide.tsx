@@ -90,7 +90,7 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
       <header style={{ textAlign: 'center' }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>listen_writing</h1>
         <p style={{ margin: '8px 0 0', fontSize: 14, color: '#555' }}>
-          转写由你电脑上的本地后端完成，录音不出本机。第一次使用，按下面三步准备（首次需下载约 3–5GB：运行环境、转写模型、AI 模型，之后双击即用；下载走国内镜像站，不需要开代理）。
+          转写由你电脑上的本地后端完成，录音不出本机。第一次使用，按下面三步准备（首次会自动下载本机配置允许的全部模型与组件，约 8–15GB，之后双击即用；不需要你之后手动安装组件，也不需要开代理）。
         </p>
       </header>
 
@@ -126,15 +126,15 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
         <h2 style={{ fontSize: 15, margin: '0 0 8px' }}>第 2 步 · 运行启动器</h2>
         {isWindows() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持黑窗口开启。如果弹出「是否允许此应用更改设备」的窗口（安装微软运行库），点「是」。下载优先走国内镜像，不需要你开代理。<strong>成功启动后会在桌面创建「Listen Writing」图标，并加入开机启动</strong>：以后点桌面图标或直接打开工作台页面，都能直接用（后端会在开机时静默启动）。
+            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境，并一次性下载转写、实时录音、AI、向量模型与 PDF 转换组件（共约 8–15GB），请保持黑窗口开启。如果弹出「是否允许此应用更改设备」的窗口（安装微软运行库），点「是」。下载优先走国内镜像，不需要你开代理。<strong>成功启动后会在桌面创建「Listen Writing」图标，并加入开机启动</strong>：以后点桌面图标或直接打开工作台页面，都能直接用（后端会在开机时静默启动）。
           </p>
         ) : isMac() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            打开「终端」，输入 <code>bash&nbsp;</code>（bash 加一个空格），把文件夹里的 <strong>start-mac.command</strong> 拖进终端窗口，按回车。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持窗口开启。
+            打开「终端」，输入 <code>bash&nbsp;</code>（bash 加一个空格），把文件夹里的 <strong>start-mac.command</strong> 拖进终端窗口，按回车。首次会自动准备运行环境，并一次性下载模型与 PDF 转换组件（共约 8–15GB），请保持窗口开启。
           </p>
         ) : (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            在文件夹里打开终端，运行 <code>bash start.sh</code>。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持窗口开启。
+            在文件夹里打开终端，运行 <code>bash start.sh</code>。首次会自动准备运行环境，并一次性下载模型与 PDF 转换组件（共约 8–15GB），请保持窗口开启。
           </p>
         )}
         <details style={{ marginTop: 8, fontSize: 12, color: '#888' }}>
