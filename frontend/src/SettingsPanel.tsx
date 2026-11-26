@@ -23,6 +23,27 @@ export default function SettingsPanel({
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const { models, error: modelError, download, cancel } = useModels(1500)
+  // 补充组件（MinerU / 向量模型）统一在这里安装，知识库页只显示状态。
+  const [mineru, setMineru] = useState<api.MineruStatus | null>(null)
+  const [embed, setEmbed] = useState<{ models: { key: string; label: string; ready: boolean }[]; max_loaded: number } | null>(null)
+  const [componentError, setComponentError] = useState('')
+  const [embeddingBusy, setEmbeddingBusy] = useState('')
+
+  const refreshComponents = () => Promise.all([
+    api.kbApi.mineruStatus().then(setMineru).catch(() => undefined),
+    api.kbApi.embedStatus().then(setEmbed).catch(() => undefined),
+  ])
+
+  useEffect(() => {
+    void refreshComponents()
+  }, [])
+
+  // MinerU 安装是长任务：运行中每 1.5 秒刷新进度。
+  useEffect(() => {
+    if (!mineru?.install.running) return
+    const timer = window.setInterval(() => { void refreshComponents() }, 1500)
+    return () => window.clearInterval(timer)
+  }, [mineru?.install.running])
 
   useEffect(() => {
     let cancelled = false
@@ -95,6 +116,32 @@ export default function SettingsPanel({
     void patch({ identity: { ...payload.settings.identity, device_code: code } }, {
       identity: { ...payload.settings.identity, device_code: code },
     })
+  }
+
+  function installMineru() {
+    const size = mineru?.disk_required_gb ? `约 ${mineru.disk_required_gb}GB` : '数 GB'
+    if (!window.confirm(`安装 PDF 转换组件需要下载${size}（依赖 + 模型），且转换在 CPU 上较慢。继续安装？`)) return
+    setComponentError('')
+    void api.kbApi.mineruInstall().then(() => refreshComponents())
+      .catch((e) => setComponentError(`安装启动失败：${String(e).replace(/^Error:\s*/, '')}`))
+  }
+
+  function cancelMineru() {
+    void api.kbApi.mineruCancel().then(() => refreshComponents())
+      .catch((e) => setComponentError(String(e)))
+  }
+
+  async function downloadEmbedding(key: string) {
+    setComponentError('')
+    setEmbeddingBusy(key)
+    try {
+      await api.kbApi.ensureEmbed(key)
+      await refreshComponents()
+    } catch (e) {
+      setComponentError(`向量模型下载失败：${String(e).replace(/^Error:\s*/, '')}`)
+    } finally {
+      setEmbeddingBusy('')
+    }
   }
 
   function statusOf(kind: 'asr' | 'llm', id: string): ModelStatus | undefined {
@@ -248,6 +295,88 @@ export default function SettingsPanel({
                 先在这里下载选定模型（约 1–5GB），之后全程离线运行；未下载时点击「AI 纠错 / AI 整理断句」也会自动开始后台下载。
                 {models && !models.runtime.llm && ' 当前 AI 运行时未安装，下载完成后仍需运行启动器安装组件。'}
               </Hint>
+            </Section>
+
+            <Section title="组件安装（补充下载）">
+              {componentError && <div style={{ fontSize: 12, color: '#b00020' }}>{componentError}</div>}
+
+              <div style={{ border: '1px solid #eceef1', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>PDF 转换组件（MinerU）</span>
+                  {mineru?.available && (
+                    <span style={{ fontSize: 11, color: '#1e7e34', background: '#e9f7ee', borderRadius: 4, padding: '1px 6px' }}>
+                      已就绪{mineru.version ? ` v${mineru.version}` : ''}
+                    </span>
+                  )}
+                  {mineru?.install.running && (
+                    <span style={{ fontSize: 11, color: '#8a5a00', background: '#fff4e0', borderRadius: 4, padding: '1px 6px' }}>
+                      安装中 {mineru.install.progress}%
+                    </span>
+                  )}
+                  {mineru && !mineru.available && !mineru.install.running && (
+                    <span style={{ fontSize: 11, color: mineru.install.status === 'failed' ? '#b00020' : '#8a8f98', background: mineru.install.status === 'failed' ? '#fdecea' : '#f3f4f6', borderRadius: 4, padding: '1px 6px' }}>
+                      {mineru.install.status === 'failed' ? '安装失败' : '未安装'}
+                    </span>
+                  )}
+                </div>
+                {mineru && (
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>
+                    设备 {mineru.device} · 内存 {mineru.ram_gb}GB · 磁盘剩余 {mineru.disk_free_gb}GB · 建议档位 {mineru.profile_suggestion}
+                  </div>
+                )}
+                {mineru?.install.running && (
+                  <>
+                    <div style={{ height: 4, background: '#eef0f3', borderRadius: 2 }}>
+                      <div style={{ width: `${Math.max(4, mineru.install.progress)}%`, height: 4, background: '#4285f4', borderRadius: 2, transition: 'width .3s' }} />
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ flex: 1, fontSize: 11, color: '#8a8f98' }}>{mineru.install.message || '准备中…'}</span>
+                      <button onClick={cancelMineru} style={{ fontSize: 11, padding: '2px 8px', color: '#b00020' }}>停止</button>
+                    </div>
+                  </>
+                )}
+                {mineru && !mineru.available && !mineru.install.running && (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <button onClick={installMineru} style={{ fontSize: 12, padding: '4px 10px', background: '#245c9c', color: '#fff', border: 'none', borderRadius: 6 }}>
+                        {mineru.install.status === 'failed' ? '重试安装' : `安装（约 ${mineru.disk_required_gb}GB）`}
+                      </button>
+                      <span style={{ fontSize: 11, color: '#8a8f98' }}>PDF 入库必需；docx / md / txt 不需要它。</span>
+                    </div>
+                    {mineru.install.status === 'failed' && (
+                      <div style={{ fontSize: 11, color: '#b00020', lineHeight: 1.6 }}>{mineru.install.error || mineru.install.message}</div>
+                    )}
+                  </>
+                )}
+                {mineru?.available && (
+                  <div style={{ fontSize: 11, color: '#9aa0a6' }}>{mineru.timing_note}</div>
+                )}
+              </div>
+
+              <div style={{ border: '1px solid #eceef1', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>向量模型（知识库检索）</span>
+                  {embed && <span style={{ fontSize: 11, color: '#8a8f98' }}>同时最多装 {embed.max_loaded} 个</span>}
+                </div>
+                {!embed && <div style={{ fontSize: 12, color: '#8a8f98' }}>正在读取状态…</div>}
+                {embed?.models.map((m) => (
+                  <div key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ flex: 1, fontSize: 12 }}>{m.label}</span>
+                    <span style={{ fontSize: 11, color: m.ready ? '#1e7e34' : '#8a8f98', background: m.ready ? '#e9f7ee' : '#f3f4f6', borderRadius: 4, padding: '1px 6px' }}>
+                      {m.ready ? '已下载' : embeddingBusy === m.key ? '下载中…' : '未下载'}
+                    </span>
+                    {!m.ready && (
+                      <button onClick={() => void downloadEmbedding(m.key)} disabled={embeddingBusy === m.key}
+                        style={{ fontSize: 11, padding: '2px 8px' }}>
+                        {embeddingBusy === m.key ? '下载中…' : '下载'}
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <Hint>向量模型没下载时知识库仍可用 BM25 词法检索，只是召回弱一些；下载后再「建向量索引」。</Hint>
+              </div>
+
+              <Hint>所有补充组件都集中在这里安装；知识库页只显示状态，不再单独提供安装按钮。</Hint>
             </Section>
           </>
         )}
