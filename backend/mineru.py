@@ -212,6 +212,20 @@ def _run(cmd: list[str], *, stage: str, progress: int, message: str,
     return rc
 
 
+def _local_cache_env() -> dict:
+    """所有第三方缓存都塞进项目文件夹，卸载时随文件夹一起消失。"""
+    env = dict(os.environ)
+    cache = MODELS_DIR / "cache"
+    env["PIP_CACHE_DIR"] = str(PROJECT_ROOT / ".runtime" / "pip-cache")
+    env["MODELSCOPE_CACHE"] = str(cache / "modelscope")
+    env["HF_HOME"] = str(MODELS_DIR / "hf-cache")
+    env["YOLO_CONFIG_DIR"] = str(cache / "ultralytics")
+    env["MPLCONFIGDIR"] = str(cache / "matplotlib")
+    env["TORCH_HOME"] = str(cache / "torch")
+    env["XDG_CACHE_HOME"] = str(cache)
+    return env
+
+
 def _pip(py: Path, args: list[str], *, stage: str, progress: int,
          message: str, index: str | None = None) -> int:
     cmd = [str(py), "-m", "pip", "install", "--disable-pip-version-check",
@@ -219,25 +233,21 @@ def _pip(py: Path, args: list[str], *, stage: str, progress: int,
     if index:
         cmd += ["-i", index]
     cmd += args
-    return _run(cmd, stage=stage, progress=progress, message=message)
+    return _run(cmd, stage=stage, progress=progress, message=message, env=_local_cache_env())
 
 
 def _download_env(source: str) -> dict:
-    env = dict(os.environ)
+    env = _local_cache_env()
     env["MINERU_MODEL_SOURCE"] = source
     env["MINERU_TOOLS_CONFIG_JSON"] = str(MODELS_DIR / "mineru.json")
-    env["MODELSCOPE_CACHE"] = str(MODELS_DIR / "cache")
-    env["HF_HOME"] = str(MODELS_DIR / "hf-cache")
     env["HF_ENDPOINT"] = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
     return env
 
 
 def _convert_env() -> dict:
-    env = dict(os.environ)
+    env = _local_cache_env()
     env["MINERU_MODEL_SOURCE"] = "local"
     env["MINERU_TOOLS_CONFIG_JSON"] = str(MODELS_DIR / "mineru.json")
-    env["MODELSCOPE_CACHE"] = str(MODELS_DIR / "cache")
-    env["HF_HOME"] = str(MODELS_DIR / "hf-cache")
     env["MINERU_DEVICE_MODE"] = _device()
     return env
 

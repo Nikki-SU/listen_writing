@@ -43,6 +43,18 @@ Exec=bash /你的完整路径/start.sh
 Terminal=true
 ```
 
+## 卸载 / 无痕卸载
+
+所有程序、运行时、模型和 data 都在**这一个文件夹**里；pip / HuggingFace / MinerU 的缓存也已改到
+`.runtime/` 与 `data/models/`，不会在用户主目录留缓存。
+
+- **Windows**：运行文件夹里的 `uninstall-windows.bat`
+  - 选 `1`：只删程序，保留 `data/`；
+  - 选 `2`：彻底卸载——删整个文件夹、桌面/开机启动快捷方式，并打开浏览器的 `?uninstall=1` 清理本站 localStorage / IndexedDB。
+- **macOS**：运行 `uninstall-mac.command`（或 `bash uninstall.sh`）。
+- **Linux**：`bash uninstall.sh`。
+- 彻底卸载后，如果还想删掉下载的启动器压缩包，请自行删除 Downloads 里的文件。
+
 ## 首次启动会做什么
 
 1. 下载便携 Python 运行时（约 50MB）。优先从国内镜像站（南京大学 / 华为云）下载，**不需要你开代理**。

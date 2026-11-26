@@ -23,6 +23,9 @@ from typing import Callable
 
 from storage import DATA_ROOT
 
+# 所有模型缓存都落项目文件夹：卸载时删掉这个文件夹即可，不在用户主目录留痕。
+os.environ.setdefault("HF_HOME", str(DATA_ROOT / "models" / "hf-cache"))
+
 logger = logging.getLogger(__name__)
 
 # 三个选项与 PRD 第 9 节一致；这里是唯一权威定义，S-1 直接把它返回给前端。

@@ -11,6 +11,7 @@
 
 set -u
 cd "$(dirname "$0")"
+export PIP_CACHE_DIR="$PWD/.runtime/pip-cache"
 
 PYTAG=20261026
 PYVER=3.12.16

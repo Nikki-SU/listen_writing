@@ -156,6 +156,23 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
         </details>
 
         <details style={{ marginTop: 10, fontSize: 12, color: '#666', background: '#f8fafc', border: '1px solid #e8ebf0', borderRadius: 8, padding: '8px 10px' }}>
+          <summary style={{ cursor: 'pointer', color: '#245c9c' }}>如何卸载？可以保留数据，也可以彻底无痕卸载</summary>
+          <div style={{ marginTop: 8, lineHeight: 1.7 }}>
+            <p style={{ margin: '0 0 6px' }}>程序、运行时、模型和 data 全部在启动器这一个文件夹里；pip / HuggingFace / MinerU 缓存也在这个文件夹里，不会散落在系统目录。</p>
+            {isWindows() ? (
+              <>
+                <p style={{ margin: '0 0 6px' }}>运行文件夹里的 <code>uninstall-windows.bat</code>：</p>
+                <p style={{ margin: '0 0 6px' }}>· 选 <strong>1</strong>：只删程序，保留 <code>data/</code>（录音与转写稿）。</p>
+                <p style={{ margin: '0 0 6px' }}>· 选 <strong>2</strong>：彻底卸载——删整个文件夹、桌面/开机启动快捷方式，并打开浏览器清理本站 localStorage / IndexedDB。</p>
+              </>
+            ) : (
+              <p style={{ margin: '0 0 6px' }}>运行 <code>bash uninstall.sh</code>（macOS 也可双击 <code>uninstall-mac.command</code>），同样可选保留或删除 <code>data/</code>。</p>
+            )}
+            <p style={{ margin: 0 }}>彻底卸载后，如果还下载过启动器压缩包，请自行删除 Downloads 里的那份。</p>
+          </div>
+        </details>
+
+        <details style={{ marginTop: 10, fontSize: 12, color: '#666', background: '#f8fafc', border: '1px solid #e8ebf0', borderRadius: 8, padding: '8px 10px' }}>
           <summary style={{ cursor: 'pointer', color: '#245c9c' }}>不想每次都去文件夹里找启动器？让它更好打开</summary>
           <div style={{ marginTop: 8, lineHeight: 1.7 }}>
             {isWindows() && (

@@ -22,6 +22,8 @@ setlocal
 cd /d "%~dp0"
 set "LWDIR=%~dp0"
 set "APPURL=https://nikki-su.github.io/listen_writing/"
+rem Keep pip cache inside the app folder: uninstall then leaves no cache in %LOCALAPPDATA%.
+set "PIP_CACHE_DIR=%LWDIR%.runtime\pip-cache"
 
 rem --remove-shortcuts: delete the desktop / startup shortcuts and exit.
 if /I "%~1"=="--remove-shortcuts" goto remove_shortcuts
