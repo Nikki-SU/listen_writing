@@ -25,6 +25,12 @@ set "APPURL=https://nikki-su.github.io/listen_writing/"
 rem Keep pip cache inside the app folder: uninstall then leaves no cache in %LOCALAPPDATA%.
 set "PIP_CACHE_DIR=%LWDIR%.runtime\pip-cache"
 
+rem Silent startup: old and new launchers both work. Old start-windows.bat does not
+rem forward %*, so the startup shortcut also sets LW_SILENT=1 in its command line.
+set "SILENT=0"
+if /I "%~1"=="--silent" set "SILENT=1"
+if /I "%LW_SILENT%"=="1" set "SILENT=1"
+
 rem --remove-shortcuts: delete the desktop / startup shortcuts and exit.
 if /I "%~1"=="--remove-shortcuts" goto remove_shortcuts
 
@@ -82,14 +88,15 @@ del /q "python-runtime.tar.gz"
 :have_runtime
 if not exist "%PY%" goto runtime_missing
 
-rem Create desktop + startup shortcuts once. The startup shortcut uses --silent
-rem so it starts the backend at login without opening a browser window.
-if exist ".runtime\shortcuts_created" goto install_deps
+rem Create desktop + startup shortcuts once. Startup uses cmd.exe with LW_SILENT=1
+rem (environment variable, not an argument) so it works even with old launchers that
+rem do not forward %*. Running this again upgrades shortcuts from older versions.
+if exist ".runtime\shortcuts_v2" goto install_deps
 if exist ".runtime\no_shortcuts" goto install_deps
 echo [2.5/4] Creating desktop and startup shortcuts ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $s=[Environment]::GetFolderPath('Startup'); $t=Join-Path $env:LWDIR 'start-windows.bat'; $a=$ws.CreateShortcut((Join-Path $d 'Listen Writing.lnk')); $a.TargetPath=$env:APPURL; $a.Save(); $b=$ws.CreateShortcut((Join-Path $s 'Listen Writing Backend.lnk')); $b.TargetPath=$t; $b.WorkingDirectory=$env:LWDIR; $b.Arguments='--silent'; $b.WindowStyle=7; $b.Save()"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $s=[Environment]::GetFolderPath('Startup'); $t=Join-Path $env:LWDIR 'start-windows.bat'; $q=[char]34; $a=$ws.CreateShortcut((Join-Path $d 'Listen Writing.lnk')); $a.TargetPath=$env:APPURL; $a.Save(); $b=$ws.CreateShortcut((Join-Path $s 'Listen Writing Backend.lnk')); $b.TargetPath=($env:SystemRoot+'\System32\cmd.exe'); $b.WorkingDirectory=$env:LWDIR; $b.Arguments=('/c set '+$q+'LW_SILENT=1'+$q+' & call '+$q+$t+$q); $b.WindowStyle=7; $b.Save()"
 if errorlevel 1 goto shortcuts_failed
-type nul > ".runtime\shortcuts_created"
+type nul > ".runtime\shortcuts_v2"
 goto install_deps
 
 :shortcuts_failed
@@ -188,7 +195,7 @@ echo      http://127.0.0.1:7850
 echo  Keep this window open while you use the web page.
 echo ============================================================
 echo.
-if /I not "%~1"=="--silent" (
+if "%SILENT%"=="0" (
   echo [INFO] Opening the workbench page in your browser...
   start "" "%APPURL%"
 ) else (
@@ -213,12 +220,13 @@ exit /b 0
 
 :already_running
 rem Backend is already up: this is the "click the icon / page again" path.
-if /I not "%~1"=="--silent" start "" "%APPURL%"
+if "%SILENT%"=="0" start "" "%APPURL%"
 exit /b 0
 
 :remove_shortcuts
 echo Removing desktop and startup shortcuts ...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $s=[Environment]::GetFolderPath('Startup'); Remove-Item (Join-Path $d 'Listen Writing.lnk') -ErrorAction SilentlyContinue; Remove-Item (Join-Path $s 'Listen Writing Backend.lnk') -ErrorAction SilentlyContinue"
+if exist ".runtime\shortcuts_v2" del /q ".runtime\shortcuts_v2"
 if exist ".runtime\shortcuts_created" del /q ".runtime\shortcuts_created"
 type nul > ".runtime\no_shortcuts"
 echo Done. The app will no longer auto-start at login.

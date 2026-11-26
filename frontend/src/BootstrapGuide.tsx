@@ -180,7 +180,7 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
                 <p style={{ margin: '0 0 6px' }}><strong>Windows · 不需要手动建快捷方式：</strong></p>
                 <p style={{ margin: '0 0 6px' }}>首次成功启动会创建桌面「Listen Writing」图标（直接打开工作台页面），并加入开机启动「Listen Writing Backend」（后台静默起后端，不弹浏览器）。</p>
                 <p style={{ margin: '0 0 6px' }}>以后点桌面图标、或直接点工作台页面 / 浏览器书签，都会连上已经在后台运行的后端。若关掉了后端窗口，重新双击 <code>start-windows.bat</code> 即可。</p>
-                <p style={{ margin: 0 }}>不想要开机启动：在启动器文件夹运行 <code>start-windows.bat --remove-shortcuts</code>，会删除桌面与启动项快捷方式。</p>
+                <p style={{ margin: 0 }}>不想要开机启动：运行文件夹里的 <code>remove-shortcuts-windows.bat</code>（独立脚本，不依赖启动器参数），会删除桌面与启动项快捷方式。</p>
               </>
             )}
             {isMac() && (
