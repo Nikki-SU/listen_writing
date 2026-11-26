@@ -85,7 +85,7 @@ rem so it starts the backend at login without opening a browser window.
 if exist ".runtime\shortcuts_created" goto install_deps
 if exist ".runtime\no_shortcuts" goto install_deps
 echo [2.5/4] Creating desktop and startup shortcuts ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $s=[Environment]::GetFolderPath('Startup'); $t=Join-Path $env:LWDIR 'start-windows.bat'; $a=$ws.CreateShortcut((Join-Path $d 'Listen Writing.lnk')); $a.TargetPath=$t; $a.WorkingDirectory=$env:LWDIR; $a.Save(); $b=$ws.CreateShortcut((Join-Path $s 'Listen Writing.lnk')); $b.TargetPath=$t; $b.WorkingDirectory=$env:LWDIR; $b.Arguments='--silent'; $b.WindowStyle=7; $b.Save()"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $s=[Environment]::GetFolderPath('Startup'); $t=Join-Path $env:LWDIR 'start-windows.bat'; $a=$ws.CreateShortcut((Join-Path $d 'Listen Writing.lnk')); $a.TargetPath=$env:APPURL; $a.Save(); $b=$ws.CreateShortcut((Join-Path $s 'Listen Writing Backend.lnk')); $b.TargetPath=$t; $b.WorkingDirectory=$env:LWDIR; $b.Arguments='--silent'; $b.WindowStyle=7; $b.Save()"
 if errorlevel 1 goto shortcuts_failed
 type nul > ".runtime\shortcuts_created"
 goto install_deps
@@ -215,7 +215,7 @@ exit /b 0
 
 :remove_shortcuts
 echo Removing desktop and startup shortcuts ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $s=[Environment]::GetFolderPath('Startup'); Remove-Item (Join-Path $d 'Listen Writing.lnk') -ErrorAction SilentlyContinue; Remove-Item (Join-Path $s 'Listen Writing.lnk') -ErrorAction SilentlyContinue"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $s=[Environment]::GetFolderPath('Startup'); Remove-Item (Join-Path $d 'Listen Writing.lnk') -ErrorAction SilentlyContinue; Remove-Item (Join-Path $s 'Listen Writing Backend.lnk') -ErrorAction SilentlyContinue"
 if exist ".runtime\shortcuts_created" del /q ".runtime\shortcuts_created"
 type nul > ".runtime\no_shortcuts"
 echo Done. The app will no longer auto-start at login.

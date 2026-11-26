@@ -126,7 +126,7 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
         <h2 style={{ fontSize: 15, margin: '0 0 8px' }}>第 2 步 · 运行启动器</h2>
         {isWindows() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持黑窗口开启。如果弹出「是否允许此应用更改设备」的窗口（安装微软运行库），点「是」。下载优先走国内镜像，不需要你开代理。<strong>成功启动后会自动创建桌面快捷方式并加入开机启动</strong>：以后点桌面图标，或直接打开工作台页面，都能直接用。
+            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持黑窗口开启。如果弹出「是否允许此应用更改设备」的窗口（安装微软运行库），点「是」。下载优先走国内镜像，不需要你开代理。<strong>成功启动后会在桌面创建「Listen Writing」图标，并加入开机启动</strong>：以后点桌面图标或直接打开工作台页面，都能直接用（后端会在开机时静默启动）。
           </p>
         ) : isMac() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
@@ -161,8 +161,8 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
             {isWindows() && (
               <>
                 <p style={{ margin: '0 0 6px' }}><strong>Windows · 不需要手动建快捷方式：</strong></p>
-                <p style={{ margin: '0 0 6px' }}>首次成功启动会自动创建桌面「Listen Writing」图标，并加入开机启动（后台静默起后端，不弹浏览器）。</p>
-                <p style={{ margin: '0 0 6px' }}>以后点桌面图标 = 启动后端并自动打开页面；或直接打开工作台页面 / 浏览器书签，后端已在开机时跑起来，页面会直接连上。</p>
+                <p style={{ margin: '0 0 6px' }}>首次成功启动会创建桌面「Listen Writing」图标（直接打开工作台页面），并加入开机启动「Listen Writing Backend」（后台静默起后端，不弹浏览器）。</p>
+                <p style={{ margin: '0 0 6px' }}>以后点桌面图标、或直接点工作台页面 / 浏览器书签，都会连上已经在后台运行的后端。若关掉了后端窗口，重新双击 <code>start-windows.bat</code> 即可。</p>
                 <p style={{ margin: 0 }}>不想要开机启动：在启动器文件夹运行 <code>start-windows.bat --remove-shortcuts</code>，会删除桌面与启动项快捷方式。</p>
               </>
             )}
