@@ -18,7 +18,9 @@ import kb_embed
 import llm
 import mineru
 import storage
-from transcriber import transcriber_for
+from transcriber import ASR_MODELS, transcriber_for
+
+LLM_LADDER = ["qwen3-1.7b", "qwen3-4b", "qwen2.5-7b"]
 
 
 def total_ram_gb() -> float:
@@ -67,6 +69,32 @@ def pick_asr(gb: float) -> str:
     return "whisper-small"
 
 
+def _min_ram_gb(value) -> float:
+    try:
+        return float(str(value).lower().replace("gb", "").strip())
+    except (TypeError, ValueError):
+        return 999.0
+
+
+def asr_targets(gb: float, chosen: str) -> list[str]:
+    """本机配置允许的全部转写档位：选中的 + 所有 min_ram <= 本机内存的档位。
+
+    用户明确「配置允许的，要自动下载它以及比它更低配的东西」。
+    """
+    out = [chosen]
+    for key, spec in ASR_MODELS.items():
+        if key != chosen and _min_ram_gb(spec.get("min_ram")) <= gb:
+            out.append(key)
+    return out
+
+
+def llm_targets(chosen: str) -> list[str]:
+    """选中档位及其以下的所有 LLM 档位（按显存/内存阶梯，不越级）。"""
+    if chosen not in LLM_LADDER:
+        return [chosen]
+    return LLM_LADDER[: LLM_LADDER.index(chosen) + 1]
+
+
 def ensure_asr(key: str) -> None:
     try:
         t = transcriber_for(key)
@@ -76,8 +104,20 @@ def ensure_asr(key: str) -> None:
     if not t.needs_download():
         print(f"[模型] 转写模型已在本地：{t.model_ref}")
         return
-    print(f"[模型] 下载转写模型：{t.model_ref}（首次约 500MB，请保持本窗口开启）")
-    if t.ensure_model():
+    print(f"[模型] 下载转写模型：{t.model_ref}（请保持本窗口开启）")
+    try:
+        # Whisper 的 ensure_model 会把模型装进内存；预下载只需要文件，避免多档同时占 RAM。
+        spec = ASR_MODELS.get(key) or {}
+        if spec.get("engine") == "faster-whisper":
+            from faster_whisper.utils import download_model
+            download_model(t.size)
+            ok = True
+        else:
+            ok = t.ensure_model()
+    except Exception as e:  # noqa: BLE001 - 单档失败不影响其它档
+        print(f"[模型] 转写模型下载失败：{e}")
+        return
+    if ok:
         print("[模型] 转写模型就绪。")
     else:
         print("[模型] 转写模型下载失败（首次转写时会自动重试）。")
@@ -143,11 +183,16 @@ def main() -> int:
     if not llm.runtime_available():
         print("[模型] 本地 AI 运行时（llama-cpp-python）未安装：AI 对话/纠错不可用；"
               "不影响转写与 PDF。可重新运行启动器重试安装。")
-    print("[模型] 首次会下载：转写模型、实时录音模型、AI 模型、向量模型，以及 PDF 转换组件。")
-    ensure_asr(asr)
-    if asr != "sensevoice-small":
-        ensure_asr("sensevoice-small")
-    ensure_llm(llm_key)
+    asr_list = asr_targets(gb, asr)
+    llm_list = llm_targets(llm_key)
+    print(f"[模型] 本机配置允许的转写档位：{'、'.join(asr_list)}")
+    print(f"[模型] 本机配置允许的 AI 档位：{'、'.join(llm_list)}")
+    print("[模型] 首次会下载：以上档位的全部模型、向量模型，以及 PDF 转换组件。")
+    for key in asr_list:
+        ensure_asr(key)
+    # 先下本机默认档（最大的那个），再下更低档；中断时至少默认档可用。
+    for key in reversed(llm_list):
+        ensure_llm(key)
     ensure_embedding()
     ensure_mineru()
     return 0

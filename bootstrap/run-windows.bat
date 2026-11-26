@@ -46,7 +46,7 @@ rem Warnings only, not fatal: later steps show clearer errors for low disk / 32-
 if "%PROCESSOR_ARCHITECTURE%"=="x86" if not defined PROCESSOR_ARCHITEW6432 echo [WARN] 32-bit Windows is not supported. Please use 64-bit Windows 10/11.
 for /f "usebackq delims=" %%F in (`powershell -NoProfile -Command "[int]((Get-PSDrive %SystemDrive:~0,1%).Free/1GB)"`) do set "FREE_GB=%%F"
 if not defined FREE_GB goto skip_disk
-if %FREE_GB% LSS 15 echo [WARN] Only %FREE_GB% GB free. First run needs about 15 GB (runtime + models + PDF component).
+if %FREE_GB% LSS 20 echo [WARN] Only %FREE_GB% GB free. First run needs about 20 GB (runtime + all allowed models + PDF component).
 :skip_disk
 
 if exist "%PY%" goto have_runtime
@@ -175,7 +175,7 @@ pause
 exit /b 1
 
 :preload
-echo [4/4] Preparing models and components (first run about 8-15 GB)
+echo [4/4] Preparing models and components (first run about 12-20 GB)
 echo        including the PDF converter; keep this window open.
 "%PY%" backend\preload.py
 

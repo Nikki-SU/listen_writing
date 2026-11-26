@@ -161,7 +161,7 @@ if ! "$PY" -c "import torch" >/dev/null 2>&1; then
   }
 fi
 
-echo "[4/4] 准备模型与组件（首次约 8–15GB：转写、实时录音、AI、向量模型 + PDF 转换组件）……"
+echo "[4/4] 准备模型与组件（首次约 12–20GB：配置允许的全部转写/AI 档位 + 向量模型 + PDF 转换组件）……"
 "$PY" backend/preload.py
 
 echo
