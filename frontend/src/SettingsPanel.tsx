@@ -118,15 +118,19 @@ export default function SettingsPanel({
     })
   }
 
-  function installMineru() {
+  function installMineru(resume: boolean) {
     const size = mineru?.disk_required_gb ? `约 ${mineru.disk_required_gb}GB` : '数 GB'
-    if (!window.confirm(`安装 PDF 转换组件需要下载${size}（依赖 + 模型），且转换在 CPU 上较慢。继续安装？`)) return
+    const tip = resume
+      ? '继续安装会跳过已完成步骤，并从上次中断处续传已下载的包。继续？'
+      : `安装 PDF 转换组件需要下载${size}（依赖 + 模型），且转换在 CPU 上较慢。继续安装？`
+    if (!window.confirm(tip)) return
     setComponentError('')
     void api.kbApi.mineruInstall().then(() => refreshComponents())
       .catch((e) => setComponentError(`安装启动失败：${String(e).replace(/^Error:\s*/, '')}`))
   }
 
-  function cancelMineru() {
+  function cancelMineru(clearProgress: boolean) {
+    if (clearProgress && !window.confirm('清除已完成的安装进度？已下载的包会保留，但步骤会从头开始。')) return
     void api.kbApi.mineruCancel().then(() => refreshComponents())
       .catch((e) => setComponentError(String(e)))
   }
@@ -314,8 +318,15 @@ export default function SettingsPanel({
                     </span>
                   )}
                   {mineru && !mineru.available && !mineru.install.running && (
-                    <span style={{ fontSize: 11, color: mineru.install.status === 'failed' ? '#b00020' : '#8a8f98', background: mineru.install.status === 'failed' ? '#fdecea' : '#f3f4f6', borderRadius: 4, padding: '1px 6px' }}>
-                      {mineru.install.status === 'failed' ? '安装失败' : '未安装'}
+                    <span style={{
+                      fontSize: 11, borderRadius: 4, padding: '1px 6px',
+                      color: mineru.install.status === 'failed' ? '#b00020' : mineru.install.status === 'interrupted' ? '#8a5a00' : '#8a8f98',
+                      background: mineru.install.status === 'failed' ? '#fdecea' : mineru.install.status === 'interrupted' ? '#fff4e0' : '#f3f4f6',
+                    }}>
+                      {mineru.install.status === 'failed' ? '安装失败'
+                        : mineru.install.status === 'interrupted' ? '已中断 · 可续传'
+                          : mineru.install.status === 'cancelled' ? '已停止 · 可续传'
+                            : '未安装'}
                     </span>
                   )}
                 </div>
@@ -331,20 +342,37 @@ export default function SettingsPanel({
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ flex: 1, fontSize: 11, color: '#8a8f98' }}>{mineru.install.message || '准备中…'}</span>
-                      <button onClick={cancelMineru} style={{ fontSize: 11, padding: '2px 8px', color: '#b00020' }}>停止</button>
+                      <button onClick={() => cancelMineru(false)} style={{ fontSize: 11, padding: '2px 8px', color: '#b00020' }}>停止（保留进度）</button>
                     </div>
                   </>
                 )}
                 {mineru && !mineru.available && !mineru.install.running && (
                   <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <button onClick={installMineru} style={{ fontSize: 12, padding: '4px 10px', background: '#245c9c', color: '#fff', border: 'none', borderRadius: 6 }}>
-                        {mineru.install.status === 'failed' ? '重试安装' : `安装（约 ${mineru.disk_required_gb}GB）`}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <button onClick={() => installMineru(mineru.install.resumable)} style={{ fontSize: 12, padding: '4px 10px', background: '#245c9c', color: '#fff', border: 'none', borderRadius: 6 }}>
+                        {mineru.install.resumable
+                          ? '继续安装（断点续传）'
+                          : mineru.install.status === 'failed'
+                            ? '重试安装'
+                            : `安装（约 ${mineru.disk_required_gb}GB）`}
                       </button>
+                      {mineru.install.resumable && (
+                        <button onClick={() => cancelMineru(true)} style={{ fontSize: 11, padding: '3px 8px' }}>
+                          取消并清除进度
+                        </button>
+                      )}
                       <span style={{ fontSize: 11, color: '#8a8f98' }}>PDF 入库必需；docx / md / txt 不需要它。</span>
                     </div>
-                    {mineru.install.status === 'failed' && (
-                      <div style={{ fontSize: 11, color: '#b00020', lineHeight: 1.6 }}>{mineru.install.error || mineru.install.message}</div>
+                    {mineru.install.done_stages.length > 0 && (
+                      <div style={{ fontSize: 11, color: '#5b6472' }}>
+                        已完成：{mineru.install.done_stages.join('、')}
+                        {mineru.install.models_bytes > 0 && ` · 模型已下 ${(mineru.install.models_bytes / 1024 ** 2).toFixed(0)}MB`}
+                      </div>
+                    )}
+                    {(mineru.install.status === 'failed' || mineru.install.status === 'interrupted') && (
+                      <div style={{ fontSize: 11, color: mineru.install.status === 'failed' ? '#b00020' : '#8a5a00', lineHeight: 1.6 }}>
+                        {mineru.install.error || mineru.install.message}
+                      </div>
                     )}
                   </>
                 )}

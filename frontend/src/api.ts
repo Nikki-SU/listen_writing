@@ -1350,7 +1350,7 @@ export type KbDocument = {
 }
 
 export type MineruInstallState = {
-  status: 'not_installed' | 'running' | 'done' | 'failed' | 'cancelled'
+  status: 'not_installed' | 'running' | 'done' | 'failed' | 'cancelled' | 'interrupted'
   stage: string
   progress: number
   message: string
@@ -1359,6 +1359,11 @@ export type MineruInstallState = {
   started_at: string
   finished_at: string
   running: boolean
+  /** 断点续传：已完成的步骤与模型已下的字节数。 */
+  done_stages: string[]
+  resumable: boolean
+  models_bytes: number
+  models_required_bytes: number
 }
 
 export type MineruStatus = {

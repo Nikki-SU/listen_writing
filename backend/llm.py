@@ -108,7 +108,11 @@ def model_dir(model_key: str) -> Path:
 
 
 def model_file(model_key: str) -> Path | None:
-    """已下载好的 GGUF（优先 Q4_K_M 单文件）。"""
+    """已下载好的 GGUF（优先 Q4_K_M 单文件）。
+
+    额外校验文件大小：小于登记大小的 60% 视为「下载到一半的残包」，当作未下载，
+    避免后端拿着残缺模型去加载、报出难以理解的错误。
+    """
     d = model_dir(model_key)
     if not d.is_dir():
         return None
@@ -116,7 +120,16 @@ def model_file(model_key: str) -> Path | None:
     if not files:
         return None
     preferred = [f for f in files if "q4_k_m" in f.name.lower() and "mmproj" not in f.name.lower()]
-    return (preferred or files)[0]
+    candidate = (preferred or files)[0]
+    expected = (MODEL_FILES.get(model_key) or ("", 0))[1]
+    try:
+        if expected and candidate.stat().st_size < expected * 0.6:
+            logger.warning("忽略不完整模型文件：%s（%d 字节 < 预期 %d）",
+                           candidate, candidate.stat().st_size, expected)
+            return None
+    except OSError:
+        return None
+    return candidate
 
 
 # 每个档位在 bartowski 仓库里的 Q4_K_M 文件名。写死而不是先查仓库：
@@ -236,6 +249,13 @@ def ensure_model(
             on_status(f"正在从 {host} 下载 {spec['label']}（{expected / 1e9:.1f}GB，可断点续传）…")
         try:
             _download(_download_url(model_key, base), part, on_progress, should_stop, expected)
+            # 包大小校验：服务端没给 Content-Length 时也能发现明显残缺的包。
+            got = part.stat().st_size if part.is_file() else 0
+            if expected and got < expected * 0.6:
+                part.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"下载不完整：只拿到 {got / 1e9:.2f}GB，预期约 {expected / 1e9:.1f}GB"
+                )
             part.replace(dest)
             logger.info("AI 模型已就绪：%s", dest)
             return dest

@@ -68,6 +68,12 @@ def ensure_model(key: str, on_status=None, on_progress=None, should_stop=None) -
         url = f"{base}/{spec['repo']}/resolve/main/{spec['file']}"
         try:
             llm._download(url, part, on_progress, should_stop, spec["expected"])
+            got = part.stat().st_size if part.is_file() else 0
+            if spec["expected"] and got < spec["expected"] * 0.6:
+                part.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"下载不完整：只拿到 {got / 1e6:.0f}MB，预期约 {spec['expected'] / 1e6:.0f}MB"
+                )
             part.replace(dest)
             return dest
         except llm.Cancelled:

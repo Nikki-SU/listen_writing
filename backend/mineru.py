@@ -40,6 +40,10 @@ PIP_INDEXES = (
 TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
 MIN_FREE_GB = 8.0
 
+# 模型目录至少要有这么大才算下载完整（pipeline 模型合计约 1GB；保守取 300MB）。
+MODEL_MIN_BYTES = 300 * 1024 * 1024
+MODELS_MARKER = "models_ready"
+
 # CPU 上单任务串行：一把全局锁（进程内足够，转换本身在子进程）
 _convert_lock = threading.Lock()
 
@@ -67,6 +71,56 @@ def _disk_free_gb() -> float:
         return shutil.disk_usage(str(storage.DATA_ROOT)).free / (1024 ** 3)
     except OSError:
         return 0.0
+
+
+def _dir_bytes(path: Path) -> int:
+    """目录内文件总字节数；用于校验「模型是否真的下完整」。"""
+    total = 0
+    if not path.exists():
+        return 0
+    for p in path.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _models_bytes() -> int:
+    return _dir_bytes(MODELS_DIR)
+
+
+def _human_size(n: float) -> str:
+    for unit in ("B", "KB", "MB"):
+        if n < 1024:
+            return f"{n:.0f}{unit}"
+        n /= 1024
+    return f"{n:.1f}GB"
+
+
+def _models_ready() -> bool:
+    """模型完整性：成功后写的标记 + 目录大小下限（防下载到一半就以为完成）。"""
+    return (MODELS_DIR / MODELS_MARKER).is_file() and _models_bytes() >= MODEL_MIN_BYTES
+
+
+def _done_stages() -> list[str]:
+    return [str(x) for x in (_state().get("done_stages") or [])]
+
+
+def _mark_stage(name: str) -> None:
+    stages = _done_stages()
+    if name not in stages:
+        stages.append(name)
+    _set_state(done_stages=stages)
+
+
+def _py_ok(py: Path, code: str) -> bool:
+    try:
+        r = subprocess.run([str(py), "-c", code], capture_output=True, timeout=60)
+        return r.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
 
 
 def _has_cuda() -> bool:
@@ -121,6 +175,7 @@ def _log_tail(path: Path = LOG_PATH, lines: int = 12) -> list[str]:
 
 def install_info() -> dict:
     state = _state()
+    stages = _done_stages()
     return {
         "status": state.get("status", "not_installed"),
         "stage": state.get("stage", ""),
@@ -131,6 +186,11 @@ def install_info() -> dict:
         "started_at": state.get("started_at", ""),
         "finished_at": state.get("finished_at", ""),
         "running": state.get("status") == "running",
+        # 断点续传：已完成的步骤、模型已下字节数，用于界面显示「继续安装」。
+        "done_stages": stages,
+        "resumable": bool(stages) and state.get("status") in ("interrupted", "failed", "cancelled"),
+        "models_bytes": _models_bytes(),
+        "models_required_bytes": MODEL_MIN_BYTES,
     }
 
 
@@ -228,8 +288,10 @@ def _local_cache_env() -> dict:
 
 def _pip(py: Path, args: list[str], *, stage: str, progress: int,
          message: str, index: str | None = None) -> int:
+    # 不传 --no-cache-dir：缓存落在 .runtime/pip-cache，中断后重试可直接复用已下好的 wheel。
     cmd = [str(py), "-m", "pip", "install", "--disable-pip-version-check",
-           "--no-warn-script-location", "--timeout", "30", "--retries", "2"]
+           "--no-warn-script-location", "--prefer-binary",
+           "--timeout", "30", "--retries", "2"]
     if index:
         cmd += ["-i", index]
     cmd += args
@@ -261,14 +323,17 @@ def _install_worker() -> None:
             )
 
         # 1) 独立运行环境（便携 Python 升级后旧 venv 可能失效：pip 不通就重建）
+        rebuilt = False
         if py.exists():
             try:
                 probe_pip = subprocess.run([str(py), "-m", "pip", "--version"],
                                            capture_output=True, timeout=30)
                 if probe_pip.returncode != 0:
                     shutil.rmtree(RUNTIME_DIR, ignore_errors=True)
+                    rebuilt = True
             except (subprocess.SubprocessError, OSError):
                 shutil.rmtree(RUNTIME_DIR, ignore_errors=True)
+                rebuilt = True
         if not py.exists():
             _set_state(status="running", stage="venv", progress=2,
                        message="正在创建独立运行环境（不会动主程序依赖）…", error="")
@@ -276,54 +341,81 @@ def _install_worker() -> None:
                       stage="venv", progress=5, message="正在创建独立运行环境…")
             if rc != 0 or not py.exists():
                 raise RuntimeError("创建独立运行环境失败（便携 Python 可能缺少 venv 组件）。")
-        _set_state(status="running", stage="venv", progress=8, message="独立运行环境已就绪")
+            rebuilt = True
+        if rebuilt:
+            # 新 venv 里没有 torch / MinerU：旧步骤记录作废（模型在 venv 之外，可保留）。
+            _set_state(done_stages=["venv"])
+        _mark_stage("venv")
+        _set_state(status="running", stage="venv", progress=8,
+                   message="独立运行环境已就绪（沿用上次进度，不重复下载）")
 
-        # 2) CPU 版 torch：先按 CPU wheel 装，避免 Linux 默认拖入 CUDA
-        _set_state(status="running", stage="torch", progress=12,
-                   message="正在安装 CPU 版 PyTorch（约 200MB–1GB）…")
-        rc = _pip(py, ["--no-cache-dir", "torch>=2.6,<3"], stage="torch", progress=20,
-                  message="正在安装 CPU 版 PyTorch…", index=TORCH_INDEX)
-        if rc != 0:
-            # 国内直连 PyTorch 官方 wheel 源偶尔很慢；阿里云镜像同样提供 CPU wheel。
-            rc = _pip(py, ["--no-cache-dir", "torch>=2.6,<3",
-                           "-f", "https://mirrors.aliyun.com/pytorch-wheels/cpu/"],
-                      stage="torch", progress=24,
-                      message="官方 CPU 源不可用，尝试阿里云镜像…")
-        if rc != 0:
-            rc = _pip(py, ["--no-cache-dir", "torch>=2.6,<3"], stage="torch", progress=26,
-                      message="镜像不可用，尝试默认源…")
-        if rc != 0:
-            raise RuntimeError("PyTorch 安装失败：请检查网络后重试。")
+        # 2) CPU 版 torch：已装则跳过（中断后重试不重装）
+        if not _py_ok(py, "import torch"):
+            _set_state(status="running", stage="torch", progress=12,
+                       message="正在安装 CPU 版 PyTorch（约 200MB–1GB）…")
+            rc = _pip(py, ["torch>=2.6,<3"], stage="torch", progress=20,
+                      message="正在安装 CPU 版 PyTorch…", index=TORCH_INDEX)
+            if rc != 0:
+                # 国内直连 PyTorch 官方 wheel 源偶尔很慢；阿里云镜像同样提供 CPU wheel。
+                rc = _pip(py, ["torch>=2.6,<3",
+                               "-f", "https://mirrors.aliyun.com/pytorch-wheels/cpu/"],
+                          stage="torch", progress=24,
+                          message="官方 CPU 源不可用，尝试阿里云镜像…")
+            if rc != 0:
+                rc = _pip(py, ["torch>=2.6,<3"], stage="torch", progress=26,
+                          message="镜像不可用，尝试默认源…")
+            if rc != 0 or not _py_ok(py, "import torch"):
+                raise RuntimeError("PyTorch 安装失败：请检查网络后重试（已下载部分会保留）。")
+        _mark_stage("torch")
+        _set_state(status="running", stage="torch", progress=32, message="PyTorch 已就绪")
 
-        # 3) MinerU（固定 2.x）：清华镜像优先，官方源兜底
-        _set_state(status="running", stage="mineru", progress=35,
-                   message=f"正在安装 MinerU {MINERU_VERSION}（约 1–2GB）…")
-        rc = 1
-        for idx, index in enumerate(PIP_INDEXES):
-            rc = _pip(py, ["--no-cache-dir", "-U", MINERU_SPEC],
-                      stage="mineru", progress=40 + idx * 8,
-                      message=f"正在安装 MinerU（源 {index.split('/')[2]}）…", index=index)
-            if rc == 0:
-                break
-        if rc != 0:
-            raise RuntimeError("MinerU 安装失败：清华镜像与官方源都不可用，请检查网络后重试。")
+        # 3) MinerU（固定 2.x）：清华镜像优先，官方源兜底；已装则跳过
+        if not _py_ok(py, "import mineru"):
+            _set_state(status="running", stage="mineru", progress=35,
+                       message=f"正在安装 MinerU {MINERU_VERSION}（约 1–2GB）…")
+            rc = 1
+            for idx, index in enumerate(PIP_INDEXES):
+                rc = _pip(py, ["-U", MINERU_SPEC],
+                          stage="mineru", progress=40 + idx * 8,
+                          message=f"正在安装 MinerU（源 {index.split('/')[2]}）…", index=index)
+                if rc == 0:
+                    break
+            if rc != 0 or not _py_ok(py, "import mineru"):
+                raise RuntimeError("MinerU 安装失败：清华镜像与官方源都不可用，请检查网络后重试。")
+        _mark_stage("mineru")
+        _set_state(status="running", stage="mineru", progress=58, message="MinerU 已就绪")
 
-        # 4) 模型：默认 ModelScope（国内更稳），失败再 HuggingFace 镜像
-        _set_state(status="running", stage="models", progress=62,
-                   message="正在下载 MinerU 模型（约 1–2GB，请保持网络）…")
+        # 4) 模型：已有完整模型就跳过；否则下载（ModelScope 优先，支持续传）
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        rc = 1
-        for source in ("modelscope", "huggingface"):
-            rc = _run(
-                [str(py), "-m", "mineru.cli.models_download", "-s", source, "-m", "pipeline"],
-                stage="models", progress=70 if source == "modelscope" else 82,
-                message=f"正在从 {source} 下载模型…",
-                env=_download_env(source),
-            )
-            if rc == 0:
-                break
-        if rc != 0:
-            raise RuntimeError("MinerU 模型下载失败：可换网络后重试，或手动放置模型。")
+        marker = MODELS_DIR / MODELS_MARKER
+        if not _models_ready():
+            # 旧标记可能与实际文件不符：文件不够大时先移除标记，重新补齐
+            if marker.exists():
+                marker.unlink(missing_ok=True)
+            _set_state(status="running", stage="models", progress=62,
+                       message="正在下载 MinerU 模型（约 1–2GB，可断点续传）…")
+            rc = 1
+            for source in ("modelscope", "huggingface"):
+                rc = _run(
+                    [str(py), "-m", "mineru.cli.models_download", "-s", source, "-m", "pipeline"],
+                    stage="models", progress=70 if source == "modelscope" else 82,
+                    message=f"正在从 {source} 下载模型…",
+                    env=_download_env(source),
+                )
+                if rc == 0:
+                    break
+            if rc != 0:
+                raise RuntimeError("MinerU 模型下载失败：可换网络后重试（已下载部分会保留）。")
+            got = _models_bytes()
+            if got < MODEL_MIN_BYTES:
+                raise RuntimeError(
+                    f"MinerU 模型不完整：只下载到 {_human_size(got)}，"
+                    f"至少应有 {_human_size(MODEL_MIN_BYTES)}。请重试（会断点续传）。"
+                )
+            marker.write_text(storage.now_iso(), encoding="utf-8")
+        _mark_stage("models")
+        _set_state(status="running", stage="models", progress=90,
+                   message=f"MinerU 模型已就绪（{_human_size(_models_bytes())}）")
 
         # 5) 自检
         _set_state(status="running", stage="verify", progress=95,
@@ -349,7 +441,11 @@ def _install_worker() -> None:
 
 
 def start_install() -> dict:
-    """后台安装；重复调用不会起第二个任务。"""
+    """后台安装 / 继续安装；重复调用不会起第二个任务。
+
+    上次在安装途中关掉后端时，状态会停在 running；这里先判定为「已中断」，
+    保留 done_stages 与已下载文件，本次直接从断点继续。
+    """
     with _install_lock:
         info = install_info()
         if info["running"]:
@@ -360,8 +456,10 @@ def start_install() -> dict:
             except (ValueError, TypeError):
                 age = 9999
             if age > 120:
-                _set_state(status="failed", stage="failed", progress=0,
-                           message="上次安装中断，请重试", error="上次安装中断", finished_at=storage.now_iso())
+                _set_state(status="interrupted", stage=_state().get("stage", ""), progress=0,
+                           message="上次安装被中断，可继续安装（断点续传，不会重下已完成部分）",
+                           error="", finished_at=storage.now_iso())
+                info = install_info()
             else:
                 return info
         if probe()["available"]:
@@ -370,16 +468,22 @@ def start_install() -> dict:
             return install_info()
         _install_cancel.clear()
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_PATH, "w", encoding="utf-8") as fh:
-            fh.write(f"{storage.now_iso()} 开始安装 MinerU {MINERU_VERSION}\n")
+        # 追加日志而不是清空：中断后的现场对排查安装失败有用。
+        with open(LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(f"\n{storage.now_iso()} 开始/继续安装 MinerU {MINERU_VERSION}\n")
         _set_state(status="running", stage="prepare", progress=0,
-                   message="准备安装…", error="",
-                   started_at=storage.now_iso(), finished_at="")
+                   message="准备安装（已完成的步骤会跳过）…", error="", auto_install=True,
+                   started_at=_state().get("started_at") or storage.now_iso(), finished_at="")
         threading.Thread(target=_install_worker, daemon=True).start()
         return install_info()
 
 
 def cancel_install() -> dict:
+    """停止安装；未在运行时则清除断点进度（下次从头开始）。
+
+    运行中取消：保留已下载文件与 done_stages，下次仍可「继续安装」断点续传。
+    """
+    running = install_info()["running"]
     _install_cancel.set()
     proc = _install_proc
     if proc is not None:
@@ -387,16 +491,32 @@ def cancel_install() -> dict:
             proc.terminate()
         except OSError:
             pass
+    if running:
+        _set_state(status="cancelled", stage="cancelled", progress=0,
+                   message="安装已停止；已下载的部分会保留，下次可继续安装",
+                   error="", finished_at=storage.now_iso())
+    else:
+        (MODELS_DIR / MODELS_MARKER).unlink(missing_ok=True)
+        _set_state(status="not_installed", stage="", progress=0, done_stages=[],
+                   message="已清除安装进度，下次启动不再自动安装；可在设置页手动安装",
+                   error="", auto_install=False, finished_at=storage.now_iso())
     return install_info()
 
 
 def ensure_installed(on_status=None, poll: float = 2.0) -> dict:
     """供 preload 使用：首次启动时同步等待安装完成；已安装立即返回。
 
-    失败不抛异常（返回最终 state），由调用方决定是否继续启动后端。
+    - 上次中断：自动断点续传；
+    - 用户明确「取消并清除进度」：不再自动安装，尊重用户选择；
+    - 失败不抛异常（返回最终 state），由调用方决定是否继续启动后端。
     """
     if probe()["available"]:
         return install_info()
+    if _state().get("auto_install") is False:
+        info = install_info()
+        if on_status:
+            on_status("[组件] 用户已取消自动安装 MinerU，跳过；可在设置页手动安装。")
+        return info
     if _disk_free_gb() < MIN_FREE_GB:
         _set_state(status="failed", stage="failed", progress=0,
                    message=f"磁盘剩余 {_disk_free_gb():.1f}GB，PDF 转换组件至少需要 {MIN_FREE_GB:.0f}GB",

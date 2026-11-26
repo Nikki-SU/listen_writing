@@ -251,7 +251,9 @@ export default function KnowledgePage({
           <div style={{ fontSize: 10, color: '#8a8f98', lineHeight: 1.7 }}>
             PDF 转换：{mineru?.available ? `已就绪${mineru.version ? ` v${mineru.version}` : ''}（${mineru.device}）`
               : mineru?.install.running ? `安装中 ${mineru.install.progress}%`
-                : '未安装（设置 → 组件安装）'}
+                : mineru?.install.status === 'interrupted' ? '上次安装中断（设置 → 组件安装可续传）'
+                  : mineru?.install.status === 'cancelled' ? '安装已停止（设置 → 组件安装可续传）'
+                    : '未安装（设置 → 组件安装）'}
             <br />
             向量模型：{embedStatus?.models.map((m) => `${m.label} ${m.ready ? '就绪' : '未下载'}`).join(' · ') || '读取中…'}
             <br />
