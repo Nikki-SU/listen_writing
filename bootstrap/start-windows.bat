@@ -17,7 +17,7 @@ move /y "run-windows.bat.new" "run-windows.bat" >nul 2>nul
 
 :run
 if not exist "run-windows.bat" goto missing
-call "run-windows.bat"
+call "run-windows.bat" %*
 exit /b %errorlevel%
 
 :missing

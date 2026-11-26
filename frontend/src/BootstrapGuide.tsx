@@ -126,7 +126,7 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
         <h2 style={{ fontSize: 15, margin: '0 0 8px' }}>第 2 步 · 运行启动器</h2>
         {isWindows() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持黑窗口开启。如果弹出「是否允许此应用更改设备」的窗口（安装微软运行库），点「是」。下载优先走国内镜像，不需要你开代理。
+            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持黑窗口开启。如果弹出「是否允许此应用更改设备」的窗口（安装微软运行库），点「是」。下载优先走国内镜像，不需要你开代理。<strong>成功启动后会自动创建桌面快捷方式并加入开机启动</strong>：以后点桌面图标，或直接打开工作台页面，都能直接用。
           </p>
         ) : isMac() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
@@ -160,11 +160,10 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
           <div style={{ marginTop: 8, lineHeight: 1.7 }}>
             {isWindows() && (
               <>
-                <p style={{ margin: '0 0 6px' }}><strong>Windows · 放一个快捷方式到桌面：</strong></p>
-                <p style={{ margin: '0 0 6px' }}>1. 打开启动器所在文件夹，找到 <code>start-windows.bat</code>。</p>
-                <p style={{ margin: '0 0 6px' }}>2. 右键它 →「发送到」→「桌面快捷方式」。以后双击桌面图标就能启动。</p>
-                <p style={{ margin: '0 0 6px' }}><strong>想开机自动启动：</strong>按 <code>Win + R</code> 输入 <code>shell:startup</code> 回车，把上面那个快捷方式复制进去即可（不想要时删掉这个副本）。</p>
-                <p style={{ margin: 0 }}>注意：快捷方式只是「指针」，别把原文件夹删了或挪走。</p>
+                <p style={{ margin: '0 0 6px' }}><strong>Windows · 不需要手动建快捷方式：</strong></p>
+                <p style={{ margin: '0 0 6px' }}>首次成功启动会自动创建桌面「Listen Writing」图标，并加入开机启动（后台静默起后端，不弹浏览器）。</p>
+                <p style={{ margin: '0 0 6px' }}>以后点桌面图标 = 启动后端并自动打开页面；或直接打开工作台页面 / 浏览器书签，后端已在开机时跑起来，页面会直接连上。</p>
+                <p style={{ margin: 0 }}>不想要开机启动：在启动器文件夹运行 <code>start-windows.bat --remove-shortcuts</code>，会删除桌面与启动项快捷方式。</p>
               </>
             )}
             {isMac() && (

@@ -20,6 +20,15 @@ rem so a broken or tampered mirror is rejected instead of executed.
 
 setlocal
 cd /d "%~dp0"
+set "LWDIR=%~dp0"
+set "APPURL=https://nikki-su.github.io/listen_writing/"
+
+rem --remove-shortcuts: delete the desktop / startup shortcuts and exit.
+if /I "%~1"=="--remove-shortcuts" goto remove_shortcuts
+
+rem If the backend is already running, just open the page and leave it alone.
+powershell -NoProfile -Command "try { if ((Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://127.0.0.1:7850/api/health').StatusCode -eq 200) { exit 0 } else { exit 1 } } catch { exit 1 }"
+if not errorlevel 1 goto already_running
 
 set "PYTAG=20261026"
 set "PYVER=3.12.16"
@@ -70,6 +79,19 @@ del /q "python-runtime.tar.gz"
 
 :have_runtime
 if not exist "%PY%" goto runtime_missing
+
+rem Create desktop + startup shortcuts once. The startup shortcut uses --silent
+rem so it starts the backend at login without opening a browser window.
+if exist ".runtime\shortcuts_created" goto install_deps
+if exist ".runtime\no_shortcuts" goto install_deps
+echo [2.5/4] Creating desktop and startup shortcuts ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $s=[Environment]::GetFolderPath('Startup'); $t=Join-Path $env:LWDIR 'start-windows.bat'; $a=$ws.CreateShortcut((Join-Path $d 'Listen Writing.lnk')); $a.TargetPath=$t; $a.WorkingDirectory=$env:LWDIR; $a.Save(); $b=$ws.CreateShortcut((Join-Path $s 'Listen Writing.lnk')); $b.TargetPath=$t; $b.WorkingDirectory=$env:LWDIR; $b.Arguments='--silent'; $b.WindowStyle=7; $b.Save()"
+if errorlevel 1 goto shortcuts_failed
+type nul > ".runtime\shortcuts_created"
+goto install_deps
+
+:shortcuts_failed
+echo        [WARN] Could not create shortcuts. You can still run start-windows.bat manually.
 
 :install_deps
 echo [3/4] Installing components (first run only, about 600 MB, needs internet)
@@ -163,6 +185,12 @@ echo      http://127.0.0.1:7850
 echo  Keep this window open while you use the web page.
 echo ============================================================
 echo.
+if /I not "%~1"=="--silent" (
+  echo [INFO] Opening the workbench page in your browser...
+  start "" "%APPURL%"
+) else (
+  echo [INFO] Silent startup: open the page when you need it.
+)
 "%PY%" backend\main.py
 rem Exit code 86 means the web page wrote updated files and asked for a restart.
 rem Start a FRESH process through start-windows.bat, so a replaced run file is
@@ -177,7 +205,21 @@ exit /b 0
 :restart
 echo.
 echo [INFO] Local files were updated. Reinstalling components and restarting ...
-start "" "%~dp0start-windows.bat"
+start "" "%~dp0start-windows.bat" %*
+exit /b 0
+
+:already_running
+rem Backend is already up: this is the "click the icon / page again" path.
+if /I not "%~1"=="--silent" start "" "%APPURL%"
+exit /b 0
+
+:remove_shortcuts
+echo Removing desktop and startup shortcuts ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $d=[Environment]::GetFolderPath('Desktop'); $s=[Environment]::GetFolderPath('Startup'); Remove-Item (Join-Path $d 'Listen Writing.lnk') -ErrorAction SilentlyContinue; Remove-Item (Join-Path $s 'Listen Writing.lnk') -ErrorAction SilentlyContinue"
+if exist ".runtime\shortcuts_created" del /q ".runtime\shortcuts_created"
+type nul > ".runtime\no_shortcuts"
+echo Done. The app will no longer auto-start at login.
+pause >nul
 exit /b 0
 
 rem ---------------------------------------------------------------

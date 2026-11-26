@@ -9,6 +9,13 @@
 
 双击 `start-windows.bat`。
 
+首次成功启动后会**自动创建桌面快捷方式**，并**加入开机启动**（静默启动后端，不弹浏览器）。
+以后：
+- 点桌面「Listen Writing」图标：启动后端并自动打开工作台页面；
+- 或直接点 GitHub Pages 页面 / 浏览器书签：后端已在开机时跑起来，页面会直接连上。
+
+不想要开机启动：运行 `start-windows.bat --remove-shortcuts`（会删除桌面与启动项快捷方式）。
+
 ## macOS
 
 打开「终端」（Terminal），输入 `bash `（bash 后面加一个空格），然后把 `start-mac.command` 从文件夹拖进终端窗口，按回车。
@@ -19,9 +26,7 @@
 
 ## 不想每次去文件夹里找启动器？
 
-**Windows**：右键 `start-windows.bat` →「发送到」→「桌面快捷方式」，以后双击桌面图标即可。
-想开机自动启动：按 `Win + R` 输入 `shell:startup` 回车，把该快捷方式复制进打开的文件夹。
-（快捷方式只是指针，原文件夹不要删或挪走。）
+**Windows**：首次运行会自动创建桌面快捷方式，无需再手动「发送到桌面」。想开机自动启动也已自动完成；不想要时运行 `start-windows.bat --remove-shortcuts`。
 
 **macOS**：在 Finder 里右键 `start-mac.command` →「制作别名」，拖到桌面。
 想开机自动启动：系统设置 →「通用」→「登录项与扩展」→ 加入登录项。
