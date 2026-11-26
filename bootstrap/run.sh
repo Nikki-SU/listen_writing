@@ -64,9 +64,12 @@ hash_of() {
   fi
 }
 
-# 依次尝试：GitHub 官方 → 国内代理 → 国内代理。下载后校验 SHA256，不符即丢弃。
+# 依次尝试：国内镜像（不需要用户开代理）→ GitHub 官方 → 第三方代理。
+# 下载后都校验 SHA256，不符即丢弃。
 fetch_runtime() {
   for url in \
+    "https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/${PYTAG}/${PKG}" \
+    "https://mirrors.huaweicloud.com/github-release/astral-sh/python-build-standalone/${PYTAG}/${PKG}" \
     "${GHBASE}/${PKG}" \
     "https://gh-proxy.com/${GHBASE}/${PKG}" \
     "https://ghproxy.net/${GHBASE}/${PKG}"

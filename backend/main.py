@@ -1102,7 +1102,7 @@ class Handler(BaseHTTPRequestHandler):
             self._kb_call(lambda: kb_chat.get_chat(m[0], m[1]))
             return
         if path == "/api/kb/mineru/status":
-            self._send_json(mineru.probe())
+            self._send_json(mineru.status())
             return
         # 群组材料作为个人对话上下文（按成员权限/脱敏，只返回数据不落群组）
         m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/chat-context$")
@@ -3343,6 +3343,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # ---- 知识库 ----
+        # PDF 转换组件（MinerU）安装：后台任务，前端轮询 /api/kb/mineru/status。
+        if path == "/api/kb/mineru/install":
+            self._send_json(mineru.start_install(), status=202)
+            return
+        if path == "/api/kb/mineru/install/cancel":
+            self._send_json(mineru.cancel_install())
+            return
         if path == "/api/kb/libraries":
             data = self._read_json_body() or {}
             self._kb_call(lambda: kb.create_library(
@@ -3673,7 +3680,11 @@ class Handler(BaseHTTPRequestHandler):
                          "before": len(old), "fixed": changed}, status=200)
 
     def _kb_add_document(self, kb_id: str):
-        """文档入库：前端把文件内容以 base64 或纯文本传来，后端转 Markdown + 分块落盘。"""
+        """文档入库：前端把文件内容以 base64 或纯文本传来，后端转 Markdown + 分块落盘。
+
+        PDF 走 MinerU 子进程（必须已安装）；docx 用内置解析，md/txt 直读。
+        PDF 转换在请求线程里同步跑：单机单用户，前端会显示「转换中」。
+        """
         import base64
         data = self._read_json_body() or {}
         name = str(data.get("name") or "未命名文档")
@@ -3685,12 +3696,29 @@ class Handler(BaseHTTPRequestHandler):
                 raw = str(data["text"]).encode("utf-8")
             else:
                 raise kb.KbError("缺少文档内容")
-            markdown, how = kb_docs.extract_markdown(name, raw)
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
             doc_id = storage.new_id()
             d = kb.doc_dir(kb_id, doc_id)
             d.mkdir(parents=True, exist_ok=True)
-            # 原文留档（markdown 之外的原始字节）
-            (d / ("source" + ("." + name.rsplit('.', 1)[-1] if '.' in name else ""))).write_bytes(raw)
+            # 原文先留档：转换失败也能在 doc 目录里找到源文件
+            source = d / ("source" + ("." + ext if ext else ""))
+            source.write_bytes(raw)
+
+            if ext == "pdf":
+                if not mineru.probe()["available"]:
+                    raise kb.KbError(
+                        "PDF 需要先安装文档转换组件（MinerU）。请在知识库页点击「安装 PDF 转换组件」。",
+                        422,
+                    )
+                try:
+                    md_path = mineru.convert_pdf(source, d / "mineru", method="auto")
+                    markdown = md_path.read_text(encoding="utf-8", errors="replace")
+                    how = "mineru"
+                except RuntimeError as e:
+                    raise kb.KbError(f"PDF 转换失败：{e}", 500)
+            else:
+                markdown, how = kb_docs.extract_markdown(name, raw)
+
             storage._atomic_write_text(kb.doc_markdown_path(kb_id, doc_id), markdown)
             chunks = kb.save_chunks(kb_id, doc_id, kb.chunk_text(markdown))
             meta = {

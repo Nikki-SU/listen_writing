@@ -1349,6 +1349,33 @@ export type KbDocument = {
   created_at: string
 }
 
+export type MineruInstallState = {
+  status: 'not_installed' | 'running' | 'done' | 'failed' | 'cancelled'
+  stage: string
+  progress: number
+  message: string
+  error: string
+  log_tail: string[]
+  started_at: string
+  finished_at: string
+  running: boolean
+}
+
+export type MineruStatus = {
+  available: boolean
+  installed: boolean
+  version: string
+  ram_gb: number
+  disk_free_gb: number
+  disk_required_gb: number
+  cuda: boolean
+  device: string
+  profile_suggestion: string
+  timing_note: string
+  pinned_version: string
+  install: MineruInstallState
+}
+
 export type KbHit = {
   kind: 'kb'
   chunk_id: string
@@ -1435,7 +1462,9 @@ export const kbApi = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, library_ids: libraryIds, top_k: topK }),
   })),
-  mineruStatus: () => json<{ available: boolean; installed: boolean; ram_gb: number; disk_free_gb: number; profile_suggestion: string; timing_note: string }>(fetch(`${BACKEND}/api/kb/mineru/status`)),
+  mineruStatus: () => json<MineruStatus>(fetch(`${BACKEND}/api/kb/mineru/status`)),
+  mineruInstall: () => json<MineruStatus['install']>(fetch(`${BACKEND}/api/kb/mineru/install`, { method: 'POST' }),),
+  mineruCancel: () => json<MineruStatus['install']>(fetch(`${BACKEND}/api/kb/mineru/install/cancel`, { method: 'POST' })),
   embedStatus: () => json<{ models: { key: string; label: string; ready: boolean }[]; max_loaded: number; loaded: string[] }>(fetch(`${BACKEND}/api/kb/embed/status`)),
   ensureEmbed: (modelKey: string) => json<{ status: string; path?: string }>(fetch(`${BACKEND}/api/kb/embed/ensure`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_key: modelKey }),

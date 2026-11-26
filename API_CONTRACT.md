@@ -292,6 +292,27 @@ Project
 - **单人任务不提供「对比」**：没有第二位编码者，就不做假数据。对比只出现在共享材料里，用真实的两位 `coder_id`。
 - 本机「我的录音」的编码走 C 系列，落项目目录 `coding.json`（`localStorage` 只作即时缓存）；共享材料的编码走 G 系列，已落后端。
 
+## 知识库与证据对话（KB 系列，已实现）
+
+- 库是**个人全局库**；项目只在 `project.json` 里存 `kb_refs: [kb_id…]`，不复制文档、不建第二份索引。
+- 文档入库：`md/txt` 直读，`docx` 内置解析（版式不保证），`pdf` 走 MinerU 子进程。
+- MinerU **固定 2.x**（当前 `2.7.6`，4.x 是另一套 CLI），装在 `.runtime/mineru/` 独立 venv，主后端不 import torch。
+
+| 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
+|---|---|---|---|---|---|
+| KB-1 | 后端 | `GET /api/kb/libraries` | 无 | `{"libraries":[…]}` | 全局库列表（含 doc/chunk/ref 计数） |
+| KB-2 | 后端 | `POST /api/kb/libraries` | `{"name","embedding_model?"}` | 库对象 | 新建库 |
+| KB-3 | 后端 | `POST /api/kb/libraries/{id}/docs` | `{"name","text?"}` 或 `{"name","content_base64"}` | 文档 meta | PDF 在请求线程内同步转换；MinerU 未装返回 422 |
+| KB-4 | 后端 | `GET /api/kb/mineru/status` | 无 | `MineruStatus`（含 `install` 进度） | 设备/内存/磁盘/建议档位/安装状态 |
+| KB-5 | 后端 | `POST /api/kb/mineru/install` | 无 | `MineruInstallState`（202） | 后台安装；重复调用不会起第二个任务 |
+| KB-6 | 后端 | `POST /api/kb/mineru/install/cancel` | 无 | `MineruInstallState` | 终止安装子进程 |
+| KB-7 | 后端 | `POST /api/kb/embed/ensure` | `{"model_key"}` | `{"status","path?"}` | 下载本地 Embedding（bge-small-zh，95MB） |
+| KB-8 | 后端 | `POST /api/kb/libraries/{id}/index` | `{"model_key"}` | `{"built","model"}` | 建向量索引；BM25 始终可用 |
+| KB-9 | 后端 | `POST /api/projects/{p}/kb-refs` | `{"kb_id"}` | `{"kb_refs":[…]}` | 项目引用库（不复制） |
+| KB-10 | 后端 | `POST /api/projects/{p}/chats/{c}/ask/stream` | `{"question","history","material_snippets","library_ids","all_libraries","only_evidence"}` | SSE：`sources/delta/done/cancelled/error` | 证据优先；引文回查由后端做；会话只落本人项目 |
+
+MinerU 安装源（都不需要用户配置代理）：PyPI 清华镜像 → 官方 PyPI；torch 官方 CPU wheel → 阿里云 wheel 镜像 → 默认源；模型 ModelScope → HuggingFace 镜像。启动器下载便携 Python 时优先南京大学 / 华为云 GitHub-Release 镜像（与官方 SHA256 一致）。AI 运行时 wheel 先走官方 CPU wheel 源（GitHub Pages，无需用户配置代理），失败才用第三方代理兜底。
+
 ## 字段与命名约定
 
 - **命名**：一律 `snake_case`；`id` 为各实体主键（字符串，如录音 id）。前后端同名字段绝不改名，否则对不上。

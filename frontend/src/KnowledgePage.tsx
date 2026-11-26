@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { kbApi, chatApi, listGroups, listGroupMaterials, type KbLibrary, type KbDocument, type Chat, type ChatMessage, type StreamEvent, type MaterialChatContext } from './api'
+import { kbApi, chatApi, listGroups, listGroupMaterials, type KbLibrary, type KbDocument, type Chat, type ChatMessage, type StreamEvent, type MaterialChatContext, type MineruStatus } from './api'
 import type { Recording } from './types'
+
+/** 大文件 base64：分块拼接，避免 String.fromCharCode(...bytes) 爆调用栈（PDF 常见 >10MB）。 */
+function toBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
 
 /** 极简 Markdown 渲染：标题/粗体/行内代码/引用号标签/换行。够对话回答用，零依赖。 */
 function renderMd(text: string): ReactNode[] {
@@ -48,6 +59,7 @@ export default function KnowledgePage({
   const [streamRefs, setStreamRefs] = useState<MaterialChatContext | null>(null)
   const abortRef = useRef<{ abort: () => void } | null>(null)
   const [embedStatus, setEmbedStatus] = useState<{ models: { key: string; label: string; ready: boolean }[]; max_loaded: number } | null>(null)
+  const [mineru, setMineru] = useState<MineruStatus | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const uploadTarget = useRef<string>('')
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -75,7 +87,16 @@ export default function KnowledgePage({
   useEffect(() => {
     void listGroups().then((r) => { setGroups(r.groups || []); setGroupIdentity(r.identity?.device_code || '') }).catch(() => undefined)
     void kbApi.embedStatus().then(setEmbedStatus).catch(() => undefined)
+    void kbApi.mineruStatus().then(setMineru).catch(() => undefined)
   }, [])
+  // 安装 MinerU 是长任务：运行中每 1.5 秒刷新进度；结束后停在最终状态。
+  useEffect(() => {
+    if (!mineru?.install.running) return
+    const timer = window.setInterval(() => {
+      void kbApi.mineruStatus().then(setMineru).catch(() => undefined)
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [mineru?.install.running])
   useEffect(() => {
     if (!groupId) { setGroupMaterials([]); return }
     void listGroupMaterials(groupId).then((ms) => setGroupMaterials(ms.map((m) => ({ id: m.id, name: m.name })))).catch(() => setGroupMaterials([]))
@@ -96,19 +117,32 @@ export default function KnowledgePage({
   async function uploadFile(kbId: string, file: File) {
     const name = file.name
     const ext = name.split('.').pop()?.toLowerCase()
+    if (ext === 'pdf' && !mineru?.available) {
+      setNotice('PDF 需要先安装 PDF 转换组件（MinerU）。请先在左侧点击「安装 PDF 转换组件」。')
+      return
+    }
     const text = ext === 'md' || ext === 'markdown' || ext === 'txt' ? await file.text() : undefined
     let base64: string | undefined
     if (!text) {
       const buf = await file.arrayBuffer()
-      base64 = btoa(String.fromCharCode(...new Uint8Array(buf)))
+      base64 = toBase64(buf)
     }
     try {
+      if (ext === 'pdf') setNotice('PDF 转换中：页数多时可能要几分钟，请保持窗口开启…')
       const doc = await kbApi.addDocument(kbId, name, text, base64)
-      setNotice(doc.conversion === 'docx-builtin' ? 'Word 已按内置方式解析（版式不保证）' : '文档已入库')
+      setNotice(doc.conversion === 'docx-builtin' ? 'Word 已按内置方式解析（版式不保证）'
+        : doc.conversion === 'mineru' ? 'PDF 已转换成 Markdown 并入库' : '文档已入库')
       await reloadLibs()
     } catch (e) {
       setNotice(`导入失败：${String(e).replace(/^Error:\s*/, '')}`)
     }
+  }
+
+  function installMineru() {
+    const size = mineru?.disk_required_gb ? `约 ${mineru.disk_required_gb}GB` : '数 GB'
+    if (!window.confirm(`安装 PDF 转换组件（MinerU ${mineru?.pinned_version || ''}）需要下载${size}（依赖 + 模型），且转换在 CPU 上较慢。继续安装？`)) return
+    void kbApi.mineruInstall().then(() => kbApi.mineruStatus().then(setMineru))
+      .catch((e) => setNotice(`安装启动失败：${String(e).replace(/^Error:\s*/, '')}`))
   }
   async function pickMaterial(recId: string) {
     const rec = recordings.find((r) => r.id === recId)
@@ -212,6 +246,47 @@ export default function KnowledgePage({
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>知识库</div>
         <div style={{ fontSize: 11, color: '#8a8f98', lineHeight: 1.6, marginBottom: 10 }}>
           库只有一份，项目只引用它。新增文档后，所有引用该库的项目立即可用。
+        </div>
+        <div style={{ border: '1px solid #eef0f2', borderRadius: 8, padding: 8, marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, flex: 1 }}>PDF 转换组件（MinerU）</div>
+            {mineru?.available && <span style={{ fontSize: 10, color: '#1e7e34' }}>已就绪 v{mineru.version}</span>}
+            {mineru?.install.running && <span style={{ fontSize: 10, color: '#245c9c' }}>安装中 {mineru.install.progress}%</span>}
+          </div>
+          {!mineru && <div style={{ fontSize: 10, color: '#8a8f98', marginTop: 4 }}>读取状态…</div>}
+          {mineru && !mineru.available && !mineru.install.running && (
+            <>
+              <div style={{ fontSize: 10, color: '#8a8f98', marginTop: 4, lineHeight: 1.6 }}>
+                PDF 必须经过 MinerU 才能入库（Word .docx 不需要，内置解析）。
+                当前档位建议：{mineru.profile_suggestion} · 剩余磁盘 {mineru.disk_free_gb}GB。
+                {mineru.install.status === 'failed' && <span style={{ color: '#b00020' }}> 上次失败：{mineru.install.error || mineru.install.message}</span>}
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                <button onClick={installMineru} style={{ ...btn, fontSize: 11, background: '#245c9c', color: '#fff', border: 'none' }}>
+                  {mineru.install.status === 'failed' ? '重试安装' : `安装 PDF 转换组件（约 ${mineru.disk_required_gb}GB）`}
+                </button>
+              </div>
+              <div style={{ fontSize: 10, color: '#8a8f98', marginTop: 4 }}>
+                16G 电脑会自动选 pipeline + CPU（较慢但能用）；32G/有独显可自动用 CUDA。
+              </div>
+            </>
+          )}
+          {mineru?.install.running && (
+            <>
+              <div style={{ height: 4, background: '#eef0f2', borderRadius: 999, overflow: 'hidden', margin: '6px 0' }}>
+                <div style={{ width: `${Math.max(2, mineru.install.progress)}%`, height: '100%', background: '#245c9c', transition: 'width .2s' }} />
+              </div>
+              <div style={{ fontSize: 10, color: '#5b6472', lineHeight: 1.6 }}>{mineru.install.message || '准备中…'}</div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                <button onClick={() => void kbApi.mineruCancel().then(() => kbApi.mineruStatus()).then(setMineru)} style={{ ...btn, fontSize: 10 }}>取消</button>
+              </div>
+            </>
+          )}
+          {mineru?.available && (
+            <div style={{ fontSize: 10, color: '#8a8f98', marginTop: 4 }}>
+              设备 {mineru.device} · {mineru.timing_note}
+            </div>
+          )}
         </div>
         <div style={{ border: '1px solid #eef0f2', borderRadius: 8, padding: 8, marginBottom: 10 }}>
           <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>检索方式</div>

@@ -90,7 +90,7 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
       <header style={{ textAlign: 'center' }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>listen_writing</h1>
         <p style={{ margin: '8px 0 0', fontSize: 14, color: '#555' }}>
-          转写由你电脑上的本地后端完成，录音不出本机。第一次使用，按下面三步准备（首次需下载约 800MB，之后双击即用）。
+          转写由你电脑上的本地后端完成，录音不出本机。第一次使用，按下面三步准备（首次需下载约 3–5GB：运行环境、转写模型、AI 模型，之后双击即用；下载走国内镜像站，不需要开代理）。
         </p>
       </header>
 
@@ -126,15 +126,15 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
         <h2 style={{ fontSize: 15, margin: '0 0 8px' }}>第 2 步 · 运行启动器</h2>
         {isWindows() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音模型（共约 800MB），请保持黑窗口开启。如果弹出「是否允许此应用更改设备」的窗口（安装微软运行库），点「是」。
+            打开刚选的文件夹，<strong>双击 start-windows.bat</strong>。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持黑窗口开启。如果弹出「是否允许此应用更改设备」的窗口（安装微软运行库），点「是」。下载优先走国内镜像，不需要你开代理。
           </p>
         ) : isMac() ? (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            打开「终端」，输入 <code>bash&nbsp;</code>（bash 加一个空格），把文件夹里的 <strong>start-mac.command</strong> 拖进终端窗口，按回车。首次会自动准备运行环境、下载语音模型（共约 800MB），请保持窗口开启。
+            打开「终端」，输入 <code>bash&nbsp;</code>（bash 加一个空格），把文件夹里的 <strong>start-mac.command</strong> 拖进终端窗口，按回车。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持窗口开启。
           </p>
         ) : (
           <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-            在文件夹里打开终端，运行 <code>bash start.sh</code>。首次会自动准备运行环境、下载语音模型（共约 800MB），请保持窗口开启。
+            在文件夹里打开终端，运行 <code>bash start.sh</code>。首次会自动准备运行环境、下载语音与 AI 模型（共约 3–5GB），请保持窗口开启。
           </p>
         )}
         <details style={{ marginTop: 8, fontSize: 12, color: '#888' }}>
@@ -142,6 +142,17 @@ export default function BootstrapGuide({ onRetry, onClose }: { onRetry: () => vo
           <p style={{ margin: '6px 0 0' }}>Windows：双击 start-windows.bat</p>
           <p style={{ margin: '4px 0 0' }}>macOS：终端里 bash + 拖入 start-mac.command</p>
           <p style={{ margin: '4px 0 0' }}>Linux：bash start.sh</p>
+        </details>
+
+        <details style={{ marginTop: 10, fontSize: 12, color: '#666', background: '#fdf5f5', border: '1px solid #f0d6d6', borderRadius: 8, padding: '8px 10px' }}>
+          <summary style={{ cursor: 'pointer', color: '#b00020' }}>Windows 提示「无法验证发布者 / 已阻止此应用」？</summary>
+          <div style={{ marginTop: 8, lineHeight: 1.7 }}>
+            <p style={{ margin: '0 0 6px' }}>这是因为下载的脚本没有代码签名，被 Windows 标记为「来自网络」；不是文件损坏，也不是配置错误。</p>
+            <p style={{ margin: '0 0 6px' }}><strong>方法一（最快）：</strong>右键 <code>start-windows.bat</code> →「属性」→ 勾选「解除锁定」→ 确定，再双击。</p>
+            <p style={{ margin: '0 0 6px' }}><strong>方法二：</strong>如果弹出 SmartScreen 窗口，点「更多信息」→「仍要运行」。</p>
+            <p style={{ margin: '0 0 6px' }}><strong>方法三（整文件夹）：</strong>在启动器文件夹里打开 PowerShell，运行 <code>Get-ChildItem -Recurse | Unblock-File</code>，然后重新双击。</p>
+            <p style={{ margin: 0 }}><strong>更省事的办法：</strong>不要从 GitHub 直接下载 BAT；用本页第 1 步「选择文件夹并写入启动文件」，浏览器在本地新建的文件不会被标记为网络来源，通常不会触发拦截。</p>
+          </div>
         </details>
 
         <details style={{ marginTop: 10, fontSize: 12, color: '#666', background: '#f8fafc', border: '1px solid #e8ebf0', borderRadius: 8, padding: '8px 10px' }}>

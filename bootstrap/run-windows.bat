@@ -24,9 +24,21 @@ cd /d "%~dp0"
 set "PYTAG=20261026"
 set "PYVER=3.12.16"
 set "GHBASE=https://github.com/astral-sh/python-build-standalone/releases/download/%PYTAG%"
+rem Domestic mirrors of the GitHub release: no user proxy and no third-party gh-proxy.
+rem Both return exactly the official file (SHA256 verified against SHA256SUMS).
+set "NJU=https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/%PYTAG%"
+set "HW=https://mirrors.huaweicloud.com/github-release/astral-sh/python-build-standalone/%PYTAG%"
 set "PKG=cpython-%PYVER%+%PYTAG%-x86_64-pc-windows-msvc-install_only.tar.gz"
 set "SHA=590dfcbe3a34c07301e6332e13e2188b98655cd072b08afa45a7998dc4c22bc5"
 set "PY=.runtime\python.exe"
+
+:preflight
+rem Warnings only, not fatal: later steps show clearer errors for low disk / 32-bit.
+if "%PROCESSOR_ARCHITECTURE%"=="x86" if not defined PROCESSOR_ARCHITEW6432 echo [WARN] 32-bit Windows is not supported. Please use 64-bit Windows 10/11.
+for /f "usebackq delims=" %%F in (`powershell -NoProfile -Command "[int]((Get-PSDrive %SystemDrive:~0,1%).Free/1GB)"`) do set "FREE_GB=%%F"
+if not defined FREE_GB goto skip_disk
+if %FREE_GB% LSS 8 echo [WARN] Only %FREE_GB% GB free. First run needs about 8 GB (runtime + models + PDF component).
+:skip_disk
 
 if exist "%PY%" goto have_runtime
 
@@ -35,6 +47,11 @@ echo [1/4] Preparing a private Python runtime (one time, about 50 MB)
 echo        You do NOT need to install Python on this computer.
 if not exist ".runtime" mkdir ".runtime"
 
+rem Domestic mirrors first (no user proxy), then official GitHub, then third-party proxies.
+call :try_download "%NJU%/%PKG%"
+if not errorlevel 1 goto unpack
+call :try_download "%HW%/%PKG%"
+if not errorlevel 1 goto unpack
 call :try_download "%GHBASE%/%PKG%"
 if not errorlevel 1 goto unpack
 call :try_download "https://gh-proxy.com/%GHBASE%/%PKG%"
@@ -61,10 +78,11 @@ if exist ".runtime\install.log" del /q ".runtime\install.log"
 rem Jump to the OPTIONAL runtimes, not straight to check_native. The old code
 rem skipped the AI runtime whenever this mirror worked, so the web page always
 rem said "runtime not installed" no matter how many times the files were replaced.
-if not errorlevel 1 goto ai_runtime
+if not errorlevel 1 goto check_native
 echo        Mirror failed, retrying with the official index ...
 "%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 20 --retries 2 -r requirements.txt
 if errorlevel 1 goto pip_failed
+goto check_native
 
 :ai_runtime
 rem AI correction runtime: PyPI only ships sources. Install the CPU wheel from the
@@ -97,21 +115,22 @@ rem Qwen3-ASR needs torch. The PyPI Windows wheel is CPU-only, so no CUDA deps.
 rem Failure is not fatal: Whisper / SenseVoice still work and the settings page
 rem reports this option as unavailable on this machine.
 "%PY%" -c "import torch" >nul 2>nul
-if not errorlevel 1 goto check_native
+if not errorlevel 1 goto preload
 echo        Installing the Qwen3-ASR runtime (optional, about 200 MB) ...
 "%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 torch==2.15.0 -i https://pypi.tuna.tsinghua.edu.cn/simple >>".runtime\install.log" 2>&1
-if not errorlevel 1 goto check_native
+if not errorlevel 1 goto preload
 "%PY%" -m pip install --disable-pip-version-check --no-warn-script-location --timeout 30 --retries 2 torch==2.15.0 >>".runtime\install.log" 2>&1
-if not errorlevel 1 goto check_native
+if not errorlevel 1 goto preload
 echo        [WARN] Qwen3-ASR runtime not installed (Whisper / SenseVoice are unaffected;
 echo               see .runtime\install.log ; retried next run).
+goto preload
 
 :check_native
 rem ctranslate2 / av dlls need MSVCP140.dll, which the portable Python does not ship.
 rem A clean Windows would fail with "DLL load failed", so check and install the
 rem official Microsoft runtime library when missing.
 "%PY%" -c "import av, ctranslate2" >nul 2>nul
-if not errorlevel 1 goto preload
+if not errorlevel 1 goto ai_runtime
 
 echo.
 echo [3.5/4] Missing Microsoft runtime library (MSVCP140.dll).
@@ -123,7 +142,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest 
 if errorlevel 1 goto vc_manual
 start "" /wait "%VCREDIST%" /install /quiet /norestart
 "%PY%" -c "import av, ctranslate2" >nul 2>nul
-if not errorlevel 1 goto preload
+if not errorlevel 1 goto ai_runtime
 
 :vc_manual
 echo.
@@ -171,10 +190,13 @@ echo        Downloading runtime from: %~1
 where curl >nul 2>nul
 if errorlevel 1 goto try_download_ps
 curl -L --fail --connect-timeout 10 --speed-limit 1024 --speed-time 20 --retry 2 --retry-delay 2 -o "python-runtime.tar.gz" "%~1"
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto try_download_ps
 goto verify_download
 
 :try_download_ps
+rem curl does not use the Windows system proxy; PowerShell Invoke-WebRequest does.
+rem So when curl fails (including corporate proxy networks), retry the same source with PowerShell.
+if exist "python-runtime.tar.gz" del /q "python-runtime.tar.gz"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri '%~1' -OutFile 'python-runtime.tar.gz' -UseBasicParsing } catch { exit 1 }"
 if errorlevel 1 exit /b 1
 
