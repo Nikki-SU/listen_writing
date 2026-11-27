@@ -1231,7 +1231,7 @@ export async function fetchModels(): Promise<ModelsPayload> {
   return json(await fetch(`${BACKEND}/api/models`))
 }
 
-export async function downloadModel(kind: 'asr' | 'llm', key: string): Promise<ModelJob> {
+export async function downloadModel(kind: 'asr' | 'llm' | 'embed', key: string): Promise<ModelJob> {
   const data = await json<{ job: ModelJob }>(
     await fetch(`${BACKEND}/api/models/download`, {
       method: 'POST',

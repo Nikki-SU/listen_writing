@@ -319,7 +319,7 @@ export type ModelStatus = ModelOption & {
 
 export type ModelJob = {
   id: string
-  kind: 'asr' | 'llm'
+  kind: 'asr' | 'llm' | 'embed'
   key: string
   label: string
   status: 'running' | 'done' | 'error' | 'cancelled'

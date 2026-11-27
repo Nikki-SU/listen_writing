@@ -27,23 +27,26 @@ export default function SettingsPanel({
   const [mineru, setMineru] = useState<api.MineruStatus | null>(null)
   const [embed, setEmbed] = useState<{ models: { key: string; label: string; ready: boolean }[]; max_loaded: number } | null>(null)
   const [componentError, setComponentError] = useState('')
-  const [embeddingBusy, setEmbeddingBusy] = useState('')
+  const [embedError, setEmbedError] = useState('')
 
   const refreshComponents = () => Promise.all([
     api.kbApi.mineruStatus().then(setMineru).catch(() => undefined),
-    api.kbApi.embedStatus().then(setEmbed).catch(() => undefined),
+    api.kbApi.embedStatus()
+      .then((e) => { setEmbed(e); setEmbedError('') })
+      .catch((e) => setEmbedError(String(e).replace(/^Error:\s*/, ''))),
   ])
 
   useEffect(() => {
     void refreshComponents()
   }, [])
 
-  // MinerU 安装是长任务：运行中每 1.5 秒刷新进度。
+  // MinerU 安装、向量模型下载都是长任务：运行中每 1.5 秒刷新一次状态。
+  const embedRunning = (models?.jobs ?? []).some((j) => j.kind === 'embed' && j.status === 'running')
   useEffect(() => {
-    if (!mineru?.install.running) return
+    if (!mineru?.install.running && !embedRunning) return
     const timer = window.setInterval(() => { void refreshComponents() }, 1500)
     return () => window.clearInterval(timer)
-  }, [mineru?.install.running])
+  }, [mineru?.install.running, embedRunning])
 
   useEffect(() => {
     let cancelled = false
@@ -135,19 +138,6 @@ export default function SettingsPanel({
     if (clearProgress && !window.confirm('清除已完成的安装进度？已下载的包会保留，但步骤会从头开始。')) return
     void api.kbApi.mineruCancel().then(() => refreshComponents())
       .catch((e) => setComponentError(String(e)))
-  }
-
-  async function downloadEmbedding(key: string) {
-    setComponentError('')
-    setEmbeddingBusy(key)
-    try {
-      await api.kbApi.ensureEmbed(key)
-      await refreshComponents()
-    } catch (e) {
-      setComponentError(`向量模型下载失败：${String(e).replace(/^Error:\s*/, '')}`)
-    } finally {
-      setEmbeddingBusy('')
-    }
   }
 
   function statusOf(kind: 'asr' | 'llm', id: string): ModelStatus | undefined {
@@ -398,21 +388,65 @@ export default function SettingsPanel({
                   <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>向量模型（知识库检索）</span>
                   {embed && <span style={{ fontSize: 11, color: '#8a8f98' }}>同时最多装 {embed.max_loaded} 个</span>}
                 </div>
-                {!embed && <div style={{ fontSize: 12, color: '#8a8f98' }}>正在读取状态…</div>}
-                {embed?.models.map((m) => (
-                  <div key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ flex: 1, fontSize: 12 }}>{m.label}</span>
-                    <span style={{ fontSize: 11, color: m.ready ? '#1e7e34' : '#8a8f98', background: m.ready ? '#e9f7ee' : '#f3f4f6', borderRadius: 4, padding: '1px 6px' }}>
-                      {m.ready ? '已下载' : embeddingBusy === m.key ? '下载中…' : '未下载'}
-                    </span>
-                    {!m.ready && (
-                      <button onClick={() => void downloadEmbedding(m.key)} disabled={embeddingBusy === m.key}
-                        style={{ fontSize: 11, padding: '2px 8px' }}>
-                        {embeddingBusy === m.key ? '下载中…' : '下载'}
-                      </button>
-                    )}
+                {embedError && (
+                  <div style={{ fontSize: 11, color: '#b00020', lineHeight: 1.6 }}>
+                    读取向量模型状态失败：{embedError}
+                    <button onClick={() => void refreshComponents()} style={{ marginLeft: 8, fontSize: 11, padding: '1px 8px' }}>
+                      重试
+                    </button>
                   </div>
-                ))}
+                )}
+                {!embed && !embedError && <div style={{ fontSize: 12, color: '#8a8f98' }}>正在读取状态…</div>}
+                {embed?.models.map((m) => {
+                  const job = jobFor(models, 'embed', m.key)
+                  const running = job?.status === 'running'
+                  const failed = job?.status === 'error'
+                  const stopped = job?.status === 'cancelled'
+                  const ready = m.ready || job?.status === 'done'
+                  return (
+                    <div key={m.key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ flex: 1, fontSize: 12 }}>{m.label}</span>
+                        <span style={{
+                          fontSize: 11, borderRadius: 4, padding: '1px 6px',
+                          color: ready ? '#1e7e34' : running ? '#8a5a00' : failed ? '#b00020' : '#8a8f98',
+                          background: ready ? '#e9f7ee' : running ? '#fff4e0' : failed ? '#fdecea' : '#f3f4f6',
+                        }}>
+                          {ready ? '已下载'
+                            : running ? `下载中 ${job?.progress ?? 0}%`
+                              : failed ? '下载失败'
+                                : stopped ? '已停止 · 可续传' : '未下载'}
+                        </span>
+                        {running && job ? (
+                          <button onClick={() => void cancel(job.id)} style={{ fontSize: 11, padding: '2px 8px', color: '#b00020' }}>
+                            停止
+                          </button>
+                        ) : !ready ? (
+                          <button
+                            onClick={() => { setComponentError(''); void download('embed', m.key) }}
+                            style={{ fontSize: 11, padding: '2px 8px' }}
+                          >
+                            {failed ? '重试' : stopped ? '继续下载' : '下载（约 95MB）'}
+                          </button>
+                        ) : null}
+                      </div>
+                      {running && (
+                        <>
+                          <div style={{ height: 4, background: '#eef0f3', borderRadius: 2 }}>
+                            <div style={{
+                              width: `${Math.max(4, job?.progress ?? 4)}%`, height: 4,
+                              background: '#4285f4', borderRadius: 2, transition: 'width .3s',
+                            }} />
+                          </div>
+                          <div style={{ fontSize: 11, color: '#8a8f98' }}>{job?.message || '准备下载…'}</div>
+                        </>
+                      )}
+                      {failed && job?.error && (
+                        <div style={{ fontSize: 11, color: '#b00020', lineHeight: 1.6 }}>{job.error}</div>
+                      )}
+                    </div>
+                  )
+                })}
                 <Hint>向量模型没下载时知识库仍可用 BM25 词法检索，只是召回弱一些；下载后再「建向量索引」。</Hint>
               </div>
 

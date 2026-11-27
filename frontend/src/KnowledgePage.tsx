@@ -59,6 +59,7 @@ export default function KnowledgePage({
   const [streamRefs, setStreamRefs] = useState<MaterialChatContext | null>(null)
   const abortRef = useRef<{ abort: () => void } | null>(null)
   const [embedStatus, setEmbedStatus] = useState<{ models: { key: string; label: string; ready: boolean }[]; max_loaded: number } | null>(null)
+  const [embedError, setEmbedError] = useState('')
   const [mineru, setMineru] = useState<MineruStatus | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const uploadTarget = useRef<string>('')
@@ -86,7 +87,10 @@ export default function KnowledgePage({
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }) }, [activeChat, asking, streamDraft])
   useEffect(() => {
     void listGroups().then((r) => { setGroups(r.groups || []); setGroupIdentity(r.identity?.device_code || '') }).catch(() => undefined)
-    void kbApi.embedStatus().then(setEmbedStatus).catch(() => undefined)
+    // 状态读不到时必须显式报错并可重试，不能永远停在「读取中」。
+    void kbApi.embedStatus()
+      .then((s) => { setEmbedStatus(s); setEmbedError('') })
+      .catch((e) => setEmbedError(String(e).replace(/^Error:\s*/, '')))
     void kbApi.mineruStatus().then(setMineru).catch(() => undefined)
   }, [])
   // 安装 MinerU 是长任务：运行中每 1.5 秒刷新进度；结束后停在最终状态。
@@ -255,7 +259,8 @@ export default function KnowledgePage({
                   : mineru?.install.status === 'cancelled' ? '安装已停止（设置 → 组件安装可续传）'
                     : '未安装（设置 → 组件安装）'}
             <br />
-            向量模型：{embedStatus?.models.map((m) => `${m.label} ${m.ready ? '就绪' : '未下载'}`).join(' · ') || '读取中…'}
+            向量模型：{embedStatus?.models.map((m) => `${m.label} ${m.ready ? '就绪' : '未下载'}`).join(' · ')
+              || (embedError ? `读取失败（${embedError}）` : '读取中…')}
             <br />
             BM25 词法始终可用；未下载向量模型时只是召回弱一些。
           </div>

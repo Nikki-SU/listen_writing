@@ -35,7 +35,7 @@ export function useModels(pollMs = 1500) {
   }, [running, pollMs, refresh])
 
   const download = useCallback(
-    async (kind: 'asr' | 'llm', key: string) => {
+    async (kind: 'asr' | 'llm' | 'embed', key: string) => {
       setError('')
       try {
         await api.downloadModel(kind, key)
@@ -66,7 +66,7 @@ export function useModels(pollMs = 1500) {
 /** 找到某个模型最近的一次下载任务（后端按开始时间倒序返回）。 */
 export function jobFor(
   models: ModelsPayload | null,
-  kind: 'asr' | 'llm',
+  kind: 'asr' | 'llm' | 'embed',
   key: string,
 ): ModelJob | undefined {
   return (models?.jobs ?? []).find((j) => j.kind === kind && j.key === key)

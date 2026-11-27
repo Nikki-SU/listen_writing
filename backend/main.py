@@ -316,10 +316,42 @@ def _set_job(job: dict, **fields) -> None:
         job.update(fields)
 
 
+def _progress_pct(done: int, total: int) -> int:
+    if not total:
+        return 5
+    return min(95, 5 + int(90 * done / total))
+
+
+def _download_progress_text(done: int, total: int, speed: float) -> str:
+    text = f"已下载 {done / 1e6:.0f}MB"
+    if total:
+        text += f" / {total / 1e6:.0f}MB"
+    if speed > 0:
+        text += f" · {speed / 1e6:.1f}MB/s"
+        if total and done < total:
+            text += f" · 剩余约 {max(1, int((total - done) / speed / 60))} 分钟"
+    return text
+
+
 def _run_model_job(job: dict) -> None:
     try:
         key = job["key"]
-        if job["kind"] == "asr":
+        if job["kind"] == "embed":
+            # 向量模型与 LLM 共用同一套下载器（断点续传 + 镜像兜底），
+            # 放进同一套任务里前端才能看到进度、也能停止。
+            kb_embed.ensure_model(
+                key,
+                on_status=lambda msg: _set_job(job, message=msg),
+                on_progress=lambda done, total, speed: _set_job(
+                    job,
+                    message=_download_progress_text(done, total, speed),
+                    progress=_progress_pct(done, total),
+                    received=done,
+                    total=total,
+                ),
+                should_stop=lambda: job.get("cancel", False),
+            )
+        elif job["kind"] == "asr":
             spec = ASR_MODELS[key]
             engine = spec.get("engine")
             if engine == "sensevoice":
@@ -336,21 +368,16 @@ def _run_model_job(job: dict) -> None:
             if not ok:
                 raise RuntimeError("下载失败，请检查网络后重试")
         else:
-            def on_progress(done: int, total: int, speed: float) -> None:
-                pct = min(95, 5 + int(90 * done / total)) if total else 5
-                text = f"已下载 {done / 1e6:.0f}MB"
-                if total:
-                    text += f" / {total / 1e6:.0f}MB"
-                if speed > 0:
-                    text += f" · {speed / 1e6:.1f}MB/s"
-                    if total and done < total:
-                        text += f" · 剩余约 {max(1, int((total - done) / speed / 60))} 分钟"
-                _set_job(job, message=text, progress=pct, received=done, total=total)
-
             llm.ensure_model(
                 key,
                 on_status=lambda msg: _set_job(job, message=msg),
-                on_progress=on_progress,
+                on_progress=lambda done, total, speed: _set_job(
+                    job,
+                    message=_download_progress_text(done, total, speed),
+                    progress=_progress_pct(done, total),
+                    received=done,
+                    total=total,
+                ),
                 should_stop=lambda: job.get("cancel", False),
             )
         if job.get("cancel"):
@@ -366,9 +393,14 @@ def _run_model_job(job: dict) -> None:
 
 
 def start_model_job(kind: str, key: str) -> dict:
-    catalog = ASR_MODELS if kind == "asr" else llm.LLM_MODELS if kind == "llm" else None
+    catalog = (
+        ASR_MODELS if kind == "asr"
+        else llm.LLM_MODELS if kind == "llm"
+        else kb_embed.EMBED_MODELS if kind == "embed"
+        else None
+    )
     if catalog is None:
-        raise ValueError("kind 只能是 asr 或 llm")
+        raise ValueError("kind 只能是 asr / llm / embed")
     if key not in catalog:
         raise ValueError(f"未知模型：{key}")
     with _model_jobs_lock:
