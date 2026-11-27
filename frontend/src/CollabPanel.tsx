@@ -1179,7 +1179,9 @@ export default function CollabPanel({
             <div className="scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {groups.length === 0 && (
-                  <div style={{ fontSize: 12, color: '#999' }}>还没有共享任务，先建一个或输入配对码加入。</div>
+                  <div style={{ fontSize: 12, color: '#999', lineHeight: 1.7 }}>
+                    还没有共享任务。点右上角 ＋ 新建一个；已经拿到配对码就点 → 输入配对码加入。
+                  </div>
                 )}
                 {groups.map((g) => (
                   <button
@@ -1255,7 +1257,11 @@ export default function CollabPanel({
                     </div>
                   )}
                   {materials.length === 0 ? (
-                    <div style={{ fontSize: 12, color: '#999' }}>这个共享任务还没有材料。</div>
+                    <div style={{ fontSize: 12, color: '#999', lineHeight: 1.7 }}>
+                      {has('edit') || has('merge')
+                        ? '这个共享任务还没有材料。'
+                        : '当前没有可看的材料：只读 / 审查者只能看到完成脱敏（阶段 2）之后的版本。'}
+                    </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {materials.map((m) => (

@@ -51,7 +51,9 @@ import type {
 import {
   applyUpdate,
   backendOutdated,
+  bundleApplied,
   ensureWritePermission,
+  isOutdated,
   loadDirHandle,
   markBundleApplied,
   pickDirectory,
@@ -112,6 +114,8 @@ export default function App() {
   const [needRefresh, setNeedRefresh] = useState(false)
   // 在线版本是否同时包含本地程序（后端）改动：决定刷新提示是「刷新即可」还是「刷新后再更新并重启」。
   const [refreshHasBackend, setRefreshHasBackend] = useState(false)
+  // 本地程序比页面新（缓存旧页面 / 版本回退）时的警告文案。
+  const [rollbackWarn, setRollbackWarn] = useState('')
   const [guideOpen, setGuideOpen] = useState(false)
   // 共享任务不是弹层里的“小入口”：它和「我的录音」并列，是同一层级的常驻工作区。
   const [view, setView] = useState<'workspace' | 'collab' | 'knowledge'>('workspace')
@@ -152,10 +156,25 @@ export default function App() {
       const v = await api.fetchVersion()
       setProjects(await api.listProjects())
       setError('')
-      // 后端代码落后才需要写本地文件 + 可能重启（需用户点击授权写）。
-      // 纯前端更新走下面的 version.json 探测，只提示刷新，不碰后端。
+      // 本地文件落后就提示写入：既包括后端代码（backend 段），也包括启动脚本 /
+      // requirements / 说明等嵌入文件（frontend 段）。只用 backend 段判断会漏掉
+      // 「只改了启动器、没改后端代码」的版本，用户永远收不到更新。
+      const filesBehind = isOutdated(v) && !bundleApplied()
       const backendBehind = backendOutdated(v)
-      setUpd((prev) => (backendBehind ? (prev === 'idle' ? 'available' : prev) : 'idle'))
+      setUpd((prev) =>
+        filesBehind || backendBehind ? (prev === 'idle' ? 'available' : prev) : 'idle',
+      )
+      // 反向检查：本地程序比当前页面新 = 打开的是缓存旧页面，或版本被回退过。
+      // 继续用旧界面操作新数据有风险，必须明确警告，不能装作没事。
+      if (v.frontend > BUNDLE_VERSION.frontend || v.backend > BUNDLE_VERSION.backend) {
+        setRollbackWarn(
+          `本地程序比当前页面新（本地 frontend ${v.frontend} / backend ${v.backend}，` +
+          `页面 frontend ${BUNDLE_VERSION.frontend} / backend ${BUNDLE_VERSION.backend}）。` +
+          '你可能打开的是缓存里的旧页面，或版本被回退过。建议先刷新页面；如果确实要降级，请先备份 data/ 再操作。',
+        )
+      } else {
+        setRollbackWarn('')
+      }
     } catch (e) {
       setError(String(e))
     }
@@ -434,6 +453,21 @@ export default function App() {
         await saveDirHandle(dir)
       }
 
+      // 写之前先确认选的是正在运行的那个文件夹：写到别处会导致「更新成功但永不生效」。
+      const running = await api.fetchVersion().catch(() => null)
+      const runningName = running?.root ? running.root.split(/[\\/]/).filter(Boolean).pop() : ''
+      if (runningName && dir.name !== runningName) {
+        const proceed = window.confirm(
+          `你选择的文件夹是「${dir.name}」，但正在运行的程序在「${runningName}」。` +
+          `写到别的文件夹不会让当前程序更新。确定要继续写入「${dir.name}」吗？`,
+        )
+        if (!proceed) {
+          setUpd('available')
+          setUpdText('')
+          return
+        }
+      }
+
       const res = await applyUpdate(dir, (done) =>
         setUpdProgress({ done, total: BOOTSTRAP_FILES.filter((f) => !f.launcher).length }),
       )
@@ -443,13 +477,8 @@ export default function App() {
 
       // 只有后端代码真的落后才重启本地进程：纯页面更新、只改了启动脚本/说明时
       // 不重启，避免每次发版都打断正在录音/转写的用户。
-      let needRestart = true
-      try {
-        needRestart = backendOutdated(await api.fetchVersion())
-      } catch {
-        // 版本接口都取不到，说明本地后端很旧：按需要重启处理。
-        needRestart = true
-      }
+      // 这里用写入前抓到的 `running`：它代表正在内存里跑的那份代码。
+      const needRestart = running ? backendOutdated(running) : true
 
       if (!needRestart) {
         // 只写了页面/说明/版本常量，本进程不用重启；记下已应用版本，
@@ -466,17 +495,17 @@ export default function App() {
         return
       }
 
-      if (res.changed === 0 && !res.launcherStale.length) {
-        setUpd('manual')
-        setUpdText('本地文件已是最新，但正在运行的后端仍是旧代码：请关闭黑色启动窗口，再双击启动器。')
-        return
-      }
-
+      // 只要运行中的后端版本落后就重启；但用户可能已经把文件写对了、只是上次
+      // 重启没成功（或手动启动的后端还在跑旧代码）。这种情况不能只丢一句「请手动
+      // 重启」——先再尝试一次自动重启，成功就自动接上。
       const restarted = await api.restartBackend()
       if (!restarted) {
         // 旧版后端还没有 /api/restart：这次只能手动重启，之后就能自动重启
         setUpd('manual')
-        setUpdText(`已更新 ${res.changed} 个文件。${launcherNote} 请关闭黑色启动窗口，再双击启动器（本次需手动重启，之后会自动重启）。`)
+        setUpdText(
+          `已更新 ${res.changed} 个文件。${launcherNote} ` +
+          '请关闭启动窗口，再双击 start-windows.bat / start.sh（本次需手动重启，之后会自动重启）。',
+        )
         return
       }
 
@@ -491,15 +520,32 @@ export default function App() {
       const ok = await waitForBackend(8 * 60 * 1000)
       clearTimeout(slowTimer)
       setRestarting(false)
-      if (ok) {
-        markBundleApplied()
-        setUpd('idle')
-        setUpdText('')
-        void boot()
-      } else {
+      if (!ok) {
         setUpd('manual')
         setUpdText('后端没有自动起来。请看启动窗口里的提示：如果它正在下载模型，请等下载完成后再刷新本页面；如果是报错，把窗口内容发给我们。')
+        return
       }
+
+      // 起来了还要确认「起来的是不是刚更新的那份代码」。常见坑：用户把文件写到了
+      // 另一个文件夹（比如旧的下载目录），启动器却仍在跑原先那份，于是版本永远不前进。
+      const after = await api.fetchVersion().catch(() => null)
+      if (after && (isOutdated(after) || backendOutdated(after))) {
+        const picked = dir.name
+        const running = after.root ? after.root.split(/[\\/]/).filter(Boolean).pop() : ''
+        setUpd('manual')
+        setUpdText(
+          `文件已写入「${picked}」，但重启后的本地程序仍是旧版本（frontend ${after.frontend} / backend ${after.backend}）。` +
+          (running && running !== picked
+            ? `正在运行的程序在「${running}」文件夹，和刚才选择的不一致。请关掉窗口，到「${running}」里双击启动器，或重新打开引导页写入到该文件夹。`
+            : '请关闭启动窗口后重新双击启动器；若仍不更新，请打开引导页重新写入一次。'),
+        )
+        return
+      }
+
+      markBundleApplied()
+      setUpd('idle')
+      setUpdText('')
+      void boot()
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         setUpd('available') // 用户取消选文件夹
@@ -573,7 +619,37 @@ export default function App() {
             <strong>含本地程序更新：</strong>页面已是新版，本地程序还是旧版。更新后会重启本地后端（自动，通常十几秒；首次下载模型会更久），不会动你的录音。
           </span>
           <button onClick={onUpdate} style={{ fontSize: 13, padding: '4px 12px', flexShrink: 0 }}>
-            更新本地文件并重启
+            更新本地文件
+          </button>
+        </div>
+      )}
+
+      {/* 反向版本警告：本地程序比页面新（缓存旧页面 / 版本回退），必须让人知道 */}
+      {rollbackWarn && (
+        <div
+          role="alert"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '8px 24px',
+            fontSize: 13,
+            borderBottom: '1px solid #f0c7c2',
+            background: '#fdecea',
+            color: '#8a1f11',
+          }}
+        >
+          <span style={{ flex: 1, lineHeight: 1.6 }}>{rollbackWarn}</span>
+          <button onClick={() => window.location.reload()} style={{ fontSize: 13, padding: '4px 12px', flexShrink: 0 }}>
+            刷新页面
+          </button>
+          <button
+            onClick={() => setRollbackWarn('')}
+            title="知道了"
+            aria-label="关闭"
+            style={{ fontSize: 13, padding: '2px 8px', color: '#8a1f11', flexShrink: 0 }}
+          >
+            ×
           </button>
         </div>
       )}
@@ -584,7 +660,7 @@ export default function App() {
           <span>
             {refreshHasBackend
               ? '新版本包含本地程序改动：先刷新页面，再按提示更新本地文件，后端会自动重启。'
-              : '界面已更新：刷新即可，本地程序无需重启。'}
+              : '界面已更新：刷新即可。如果刷新后提示更新本地文件，请按提示操作。'}
           </span>
           <button type="button" onClick={() => window.location.reload()}>刷新页面</button>
           <button type="button" className="refresh-hint-close" onClick={() => setNeedRefresh(false)} title="稍后再说" aria-label="关闭">×</button>

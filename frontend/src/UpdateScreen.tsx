@@ -7,8 +7,8 @@ export type UpdatePhase = 'available' | 'updating' | 'restarting' | 'manual' | '
 // 稍后会自动收起成顶部一条提示，继续用旧版本。
 const COPY: Record<UpdatePhase, { title: string; body: string }> = {
   available: {
-    title: '有新版本可用（含本地程序）',
-    body: '页面已经是新版，但电脑上正在运行的本地程序还是旧版。更新后会写入程序文件并自动重启本地后端（通常十几秒；首次下载模型会更久）。只更新程序文件，不会动你的录音。',
+    title: '有新版本可用（本地文件）',
+    body: '页面已经是新版，但电脑上的本地文件还是旧版。更新只写程序文件，不会动你的录音。如果这次包含后端代码改动，本地程序会自动重启（通常十几秒；首次下载模型会更久）。',
   },
   updating: {
     title: '正在更新本地文件',
@@ -16,11 +16,11 @@ const COPY: Record<UpdatePhase, { title: string; body: string }> = {
   },
   restarting: {
     title: '正在重启本地程序',
-    body: '本地程序需要重新启动才能用上新代码。如果这是第一次下载语音模型（约 500MB），可能需要几分钟，请保持黑色启动窗口开启。',
+    body: '本地程序需要重新启动才能用上新代码。如果这是第一次下载语音模型（约 500MB），可能需要几分钟，请保持启动窗口开启。',
   },
   manual: {
     title: '需要手动完成一步',
-    body: '文件已经写入，但本地程序没有自动重启（旧版本没有这个能力）。请关闭黑色启动窗口，再双击启动器。之后就能全自动更新。',
+    body: '文件已经写入，但本地程序没有自动重启（旧版本没有这个能力，或你不是通过启动器打开的）。请关闭启动窗口，再双击文件夹里的 start-windows.bat / start.sh。之后就能全自动更新。',
   },
   error: {
     title: '更新没有完成',
@@ -113,7 +113,7 @@ export default function UpdateScreen({
             )}
             {phase === 'available' && (
               <button onClick={onUpdate} style={{ fontSize: 13, padding: '7px 16px' }}>
-                立即更新并重启（{BOOTSTRAP_FILES.length} 个文件）
+                立即更新本地文件（{BOOTSTRAP_FILES.length} 个）
               </button>
             )}
             {phase === 'error' && (

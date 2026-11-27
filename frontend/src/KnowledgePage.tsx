@@ -349,6 +349,11 @@ export default function KnowledgePage({
         </div>
         <div style={{ flex: 1, minHeight: 120, overflow: 'auto', border: '1px solid #eef0f2', borderRadius: 8, padding: 10, marginBottom: 8 }}>
           {!activeChat && <div style={{ fontSize: 12, color: '#9aa0a6', textAlign: 'center', paddingTop: 40 }}>选择项目后新建或打开一个对话</div>}
+          {activeChat && activeChat.messages.length === 0 && !streamDraft && !asking && (
+            <div style={{ fontSize: 12, color: '#9aa0a6', textAlign: 'center', paddingTop: 40 }}>
+              还没有消息。在下面问第一个问题吧。
+            </div>
+          )}
           {activeChat?.messages.map((m, i) => (
             <div key={i} style={{ marginBottom: 12, padding: 8, borderRadius: 8, background: m.role === 'user' ? '#eef4ff' : '#f7f9fc' }}>
               <div style={{ fontSize: 11, color: '#8a8f98', marginBottom: 4 }}>{m.role === 'user' ? '我' : '助手'}{m.context_chars ? ` · 依据 ${m.context_chars} 字` : ''}</div>

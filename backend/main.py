@@ -38,6 +38,9 @@ from transcriber import ASR_MODELS, asr_options, transcriber_for
 
 PORT = int(os.environ.get("LISTEN_WRITING_PORT") or 7850)
 HOST = "0.0.0.0"  # 局域网节点需要被其他机器访问；非局域网接口在 Handler 里限制本机回环
+# 本进程实际运行的项目根目录：页面对比「用户选择写入的文件夹」与它是否一致，
+# 用于诊断「文件写到了另一个文件夹，所以怎么更新都不生效」。
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # 上传格式白名单：由 PyAV（faster-whisper 内部解码层）原生解码，用户无需自己转格式。
 # 改这里必须同步：前端 api.formatOf、App.tsx 的 input accept、API_CONTRACT.md R-1。
@@ -686,7 +689,9 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path == "/m" or path == "/api/leaf/verify":
             return True
-        if path.startswith("/api/peer/") or path.startswith("/api/groups") or path in ("/api/health", "/api/version"):
+        # 只放行节点间同步（/api/peer/*）与健康检查；/api/groups 必须留在本机：
+        # 群组摘要里含配对码，放给同网段等于把「只有本机可见」的配对码公开。
+        if path.startswith("/api/peer/") or path in ("/api/health", "/api/version"):
             return True
         # 手机配对后带 token：只放开项目/录音的读写，不放开本机专属的设置与模型管理。
         if leaf.token_ok(self._leaf_token()) and path.startswith("/api/projects"):
@@ -772,7 +777,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok"})
             return
         if path == "/api/version":
-            self._send_json({"version": APP_VERSION})
+            self._send_json({"version": APP_VERSION, "root": str(PROJECT_ROOT)})
             return
         if path == "/api/peers":
             self._send_json(peers.snapshot())

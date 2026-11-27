@@ -5,6 +5,8 @@ export type Version = {
   backend: number
   model: number
   data: number
+  /** 后端进程所在的项目根目录（仅 /api/version 返回，用于诊断更新写错文件夹）。 */
+  root?: string
 }
 
 export type Project = {

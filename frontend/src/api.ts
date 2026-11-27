@@ -64,8 +64,8 @@ export async function fetchHealth(): Promise<boolean> {
 }
 
 export async function fetchVersion(): Promise<Version> {
-  const data = await json<{ version: Version }>(await fetch(`${BACKEND}/api/version`))
-  return data.version
+  const data = await json<{ version: Version; root?: string }>(await fetch(`${BACKEND}/api/version`))
+  return { ...data.version, root: data.root }
 }
 
 /**

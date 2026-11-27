@@ -15,7 +15,7 @@
 | 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
 |---|---|---|---|---|---|
 | H-1 | 后端 | `GET /api/health` | 无 | `{"status":"ok"}` | 前端启动后用来确认后端在线 |
-| V-1 | 后端 | `GET /api/version` | 无 | `{"version":{"frontend":1,"backend":1,"model":1,"data":1}}` | 软件四段版本号；`frontend` 段同时代表「嵌入文件整包」的版本，用于判断本地后端是否过期 |
+| V-1 | 后端 | `GET /api/version` | 无 | `{"version":{"frontend":1,"backend":1,"model":1,"data":1},"root":"/path/to/app"}` | 软件版本号。`frontend` 段同时代表「嵌入文件整包」的版本：后端源码 / 启动脚本 / requirements 任一处变化都必须 +1，否则老页面收不到本地文件更新。`backend` 段只在后端运行时代码变化时 +1，用于决定是否重启。`root` 是进程实际运行的项目根目录，供前端诊断「更新写到了另一个文件夹」 |
 | U-1 | 后端 | `POST /api/restart` | 无 | `{"status":"restarting"}` | 更新本地文件后重启后端：回包后进程以**退出码 86** 结束，启动器据此重装依赖并重启；不是 86 时启动器正常退出 |
 | P-1 | 后端 | `POST /api/projects` | `{"name":"项目名","description":"说明"}` | `{"project":{...}}` | 创建项目（description 可空） |
 | P-2 | 后端 | `GET /api/projects` | 无 | `{"projects":[{...}]}` | 列出全部项目（按创建倒序） |
@@ -107,7 +107,7 @@
 - **无副本群组**（`mode=authoritative`）：群主节点是唯一权威，其他节点的写请求由本机原样转发给群主；群主离线返回 `503 {"error":"…","code":"owner_offline"}`。
 - **有副本群组**（`mode=replica`）：每个节点持有完整副本，改动后互推快照，按修订号（`rev` / `revs`）判断祖先、句子级三方合并；真冲突保留本地文本，并把对方文本写成 `status=conflict` 的群组提案交给人决定。
 - **同人多设备**：昵称 + 设备码完全一致视为同一个人，自动同步项目、录音、音频（仅对这类设备开放）。
-- 非回环地址只开放 `/api/peer/*`、`/api/groups*`、`/m`、`/api/leaf/verify` 与 `/api/health`、`/api/version`，以及已配对手机带 token 的 `/api/projects*`；其它接口返回 `403 {"code":"local_only"}`。
+- 非回环地址只开放 `/api/peer/*`、`/m`、`/api/leaf/verify` 与 `/api/health`、`/api/version`，以及已配对手机带 token 的 `/api/projects*`；`/api/groups*` **不对局域网开放**（群组摘要含配对码），其它接口返回 `403 {"code":"local_only"}`。
 
 | 编号 | 方向 | 路径 · 方法 | 请求 | 响应 | 备注 |
 |---|---|---|---|---|---|
