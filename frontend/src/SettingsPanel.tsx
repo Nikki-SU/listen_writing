@@ -448,6 +448,11 @@ export default function SettingsPanel({
                   )
                 })}
                 <Hint>向量模型没下载时知识库仍可用 BM25 词法检索，只是召回弱一些；下载后再「建向量索引」。</Hint>
+                {models && !models.runtime.llm && (
+                  <div style={{ fontSize: 11, color: '#b36b00', lineHeight: 1.7 }}>
+                    本地 AI 运行时（llama-cpp-python）未安装：向量模型可以下载，但建索引前需要重新运行一次启动器安装组件。
+                  </div>
+                )}
               </div>
 
               <Hint>所有补充组件都集中在这里安装；知识库页只显示状态，不再单独提供安装按钮。</Hint>
