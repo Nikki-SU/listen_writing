@@ -119,7 +119,7 @@ def _mark_stage(name: str) -> None:
 
 def _py_ok(py: Path, code: str) -> bool:
     try:
-        r = subprocess.run([str(py), "-c", code], capture_output=True, timeout=60)
+        r = subprocess.run([str(py), "-P", "-c", code], capture_output=True, timeout=60)
         return r.returncode == 0
     except (subprocess.SubprocessError, OSError):
         return False
@@ -205,7 +205,7 @@ def probe() -> dict:
     if py.exists() and not running:
         try:
             r = subprocess.run(
-                [str(py), "-c", "import mineru; print(getattr(mineru,'__version__','ok'))"],
+                [str(py), "-P", "-c", "import mineru; print(getattr(mineru,'__version__','ok'))"],
                 capture_output=True, text=True, timeout=30,
             )
             if r.returncode == 0:
@@ -300,7 +300,7 @@ def _local_cache_env() -> dict:
 def _pip(py: Path, args: list[str], *, stage: str, progress: int,
          message: str, index: str | None = None) -> int:
     # 不传 --no-cache-dir：缓存落在 .runtime/pip-cache，中断后重试可直接复用已下好的 wheel。
-    cmd = [str(py), "-m", "pip", "install", "--disable-pip-version-check",
+    cmd = [str(py), "-P", "-m", "pip", "install", "--disable-pip-version-check",
            "--no-warn-script-location", "--prefer-binary",
            "--timeout", "30", "--retries", "2"]
     if index:
@@ -338,7 +338,7 @@ def _install_worker() -> None:
         rebuilt = False
         if py.exists():
             try:
-                probe_pip = subprocess.run([str(py), "-m", "pip", "--version"],
+                probe_pip = subprocess.run([str(py), "-P", "-m", "pip", "--version"],
                                            capture_output=True, timeout=30)
                 if probe_pip.returncode != 0:
                     shutil.rmtree(RUNTIME_DIR, ignore_errors=True)
@@ -410,7 +410,7 @@ def _install_worker() -> None:
             rc = 1
             for source in ("modelscope", "huggingface"):
                 rc = _run(
-                    [str(py), "-m", "mineru.cli.models_download", "-s", source, "-m", "pipeline"],
+                    [str(py), "-P", "-m", "mineru.cli.models_download", "-s", source, "-m", "pipeline"],
                     stage="models", progress=70 if source == "modelscope" else 82,
                     message=f"正在从 {source} 下载模型…",
                     env=_download_env(source),
@@ -433,7 +433,7 @@ def _install_worker() -> None:
         # 5) 自检
         _set_state(status="running", stage="verify", progress=95,
                    message="正在自检 MinerU…")
-        rc = _run([str(py), "-c", "import mineru; print(mineru.__version__)"],
+        rc = _run([str(py), "-P", "-c", "import mineru; print(mineru.__version__)"],
                   stage="verify", progress=97, message="正在自检 MinerU…")
         if rc != 0:
             raise RuntimeError("MinerU 已安装但导入失败，详见安装日志。")
@@ -608,7 +608,7 @@ def convert_pdf(
     py = _venv_python()
     out_dir.mkdir(parents=True, exist_ok=True)
     start, end = _page_bounds(pages)
-    cmd = [str(py), "-m", "mineru.cli.client",
+    cmd = [str(py), "-P", "-m", "mineru.cli.client",
            "-p", str(pdf_path), "-o", str(out_dir),
            "-m", method, "-b", "pipeline", "-d", _device(), "--source", "local"]
     if start is not None:

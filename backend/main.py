@@ -1143,6 +1143,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/kb/mineru/status":
             self._send_json(mineru.status())
             return
+        # 向量模型状态必须走 GET：前端每次打开设置/知识库都会读它。
+        # 之前误放在 do_POST 里，前端 GET 一直 404，界面只能显示「读取失败」。
+        if path == "/api/kb/embed/status":
+            self._send_json(kb_embed.status())
+            return
         # 群组材料作为个人对话上下文（按成员权限/脱敏，只返回数据不落群组）
         m = _match(path, r"^/api/groups/([^/]+)/materials/([^/]+)/chat-context$")
         if m:
@@ -3440,10 +3445,7 @@ class Handler(BaseHTTPRequestHandler):
             self._kb_ask(m[0], m[1])
             return
 
-        # 向量模型：状态 / 下载 / 建索引
-        if path == "/api/kb/embed/status":
-            self._send_json(kb_embed.status())
-            return
+        # 向量模型：下载（状态读取已移到 do_GET）
         m = _match(path, r"^/api/kb/embed/ensure$")
         if m:
             data = self._read_json_body() or {}
