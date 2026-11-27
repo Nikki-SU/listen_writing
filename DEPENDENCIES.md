@@ -49,6 +49,8 @@
 | Qwen3-ASR 运行时（torch） | Linux/macOS：`download.pytorch.org/whl/cpu`；Windows：清华镜像 → 官方 PyPI | `torch==2.15.0`；装失败只让该档标为未安装，不影响 Whisper / SenseVoice |
 | 语音模型（Whisper / Qwen3-ASR） | 导入时探测官方 `huggingface.co`（HEAD 模型接口，3s 超时）；不通则整个进程改用 `hf-mirror.com` | `HF_HUB_ETAG_TIMEOUT=5` / `HF_HUB_DOWNLOAD_TIMEOUT=20`；`HF_HUB_DISABLE_SYMLINKS_WARNING=1`；端点不通时置 `HF_HUB_DISABLE_XET=1`。**端点必须在 import 前定下**：huggingface_hub 1.x 运行中改 `constants.ENDPOINT` 不生效（已实测） |
 | SenseVoice 模型 | GitHub release → `gh-proxy.com` → `ghproxy.net` | 解压后只保留 int8（删掉 fp32 约 895MB）；失败下次启动重试 |
+| AI 纠错模型（GGUF） | ModelScope `modelscope.cn`（阿里，国内直连）→ `hf-mirror.com` → 官方 `huggingface.co` | 同一批 `bartowski` 仓库在 ModelScope 有完整镜像，文件名相同、分支为 `master`；必须支持 Range 续传（已实测 206） |
+| 知识库向量模型（BGE-M3） | ModelScope → `hf-mirror.com` → 官方 | `gpustack/bge-m3-GGUF` 的 `bge-m3-Q4_K_M.gguf`（约 418MB）。旧配置指向的 `gpustack/bge-small-zh-v1.5-GGUF` 仓库不存在（HTTP 404），已废弃；老库里的 `bge-small-zh` 键会自动别名到 `bge-m3` |
 
 - **SHA256 是硬编码在脚本里的**，不是下载时从网络取（否则源被劫持就失去意义）。当前 5 条：
   - Windows x64 `590dfcbe3a34c07301e6332e13e2188b98655cd072b08afa45a7998dc4c22bc5`（在 `start-windows.bat` 的 `SHA`）

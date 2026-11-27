@@ -143,20 +143,38 @@ MODEL_FILES: dict[str, tuple[str, int]] = {
 
 HF_OFFICIAL = "https://huggingface.co"
 HF_MIRROR = "https://hf-mirror.com"
+# ModelScope（阿里，国内直连）：同一批 bartowski GGUF 仓库在它有完整镜像，
+# 文件路径与 HF 相同，只是 resolve 分支叫 master。国内下载首选它。
+MODELSCOPE = "https://modelscope.cn/models"
 
 
 class Cancelled(Exception):
     """用户主动停止后台任务（下载 / 纠错 / 整理断句）。"""
 
 
-def _endpoints() -> list[str]:
-    """下载源：进程启动时已定的 HF_ENDPOINT 优先，其次官方源与国内镜像。"""
-    primary = (os.environ.get("HF_ENDPOINT") or HF_OFFICIAL).rstrip("/")
-    order = [primary]
-    for url in (HF_OFFICIAL, HF_MIRROR):
-        if url not in order:
-            order.append(url)
-    return [url for url in order if url not in _dead_endpoints] or order
+def _endpoints(model_key: str | None = None) -> list[str]:
+    """下载源：国内优先。
+
+    顺序：ModelScope（仅生成式 LLM，有同名 GGUF 镜像）→ hf-mirror →
+    用户显式设置的 HF_ENDPOINT → 官方 HuggingFace（仅兜底）。
+    国内直连 huggingface.co 经常 30 秒无响应，官方源放在最后。
+    """
+    order: list[str] = []
+    if model_key in LLM_MODELS:
+        order.append(MODELSCOPE)
+    order.append(HF_MIRROR)
+    env = (os.environ.get("HF_ENDPOINT") or "").rstrip("/")
+    if env:
+        order.append(env)
+    order.append(HF_OFFICIAL)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for url in order:
+        if url and url not in seen:
+            seen.add(url)
+            unique.append(url)
+    # 本进程内已失败的源不再重复等超时；全部挂掉时仍返回完整列表供报错。
+    return [u for u in unique if u not in _dead_endpoints] or unique
 
 
 # 本进程内已失败的源：重试时不再重复等它超时（官方源在国内常常 30 秒无响应）。
@@ -217,6 +235,9 @@ def _download(
 def _download_url(model_key: str, base: str) -> str:
     spec = LLM_MODELS[model_key]
     name = MODEL_FILES[model_key][0]
+    if base == MODELSCOPE:
+        # ModelScope 的分支叫 master，文件名与 HF 完全相同。
+        return f"{MODELSCOPE}/{spec['repo']}/resolve/master/{name}"
     return f"{base}/{spec['repo']}/resolve/main/{name}"
 
 
@@ -243,7 +264,7 @@ def ensure_model(
     part = dest.with_suffix(dest.suffix + ".part")
 
     last_error: Exception | None = None
-    for base in _endpoints():
+    for base in _endpoints(model_key):
         host = base.split("://", 1)[-1].split("/")[0]
         if on_status:
             on_status(f"正在从 {host} 下载 {spec['label']}（{expected / 1e9:.1f}GB，可断点续传）…")

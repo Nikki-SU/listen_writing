@@ -307,7 +307,7 @@ Project
 | KB-4 | 后端 | `GET /api/kb/mineru/status` | 无 | `MineruStatus`（含 `install` 进度） | 设备/内存/磁盘/建议档位/安装状态；`install` 含 `done_stages / resumable / models_bytes / models_required_bytes` |
 | KB-5 | 后端 | `POST /api/kb/mineru/install` | `{"force"?: false}`（可省略） | `MineruInstallState`（202） | 后台安装；重复调用不会起第二个任务。上次中断会标记 `interrupted` 并**断点续传**：跳过已完成的 venv/torch/MinerU、保留 pip 缓存与模型分片。`force=true` 为「重新安装」：删除 `.runtime/mineru/` 独立运行环境并清空步骤，**已下载模型保留**，不动主程序依赖与系统环境 |
 | KB-6 | 后端 | `POST /api/kb/mineru/install/cancel` | 无 | `MineruInstallState` | 运行中：停止子进程、保留已下载部分（下次可续传）；未运行：清除 `done_stages` 与模型标记，并设置 `auto_install=false`，下次启动不再自动安装 |
-| KB-7 | 后端 | `POST /api/kb/embed/ensure` | `{"model_key"}` | `{"status","path?"}` | 下载本地 Embedding（bge-small-zh，95MB） |
+| KB-7 | 后端 | `POST /api/kb/embed/ensure` | `{"model_key"}` | `{"status","path?"}` | 同步下载本地 Embedding（bge-m3 Q4，约 420MB）。**界面请改用 S-4（`kind="embed"`）**：有进度、可停止、可续传；本接口保留给脚本/旧页面 |
 | KB-8 | 后端 | `POST /api/kb/libraries/{id}/index` | `{"model_key"}` | `{"built","model"}` | 建向量索引；BM25 始终可用 |
 | KB-9 | 后端 | `POST /api/projects/{p}/kb-refs` | `{"kb_id"}` | `{"kb_refs":[…]}` | 项目引用库（不复制） |
 | KB-10 | 后端 | `POST /api/projects/{p}/chats/{c}/ask/stream` | `{"question","history","material_snippets","library_ids","all_libraries","only_evidence"}` | SSE：`sources/delta/done/cancelled/error` | 证据优先；引文回查由后端做；会话只落本人项目 |

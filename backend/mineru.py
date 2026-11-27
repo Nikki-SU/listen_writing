@@ -19,7 +19,6 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import storage
@@ -50,6 +49,9 @@ _convert_lock = threading.Lock()
 _install_lock = threading.Lock()
 _install_cancel = threading.Event()
 _install_proc: subprocess.Popen | None = None
+# 内存里是否真的有安装线程在跑。状态文件可能停在 running（后端重启/崩溃过），
+# 只看状态会把「死掉的安装」误判为进行中，导致「重新安装」点不动。
+_install_alive = False
 
 
 def _venv_python() -> Path:
@@ -324,6 +326,7 @@ def _convert_env() -> dict:
 
 
 def _install_worker() -> None:
+    global _install_alive, _install_proc
     py = _venv_python()
     try:
         if _disk_free_gb() < MIN_FREE_GB:
@@ -448,6 +451,7 @@ def _install_worker() -> None:
     finally:
         _install_proc = None
         _install_cancel.clear()
+        _install_alive = False
 
 
 def start_install(force: bool = False) -> dict:
@@ -459,28 +463,24 @@ def start_install(force: bool = False) -> dict:
     不会影响主程序依赖与系统环境。
     """
     with _install_lock:
+        global _install_alive
         info = install_info()
-        # 正在安装时不接受「重新安装」：避免删掉正在使用的运行环境。
-        if force and not info["running"]:
+        # 只有内存里真有安装线程时才拒绝「重新安装」；状态文件里的 running
+        # 可能是后端重启前留下的，那种情况必须允许重装，否则按钮看起来像假的。
+        if force and not _install_alive:
             shutil.rmtree(RUNTIME_DIR, ignore_errors=True)
             (MODELS_DIR / MODELS_MARKER).unlink(missing_ok=True)
             _set_state(status="not_installed", stage="", progress=0, done_stages=[],
                        error="", message="准备重新安装（模型会保留）", auto_install=True)
             info = install_info()
-        if info["running"]:
-            # 进程重启后状态文件可能停在 running（没有活线程）：超过 2 分钟视为中断。
-            try:
-                age = (datetime.now(timezone.utc)
-                       - datetime.fromisoformat(str(_state().get("updated_at") or ""))).total_seconds()
-            except (ValueError, TypeError):
-                age = 9999
-            if age > 120:
-                _set_state(status="interrupted", stage=_state().get("stage", ""), progress=0,
-                           message="上次安装被中断，可继续安装（断点续传，不会重下已完成部分）",
-                           error="", finished_at=storage.now_iso())
-                info = install_info()
-            else:
-                return info
+        if info["running"] and _install_alive:
+            return info
+        if info["running"] and not _install_alive:
+            # 状态停在 running，但没有活线程：判定为上次被中断，保留断点继续。
+            _set_state(status="interrupted", stage=_state().get("stage", ""), progress=0,
+                       message="上次安装被中断，可继续安装（断点续传，不会重下已完成部分）",
+                       error="", finished_at=storage.now_iso())
+            info = install_info()
         if probe()["available"]:
             # 已装好：补一个完成时间，界面才能显示「安装完成 · 时间」。
             _set_state(status="done", stage="done", progress=100,
@@ -495,6 +495,7 @@ def start_install(force: bool = False) -> dict:
         _set_state(status="running", stage="prepare", progress=0,
                    message="准备安装（已完成的步骤会跳过）…", error="", auto_install=True,
                    started_at=_state().get("started_at") or storage.now_iso(), finished_at="")
+        _install_alive = True
         threading.Thread(target=_install_worker, daemon=True).start()
         return install_info()
 
@@ -504,7 +505,7 @@ def cancel_install() -> dict:
 
     运行中取消：保留已下载文件与 done_stages，下次仍可「继续安装」断点续传。
     """
-    running = install_info()["running"]
+    running = _install_alive and install_info()["running"]
     _install_cancel.set()
     proc = _install_proc
     if proc is not None:

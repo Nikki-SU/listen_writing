@@ -94,7 +94,8 @@ PDF 转换组件（MinerU）也完全隔离：它有自己独立的 Python 运�
 第一次会把**本机配置允许的全部档位**一次装齐：转写（Whisper 各档 + SenseVoice + Qwen3-ASR，取决于内存与运行时）、
 AI（选中档位及以下全部）、知识库向量模型、以及 PDF 转换组件（MinerU + torch + 模型）。
 所有组件都由启动器自动安装，不需要你之后再去点“安装组件”；某个组件装失败时，到「设置 → 组件安装」重试。
-全程不需要你配置代理；下载源优先国内镜像，官方 GitHub 与第三方代理只作为兜底。
+全程不需要你配置代理；下载源优先国内：AI 模型先走 ModelScope（阿里），失败再走 hf-mirror；向量模型走 hf-mirror；
+PDF 组件依赖走清华 PyPI、torch 走阿里镜像、模型走 ModelScope。官方 HuggingFace / GitHub 只作兜底，不要求你能直连。
 
 ## Windows 提示「无法验证发布者 / 已阻止此应用」
 

@@ -28,12 +28,13 @@ function renderMd(text: string): ReactNode[] {
 }
 
 export default function KnowledgePage({
-  projects, projectId, onProjectChange, recordings,
+  projects, projectId, onProjectChange, recordings, onOpenSettings,
 }: {
   projects: { id: string; name: string }[]
   projectId: string | null
   onProjectChange: (id: string) => void
   recordings: Recording[]
+  onOpenSettings?: () => void
 }) {
   const [libs, setLibs] = useState<KbLibrary[]>([])
   const [docs, setDocs] = useState<Record<string, KbDocument[]>>({})
@@ -267,6 +268,14 @@ export default function KnowledgePage({
           <div style={{ fontSize: 10, color: '#8a8f98', marginTop: 4 }}>
             安装、重试与下载统一在「设置 → 组件安装」，这里只显示状态。
           </div>
+          {onOpenSettings && (!mineru?.available || embedError || embedStatus?.models.some((m) => !m.ready)) && (
+            <button
+              onClick={onOpenSettings}
+              style={{ ...btn, fontSize: 10, padding: '2px 8px', marginTop: 5 }}
+            >
+              去设置安装 / 下载
+            </button>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
           <input value={newLib} onChange={(e) => setNewLib(e.target.value)} placeholder="新建知识库名称" style={{ flex: 1, fontSize: 12, padding: '5px 8px', borderRadius: 6, border: '1px solid #d5dae2' }} />
@@ -297,7 +306,13 @@ export default function KnowledgePage({
             <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
               <button onClick={() => { uploadTarget.current = lib.id; fileRef.current?.click() }} style={{ ...btn, fontSize: 11 }}>导入文档（md/txt/docx/pdf）</button>
               <button disabled={!embedStatus?.models.some((m) => m.ready) || !(docs[lib.id] || []).length}
-                onClick={() => void kbApi.buildIndex(lib.id, 'bge-small-zh').then((r) => setNotice(`已建 ${r.built} 个向量块`)).catch((e) => setNotice(String(e)))}
+                onClick={() => {
+                  const key = embedStatus?.models.find((m) => m.ready)?.key
+                  if (!key) return
+                  void kbApi.buildIndex(lib.id, key)
+                    .then((r) => setNotice(`已建 ${r.built} 个向量块`))
+                    .catch((e) => setNotice(String(e)))
+                }}
                 title="为该库分块建向量索引（需先下载向量模型）" style={{ ...btn, fontSize: 11 }}>建向量索引</button>
             </div>
           </div>

@@ -393,6 +393,8 @@ def _run_model_job(job: dict) -> None:
 
 
 def start_model_job(kind: str, key: str) -> dict:
+    if kind == "embed":
+        key = kb_embed._canonical(key)
     catalog = (
         ASR_MODELS if kind == "asr"
         else llm.LLM_MODELS if kind == "llm"

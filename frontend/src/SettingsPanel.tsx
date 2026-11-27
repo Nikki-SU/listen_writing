@@ -426,7 +426,7 @@ export default function SettingsPanel({
                             onClick={() => { setComponentError(''); void download('embed', m.key) }}
                             style={{ fontSize: 11, padding: '2px 8px' }}
                           >
-                            {failed ? '重试' : stopped ? '继续下载' : '下载（约 95MB）'}
+                            {failed ? '重试' : stopped ? '继续下载' : '下载（约 420MB）'}
                           </button>
                         ) : null}
                       </div>

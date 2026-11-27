@@ -18,18 +18,27 @@ from pathlib import Path
 import storage
 import llm
 
-# bge-small-zh-v1.5：小、中文好、CPU 快，Q8_0 单文件约 95MB，16G 友好。
-# repo/文件名写死，避免额外的一次仓库查询（国内网络下可能长时间无响应，照搬 llm 的纪律）。
+# bge-m3：中文 / 多语检索，Q4_K_M 单文件约 418MB，ModelScope 与 hf-mirror 都有，
+# CPU 上可用。之前指向的 gpustack/bge-small-zh-v1.5-GGUF 仓库实际不存在（下载 404），
+# 导致「向量模型一直下载不了」——这里换成真实存在的仓库。
 EMBED_MODELS: dict[str, dict] = {
-    "bge-small-zh": {
-        "label": "BGE 中文小模型",
-        "repo": "gpustack/bge-small-zh-v1.5-GGUF",
-        "file": "bge-small-zh-v1.5-Q8_0.gguf",
-        "expected": 95_000_000,
-        "dim": 512,
+    "bge-m3": {
+        "label": "BGE-M3 中文向量",
+        "repo": "gpustack/bge-m3-GGUF",
+        "file": "bge-m3-Q4_K_M.gguf",
+        "expected": 437_778_496,
+        "dim": 1024,
     },
 }
-DEFAULT_EMBED_MODEL = "bge-small-zh"
+DEFAULT_EMBED_MODEL = "bge-m3"
+# 老版本库文件里记的是 bge-small-zh（当时模型根本下不下来，没有实际向量），
+# 统一别名到现在的真实模型，避免旧库检索直接报「未知模型」。
+_ALIASES = {"bge-small-zh": "bge-m3", "bge-small-zh-v1.5": "bge-m3"}
+MODELSCOPE = "https://modelscope.cn/models"
+
+
+def _canonical(key: str) -> str:
+    return _ALIASES.get(key, key)
 
 
 def embed_root() -> Path:
@@ -37,11 +46,11 @@ def embed_root() -> Path:
 
 
 def model_dir(key: str) -> Path:
-    return embed_root() / key
+    return embed_root() / _canonical(key)
 
 
 def model_file(key: str) -> Path | None:
-    spec = EMBED_MODELS.get(key)
+    spec = EMBED_MODELS.get(_canonical(key))
     if not spec:
         return None
     p = model_dir(key) / spec["file"]
@@ -50,6 +59,7 @@ def model_file(key: str) -> Path | None:
 
 def ensure_model(key: str, on_status=None, on_progress=None, should_stop=None) -> Path:
     """确保 embedding 模型在本地，复用 llm 的断点续传下载（带镜像源兜底）。"""
+    key = _canonical(key)
     spec = EMBED_MODELS.get(key)
     if not spec:
         raise ValueError(f"未知的 embedding 模型：{key}")
@@ -61,11 +71,14 @@ def ensure_model(key: str, on_status=None, on_progress=None, should_stop=None) -
     dest = dest_dir / spec["file"]
     part = dest.with_suffix(dest.suffix + ".part")
     last_error = None
+    # 国内优先：ModelScope 有同名 GGUF 镜像；其次 hf-mirror；官方只兜底。
+    urls = [f"{MODELSCOPE}/{spec['repo']}/resolve/master/{spec['file']}"]
     for base in llm._endpoints():
-        host = base.split("://", 1)[-1].split("/")[0]
+        urls.append(f"{base}/{spec['repo']}/resolve/main/{spec['file']}")
+    for url in urls:
+        host = url.split("://", 1)[-1].split("/")[0]
         if on_status:
             on_status(f"正在从 {host} 下载向量模型 {spec['label']}（约 {spec['expected']/1e6:.0f}MB）…")
-        url = f"{base}/{spec['repo']}/resolve/main/{spec['file']}"
         try:
             llm._download(url, part, on_progress, should_stop, spec["expected"])
             got = part.stat().st_size if part.is_file() else 0
@@ -80,7 +93,7 @@ def ensure_model(key: str, on_status=None, on_progress=None, should_stop=None) -
             raise
         except Exception as e:  # noqa: BLE001 - 换源
             last_error = e
-            llm._dead_endpoints.add(base)
+            llm._dead_endpoints.add(url)
     raise RuntimeError(f"向量模型下载失败：{last_error}")
 
 
@@ -98,6 +111,7 @@ def _max_loaded() -> int:
 
 
 def _engine(key: str):
+    key = _canonical(key)
     with _engine_lock:
         if key in _engines:
             _engines.move_to_end(key)

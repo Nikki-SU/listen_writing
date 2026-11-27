@@ -782,6 +782,7 @@ export default function App() {
           projectId={projectId}
           onProjectChange={setProjectId}
           recordings={recordings}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
       ) : view === 'collab' ? (
         <div style={{ flex: 1, minHeight: 0, padding: '0 12px 12px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
